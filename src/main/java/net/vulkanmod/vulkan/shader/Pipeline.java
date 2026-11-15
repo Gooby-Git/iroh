@@ -152,6 +152,7 @@ public abstract class Pipeline {
 
     public static void destroyPipelineCache() {
         savePipelineCache();
+        Initializer.LOGGER.info("SPIR-V cache: {} hits, {} misses", SPIRVUtils.getCacheHits(), SPIRVUtils.getCacheMisses());
         vkDestroyPipelineCache(DEVICE, PIPELINE_CACHE, null);
     }
 

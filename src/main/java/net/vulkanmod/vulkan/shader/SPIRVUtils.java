@@ -1,7 +1,9 @@
 package net.vulkanmod.vulkan.shader;
 
+import dev.elemore.iroh.cache.DiskCache;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.system.NativeResource;
 import org.lwjgl.util.shaderc.ShadercIncludeResolveI;
 import org.lwjgl.util.shaderc.ShadercIncludeResult;
@@ -16,6 +18,11 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.lwjgl.system.MemoryUtil.NULL;
 import static org.lwjgl.system.MemoryUtil.memASCII;
@@ -77,6 +84,16 @@ public class SPIRVUtils {
             throw new NullPointerException("source for %s.%s is null".formatted(filename, shaderKind));
         }
 
+        String cacheName = cacheFileName(source, shaderKind);
+
+        if (cacheName != null) {
+            SPIRV cached = loadCached(cacheName);
+            if (cached != null) {
+                CACHE_HITS.incrementAndGet();
+                return cached;
+            }
+        }
+
         long result = shaderc_compile_into_spv(compiler, source, shaderKind.kind, filename, "main", options);
 
         if (result == NULL) {
@@ -89,7 +106,94 @@ public class SPIRVUtils {
                             result));
         }
 
-        return new SPIRV(result, shaderc_result_get_bytes(result));
+        ByteBuffer compiled = shaderc_result_get_bytes(result);
+
+        CACHE_MISSES.incrementAndGet();
+        if (cacheName != null) {
+            storeCached(cacheName, compiled);
+        }
+
+        return new SPIRV(result, compiled);
+    }
+
+    // On-disk SPIR-V cache. Key = SHA-256 of (cache version, shader kind, source, include directory contents).
+    private static final String CACHE_VERSION = "iroh-spv-1";
+    private static final AtomicInteger CACHE_HITS = new AtomicInteger();
+    private static final AtomicInteger CACHE_MISSES = new AtomicInteger();
+    private static byte[] includeFingerprint;
+    private static boolean includeFingerprintFailed;
+
+    public static int getCacheHits() {
+        return CACHE_HITS.get();
+    }
+
+    public static int getCacheMisses() {
+        return CACHE_MISSES.get();
+    }
+
+    private static synchronized byte[] getIncludeFingerprint() {
+        if (includeFingerprint == null && !includeFingerprintFailed) {
+            try {
+                MessageDigest digest = DiskCache.sha256();
+                for (String includePath : includePaths) {
+                    Path root = Paths.get(new URI(includePath));
+                    try (Stream<Path> files = Files.walk(root)) {
+                        List<Path> sorted = files.filter(Files::isRegularFile).sorted().toList();
+                        for (Path file : sorted) {
+                            digest.update(root.relativize(file).toString().getBytes(StandardCharsets.UTF_8));
+                            digest.update(Files.readAllBytes(file));
+                        }
+                    }
+                }
+                includeFingerprint = digest.digest();
+            } catch (Throwable t) {
+                includeFingerprintFailed = true;
+            }
+        }
+        return includeFingerprint;
+    }
+
+    private static String cacheFileName(String source, ShaderKind shaderKind) {
+        try {
+            byte[] fingerprint = getIncludeFingerprint();
+            if (fingerprint == null)
+                return null;
+
+            MessageDigest digest = DiskCache.sha256();
+            digest.update(CACHE_VERSION.getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) shaderKind.ordinal());
+            digest.update(fingerprint);
+            digest.update(source.getBytes(StandardCharsets.UTF_8));
+            return DiskCache.hex(digest.digest()) + ".spv";
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static SPIRV loadCached(String name) {
+        try {
+            byte[] bytes = DiskCache.read(name);
+            // SPIR-V: whole 32-bit words, starts with the magic number 0x07230203 (little endian here)
+            if (bytes == null || bytes.length < 20 || (bytes.length & 3) != 0
+                    || bytes[0] != 0x03 || bytes[1] != 0x02 || bytes[2] != 0x23 || bytes[3] != 0x07)
+                return null;
+
+            ByteBuffer buf = MemoryUtil.memAlloc(bytes.length);
+            buf.put(bytes).flip();
+            return new SPIRV(0, buf);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void storeCached(String name, ByteBuffer spirv) {
+        try {
+            byte[] bytes = new byte[spirv.remaining()];
+            spirv.duplicate().get(bytes);
+            DiskCache.write(name, bytes);
+        } catch (Throwable t) {
+            // cache is optional
+        }
     }
 
     public enum ShaderKind {
@@ -164,6 +268,8 @@ public class SPIRVUtils {
         @Override
         public void free() {
 //            shaderc_result_release(handle);
+            if (handle == 0 && bytecode != null)
+                MemoryUtil.memFree(bytecode); // loaded from the disk cache
             bytecode = null; // Help the GC
         }
     }
