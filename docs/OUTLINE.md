@@ -227,7 +227,8 @@ Ultra Performance / custom scale. **Accept** debug views for every input; a null
 (MIT, attribution in NOTICE). Works on any vendor. **Accept** perf scenes: recorded gain at
 Quality; no ghosting on hand, entities, particles in the review shots.
 
-**P4-3 [O] FSR 4.1.2.** Through AMD's signed loader on Windows; on Linux per P4-0's outcome.
+**P4-3 [O] FSR 4.1.2.** Through AMD's signed loader on Windows only (owner decision 2026-11-15);
+Linux reports "FSR 4: not available from AMD on Linux yet" in the capability screen and uses 3.1.
 Runtime download + licence prompt (card P4-6). Capability detection, automatic fallback to 3.1.
 
 **P4-4 [O] DLSS SR + DLAA.** NGX direct on Vulkan in `iroh-nv` (Linux and Windows), presets, model
