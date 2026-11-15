@@ -4,7 +4,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import dev.elemore.iroh.cache.DiskCache;
 import net.minecraft.util.GsonHelper;
+import net.vulkanmod.Initializer;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.device.DeviceManager;
@@ -23,6 +25,7 @@ import net.vulkanmod.vulkan.texture.VTextureSelector;
 import net.vulkanmod.vulkan.texture.VulkanImage;
 import net.vulkanmod.vulkan.util.MappedBuffer;
 import org.apache.commons.lang3.Validate;
+import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.*;
@@ -46,13 +49,72 @@ public abstract class Pipeline {
     protected static final long PIPELINE_CACHE = createPipelineCache();
     protected static final List<Pipeline> PIPELINES = new LinkedList<>();
 
+    private static final int PIPELINE_CACHE_HEADER_SIZE = 16 + VK_UUID_SIZE;
+
+    private static String pipelineCacheFileName() {
+        VkPhysicalDeviceProperties props = DeviceManager.deviceProperties;
+        return "pipeline_cache_%08x_%08x_%08x.bin".formatted(props.vendorID(), props.deviceID(), props.driverVersion());
+    }
+
+    // VkPipelineCacheHeaderVersionOne: headerSize, headerVersion, vendorID, deviceID, pipelineCacheUUID
+    private static boolean isValidPipelineCacheHeader(ByteBuffer data) {
+        if (data.remaining() < PIPELINE_CACHE_HEADER_SIZE)
+            return false;
+
+        VkPhysicalDeviceProperties props = DeviceManager.deviceProperties;
+        ByteBuffer d = data.duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+        if (d.getInt(0) < PIPELINE_CACHE_HEADER_SIZE || d.getInt(4) != VK_PIPELINE_CACHE_HEADER_VERSION_ONE
+                || d.getInt(8) != props.vendorID() || d.getInt(12) != props.deviceID())
+            return false;
+
+        ByteBuffer uuid = props.pipelineCacheUUID();
+        for (int i = 0; i < VK_UUID_SIZE; i++) {
+            if (d.get(16 + i) != uuid.get(uuid.position() + i))
+                return false;
+        }
+        return true;
+    }
+
     private static long createPipelineCache() {
+        ByteBuffer initialData = null;
+
+        try {
+            byte[] bytes = DiskCache.read(pipelineCacheFileName());
+            if (bytes != null) {
+                ByteBuffer buf = MemoryUtil.memAlloc(bytes.length);
+                buf.put(bytes).flip();
+
+                if (isValidPipelineCacheHeader(buf)) {
+                    initialData = buf;
+                    Initializer.LOGGER.info("Loaded pipeline cache from disk ({} KiB)", bytes.length / 1024);
+                } else {
+                    MemoryUtil.memFree(buf);
+                    Initializer.LOGGER.info("Discarded pipeline cache: header does not match this device/driver");
+                }
+            }
+        } catch (Throwable t) {
+            initialData = null;
+        }
+
         try (MemoryStack stack = stackPush()) {
+            LongBuffer pPipelineCache = stack.mallocLong(1);
+
+            if (initialData != null) {
+                VkPipelineCacheCreateInfo cacheCreateInfo = VkPipelineCacheCreateInfo.calloc(stack);
+                cacheCreateInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO);
+                cacheCreateInfo.pInitialData(initialData);
+
+                int result = vkCreatePipelineCache(DEVICE, cacheCreateInfo, null, pPipelineCache);
+                MemoryUtil.memFree(initialData);
+
+                if (result == VK_SUCCESS)
+                    return pPipelineCache.get(0);
+                // fall through: recreate empty
+            }
 
             VkPipelineCacheCreateInfo cacheCreateInfo = VkPipelineCacheCreateInfo.calloc(stack);
             cacheCreateInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO);
-
-            LongBuffer pPipelineCache = stack.mallocLong(1);
 
             if (vkCreatePipelineCache(DEVICE, cacheCreateInfo, null, pPipelineCache) != VK_SUCCESS) {
                 throw new RuntimeException("Failed to create graphics pipeline");
@@ -62,7 +124,34 @@ public abstract class Pipeline {
         }
     }
 
+    private static void savePipelineCache() {
+        try (MemoryStack stack = stackPush()) {
+            PointerBuffer pSize = stack.mallocPointer(1);
+            if (vkGetPipelineCacheData(DEVICE, PIPELINE_CACHE, pSize, null) != VK_SUCCESS)
+                return;
+
+            int size = (int) pSize.get(0);
+            if (size < PIPELINE_CACHE_HEADER_SIZE)
+                return;
+
+            ByteBuffer data = MemoryUtil.memAlloc(size);
+            try {
+                if (vkGetPipelineCacheData(DEVICE, PIPELINE_CACHE, pSize, data) != VK_SUCCESS)
+                    return;
+
+                byte[] bytes = new byte[(int) pSize.get(0)];
+                data.get(bytes);
+                DiskCache.write(pipelineCacheFileName(), bytes);
+            } finally {
+                MemoryUtil.memFree(data);
+            }
+        } catch (Throwable t) {
+            // cache is optional
+        }
+    }
+
     public static void destroyPipelineCache() {
+        savePipelineCache();
         vkDestroyPipelineCache(DEVICE, PIPELINE_CACHE, null);
     }
 
