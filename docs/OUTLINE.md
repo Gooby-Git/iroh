@@ -305,8 +305,9 @@ scenes, or a written account of the gap and the plan (retro entries).
 ## Phase 7: the Iroh look (Navidson in RT)
 
 Licence fence for this phase: nothing from Complementary Unbound (Navidson's base) may enter Iroh.
-Use only owner-written Navidson files, and only once the owner has licensed them to Iroh (open
-question in STATE.md); otherwise write the look fresh and match by eye against screenshots.
+The owner licensed the owner-written Navidson files to Iroh under LGPL on 2026-11-15 (scope in
+DECISIONS.md): port those directly with a NOTICE line. Anything in a modified Complementary base
+file, or of unclear origin, is written fresh and matched by eye against screenshots.
 Corrections from P0-5: Tempest cloud base and `CLOUD_ALT1` default are 720, not 575; mountain fog
 has no Vista gate in `mainFog.glsl` (confirm in game).
 
