@@ -204,6 +204,18 @@ compile + render + screenshot. Failures become td bugs; fix the loader, never th
 **P4-0 [S] early. Settle FSR 4 on Linux by test.** Steps in `knowledge/fsr.md`. Report evidence.
 No Wine bridge without the owner's go-ahead.
 
+**P4 design constraint (from P0-5).** Vitrail has no temporal upscaler: only FSR 1 after the whole
+pack chain, and it takes no jitter or motion vectors from packs. So "any Iris pack with FSR/DLSS"
+is new design work, in three tiers: (1) packs that declare a cut point and provide motion vectors
+through an Iroh pack directive (`iroh.upscale.after=<program>` in shaders.properties, ignored by
+Iris): Navidson gets this, cut between composite5 and composite6; (2) undeclared packs: Iroh
+renders gbuffers at reduced resolution with its own jitter and its own motion vectors (from
+geometry, independent of the pack), finds the last program that still works in scene-linear space
+by a heuristic (first program writing the final colortex without reading it back at full res,
+overridable per pack in a shipped table), and upscales there; (3) packs where that fails the
+ghosting check: spatial upscale after `final` (FSR 1 / RCAS) with the reason shown in the UI.
+P4-1 implements tier 1 and the interface; a later card P4-8 [O] does tier 2 and 3 with the pack zoo.
+
 **P4-1 [O] Upscaler interface.** Internal resolution scaling, jitter sequence, motion vectors
 (terrain, entities, block entities, hand, particles; pack-provided vectors when a shader pack
 writes them), depth, exposure, reactive / transparency masks, HUD drawn after upscale at native
@@ -292,7 +304,13 @@ scenes, or a written account of the gap and the plan (retro entries).
 
 ## Phase 7: the Iroh look (Navidson in RT)
 
-**P7-1 [O] Colour grade and tone map** ported from Navidson's maths. **P7-2 [O] Mountain fog and
+Licence fence for this phase: nothing from Complementary Unbound (Navidson's base) may enter Iroh.
+Use only owner-written Navidson files, and only once the owner has licensed them to Iroh (open
+question in STATE.md); otherwise write the look fresh and match by eye against screenshots.
+Corrections from P0-5: Tempest cloud base and `CLOUD_ALT1` default are 720, not 575; mountain fog
+has no Vista gate in `mainFog.glsl` (confirm in game).
+
+**P7-1 [O] Colour grade and tone map** matching Navidson (see the licence fence above). **P7-2 [O] Mountain fog and
 atmosphere** as volumetrics in the RT path. **P7-3 [O] Tempest**: cloud layer at 575, storms,
 tornado funnel, lightning as lights, wet surfaces, via `api/` so Tempest stays a separate mod.
 **P7-4 [S] Coloured lighting tuning**: per-block emission colours match Navidson's table.
