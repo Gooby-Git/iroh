@@ -1,13 +1,15 @@
 {
   "schemaVersion": 1,
-  "id": "vulkanmod",
+  "id": "iroh",
   "version": "${version}",
 
-  "name": "VulkanMod",
-  "description": "Bring Vulkan to Minecraft!",
+  "name": "Iroh",
+  "description": "Vulkan renderer for Minecraft 1.21.1, a fork of VulkanMod.",
   "authors": [
-    "Collateral"
+    "Elemore",
+    "Collateral (VulkanMod)"
   ],
+  "license": "LGPL-3.0-only",
   "contact": {
     "homepage": "",
     "sources": "https://github.com/xCollateral/VulkanMod"
@@ -22,13 +24,13 @@
     ]
   },
   "mixins": [
-    "vulkanmod.mixins.json"
+    "iroh.mixins.json"
   ],
   "accessWidener" : "vulkanmod.accesswidener",
 
   "depends": {
     "fabricloader": ">=0.14.14",
-    "minecraft": ["1.21", "1.21.1"]
+    "minecraft": "1.21.1"
   },
   "custom": {
     "fabric-renderer-api-v1:contains_renderer": true

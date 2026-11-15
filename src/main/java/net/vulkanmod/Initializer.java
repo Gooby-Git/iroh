@@ -22,7 +22,7 @@ public class Initializer implements ClientModInitializer {
 	public void onInitializeClient() {
 
 		VERSION = FabricLoader.getInstance()
-				.getModContainer("vulkanmod")
+				.getModContainer("iroh")
 				.get()
 				.getMetadata()
 				.getVersion().getFriendlyString();

@@ -1,0 +1,14 @@
+Iroh
+====
+Iroh is a fork of VulkanMod, used under the GNU Lesser General Public License v3.0.
+
+Base: VulkanMod, Copyright (c) xCollateral and contributors
+      https://github.com/xCollateral/VulkanMod
+      Forked from tag 0.5.5 (commit f23855f2675f1efb52fb8aa2c26bc23dccfb5543), Minecraft 1.21.1.
+      Upstream Java packages (net.vulkanmod.*) are kept so upstream changes merge cleanly.
+      New Iroh code lives under dev.elemore.iroh.
+
+The full licence text is in LICENSE. Files copied from other projects are listed below
+with their source and licence, added in the same commit that copies them.
+
+(none yet)
