@@ -41,6 +41,18 @@ Improvements from `dev` (1.21.11) and tags up to 0.6.6 are back-ported where the
 newer Minecraft internals (card P2-1). The Modrinth 0.6.7+1.21.1 jar may be read for behaviour but
 its decompiled code is not copied unless matching source is published.
 
+Mod id decision (2026-11-15, from the P0-3 ledger): Iroh stays `iroh` and does **not** declare
+`provides: vulkanmod`. Reason: ImmediatelyFast and Resourcify declare `breaks: vulkanmod`, so
+providing it would stop the game from loading, and their jars may not be edited. Their GL hooks
+(listed in `pack-compat.md`) must instead be made harmless by `glshim/` and `compat/`. Two mods
+carry a real VulkanMod code path gated on the id `vulkanmod`: AsyncParticles
+(`VkCompParticleRenderer`, `RendererAddon`, calling `net.vulkanmod.vulkan.*`) and DreamDisplays
+(`RenderBackendCompat.isVulkanModLoaded`). Iroh keeps the upstream `net.vulkanmod` package names
+and API shapes those classes call, and `compat/asyncparticles`, `compat/dreamdisplays` turn their
+gates on with a runtime mixin into the gate method (a mixin applied in memory is not a change to
+their jar). Any class under `net.vulkanmod.vulkan.*` that those mods call is frozen API: changing
+its signature needs a retro entry.
+
 ---
 
 ## Phase 0: groundwork and build
