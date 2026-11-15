@@ -348,7 +348,27 @@ what hardware, what is not.
 
 `R-<n>` cards are appended here by the orchestrator from `knowledge/retro-queue.md`.
 
-(none yet)
+**R-1 [O] Own scene target (RQ-6).** After gate `boot` is green on the unmodified base and before
+P1-2. Main render target becomes Iroh's own colour + depth images (size independent of the
+window, format selectable, RGBA8 at native size by default so Raster parity is unchanged), with one
+blit to the swapchain at the end of the frame after GUI. `Minecraft.getMainRenderTarget()` users
+(mods binding, reading, blitting or resizing it) keep working: list them from `pack-compat.md` and
+test each. Screenshots read from this target. Leave hooks, unused for now, for render scale, a
+float format and extra attachments. **Reads** `vulkanmod.md` sections on framebuffers and section
+11, `mc1211-render.md` RenderTarget section. **Owns** `vulkan/framebuffer/**`, `vulkan/pass/**`,
+`mixin/**/MainTarget*`. **Accept** gates boot + world green, parity scenes inside tolerance,
+screenshot works, window resize and fullscreen toggle scenario passes, no validation errors.
+
+**R-2 [S] Base bug fixes found by P0-4.** Confirm each by reading the code and the Vulkan spec,
+fix the confirmed ones in separate commits, leave the rest documented: (1) `ImageUtil.generateMipmaps`
+passing usage bits where layouts are expected; (2) swapchain images created without TRANSFER_SRC
+while screenshots / blits copy from them; (3) EXCLUSIVE-sharing buffers used on both transfer and
+graphics queues without ownership transfer; (4) pipeline cache never saved to disk; (5) no SPIR-V
+cache for converted shaders (add an on-disk cache keyed by source hash). Not in scope: the
+spherical-vs-cylinder terrain fog and other parity gaps (those are P1 work). **Owns** only the
+files each fix touches; no refactors. **Accept** `./build.sh` passes; each fix has a line in
+`vulkanmod.md` weak-spots list marked FIXED(commit) or NOT A BUG(reason). In-game proof comes
+with the first Iroh boot gate.
 
 ## Standing jobs
 
