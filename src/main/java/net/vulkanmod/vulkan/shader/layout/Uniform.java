@@ -41,7 +41,7 @@ public class Uniform {
 
     public static Uniform createField(Info info) {
         return switch (info.type) {
-            case "mat4", "vec3", "vec4", "vec2" -> new Uniform(info);
+            case "mat4", "vec3", "vec4", "vec2", "ivec2", "ivec3", "ivec4" -> new Uniform(info);
             case "mat3" -> new Mat3(info);
             case "float" -> new Vec1f(info);
             case "int" -> new Vec1i(info);
@@ -83,11 +83,13 @@ public class Uniform {
     public static Info createUniformInfo(String type, String name) {
         return switch (type) {
             case "mat4" -> new Info(type, name, 4, 16);
-            case "mat3" -> new Info(type, name, 4, 9);
+            // std140: a mat3 is three vec4-aligned columns (48 bytes); Mat3.update writes them at 0/16/32.
+            // Was size 9 (P1-2a): the next member then overlapped the third column.
+            case "mat3" -> new Info(type, name, 4, 12);
 
-            case "vec4" -> new Info(type, name, 4, 4);
-            case "vec3" -> new Info(type, name, 4, 3);
-            case "vec2" -> new Info(type, name, 2, 2);
+            case "vec4", "ivec4" -> new Info(type, name, 4, 4);
+            case "vec3", "ivec3" -> new Info(type, name, 4, 3);
+            case "vec2", "ivec2" -> new Info(type, name, 2, 2);
 
             case "float", "int" -> new Info(type, name, 1, 1);
 

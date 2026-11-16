@@ -109,3 +109,19 @@ publishing {
 		// retrieving dependencies.
 	}
 }
+
+// Offline shader regression suite (P1-2a): converts and compiles every mod / vanilla shader in a mod folder
+// with the code the game runs. ./gradlew shaderHarness [-Pmods=dir] [-Pmode=legacy] [-Pshader=id] [-Pout=file]
+tasks.register('shaderHarness', JavaExec) {
+	group = 'verification'
+	description = 'Convert and compile every core/post shader of the Vulkan instance offline'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shadertest.ShaderHarness'
+	jvmArgs '-Xmx2g'
+	def a = []
+	['mods', 'mode', 'shader', 'out', 'instance'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
+	}
+	args a
+}

@@ -18,7 +18,12 @@ import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.shader.Pipeline;
 import net.vulkanmod.vulkan.shader.layout.Uniform;
 import net.vulkanmod.vulkan.shader.descriptor.UBO;
-import net.vulkanmod.vulkan.shader.converter.GlslConverter;
+import dev.elemore.iroh.shader.ShaderConversion;
+import dev.elemore.iroh.shader.ShaderFallbacks;
+import dev.elemore.iroh.shader.ShaderSources;
+import dev.elemore.iroh.shader.UniformSlots;
+import net.vulkanmod.Initializer;
+import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
 import net.vulkanmod.vulkan.util.MappedBuffer;
 import org.apache.commons.io.IOUtils;
 import org.lwjgl.opengl.GL30;
@@ -35,7 +40,8 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntSupplier;
@@ -74,7 +80,8 @@ public class EffectInstanceM {
     @Redirect(method = "<init>", at = @At(value = "INVOKE",
             target = "Lnet/minecraft/client/renderer/EffectInstance;getOrCreate(Lnet/minecraft/server/packs/resources/ResourceProvider;Lcom/mojang/blaze3d/shaders/Program$Type;Ljava/lang/String;)Lcom/mojang/blaze3d/shaders/EffectProgram;"))
     private EffectProgram redirectShader(ResourceProvider resourceProvider, Program.Type type, String string) {
-        return null;
+        // P1-2a: getVertexProgram()/getFragmentProgram() must not return null; id -1 = no GL object
+        return new EffectProgram(type, -1, string);
     }
 
     /**
@@ -87,66 +94,88 @@ public class EffectInstanceM {
             uniform.close();
         }
 
-        this.pipeline.scheduleCleanUp();
+        if (this.pipeline != null)
+            this.pipeline.scheduleCleanUp();
     }
 
     private void createShaders(ResourceProvider resourceManager, String vertexShader, String fragShader) {
+        String id = "program/" + this.name;
+        ShaderConversion.Result result;
         try {
-            String[] vshPathInfo = this.decompose(vertexShader, ':');
-            ResourceLocation vshLocation = ResourceLocation.fromNamespaceAndPath(vshPathInfo[0], "shaders/program/" + vshPathInfo[1] + ".vsh");
-            Resource resource = resourceManager.getResourceOrThrow(vshLocation);
-            InputStream inputStream = resource.open();
-            String vshSrc = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
-
-            String[] fshPathInfo = this.decompose(fragShader, ':');
-            ResourceLocation fshLocation = ResourceLocation.fromNamespaceAndPath(fshPathInfo[0], "shaders/program/" + fshPathInfo[1] + ".fsh");
-            resource = resourceManager.getResourceOrThrow(fshLocation);
-            inputStream = resource.open();
-            String fshSrc = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
-
-            GlslConverter converter = new GlslConverter();
-
-            converter.process(vshSrc, fshSrc);
-            UBO ubo = converter.createUBO();
-            this.setUniformSuppliers(ubo);
-
-            Pipeline.Builder builder = new Pipeline.Builder(DefaultVertexFormat.POSITION, this.name);
-            builder.setUniforms(Collections.singletonList(ubo), converter.getSamplerList());
-            builder.compileShaders(this.name, converter.getVshConverted(), converter.getFshConverted());
-
-            this.pipeline = builder.createGraphicsPipeline();
-
-            VkGlProgram program = VkGlProgram.getProgram(this.programId);
-            program.bindPipeline(this.pipeline);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+            ShaderConversion.Input input = new ShaderConversion.Input(ShaderConversion.Kind.PROGRAM, this.name,
+                    vertexShader, fragShader, new ArrayList<>(this.samplerNames),
+                    new LinkedHashSet<>(this.uniformMap.keySet()), DefaultVertexFormat.POSITION.getElementAttributeNames());
+            result = ShaderConversion.convert(input, sourcesOf(resourceManager), true);
+        } catch (Throwable t) {
+            result = null;
+            ShaderFallbacks.record(id, "?", "convert", String.valueOf(t));
         }
+        if (result != null && !result.ok) {
+            ShaderFallbacks.record(id, result.pack, result.stage, result.shortMessage());
+            result = null;
+        } else if (result != null && !result.output.zeroUniforms().isEmpty()) {
+            Initializer.LOGGER.info("Iroh: shader {} ({}) converted; zero-filled uniforms {}", id, result.pack,
+                    result.output.zeroUniforms());
+        }
+
+        try {
+            build(result != null ? result : ShaderConversion.fallback(id));
+        } catch (Throwable t) {
+            ShaderFallbacks.record(id, result != null ? result.pack : "?", "pipeline", String.valueOf(t));
+            build(ShaderConversion.fallback(id));
+        }
+
+        VkGlProgram program = VkGlProgram.getProgram(this.programId);
+        program.bindPipeline(this.pipeline);
     }
 
-    private void setUniformSuppliers(UBO ubo) {
+    @Unique
+    private void build(ShaderConversion.Result result) {
+        UBO ubo = ShaderConversion.buildUbo(result.output);
+        UniformSlots.connect(ubo, this.uniformMap);
 
-        for(Uniform v_uniform : ubo.getUniforms()) {
-            com.mojang.blaze3d.shaders.Uniform uniform = this.uniformMap.get(v_uniform.getName());
+        List<ImageDescriptor> images = new ArrayList<>();
+        for (var s : result.output.samplers())
+            images.add(new ImageDescriptor(s.binding(), "sampler2D", s.name(), s.imageIdx()));
 
-            Supplier<MappedBuffer> supplier;
-            ByteBuffer byteBuffer;
+        Pipeline.Builder builder = new Pipeline.Builder(DefaultVertexFormat.POSITION, this.name);
+        List<UBO> ubos = new ArrayList<>();
+        ubos.add(ubo);
+        builder.setUniforms(ubos, images);
+        builder.setSPIRVs(result.vertex, result.fragment);
+        this.pipeline = builder.createGraphicsPipeline();
+    }
 
-            if (uniform.getType() <= 3) {
-                byteBuffer = MemoryUtil.memByteBuffer(uniform.getIntBuffer());
+    @Unique
+    private static ShaderSources sourcesOf(ResourceProvider provider) {
+        return new ShaderSources() {
+            @Override
+            public String read(String id) {
+                try {
+                    ResourceLocation loc = ResourceLocation.tryParse(id);
+                    if (loc == null)
+                        return null;
+                    var res = provider.getResource(loc);
+                    if (res.isEmpty())
+                        return null;
+                    try (InputStream in = res.get().open()) {
+                        return IOUtils.toString(in, StandardCharsets.UTF_8);
+                    }
+                } catch (Exception e) {
+                    return null;
+                }
             }
-            else if (uniform.getType() <= 10) {
-                byteBuffer = MemoryUtil.memByteBuffer(uniform.getFloatBuffer());
+
+            @Override
+            public String packOf(String id) {
+                try {
+                    ResourceLocation loc = ResourceLocation.tryParse(id);
+                    return loc == null ? "?" : provider.getResource(loc).map(r -> r.sourcePackId()).orElse("?");
+                } catch (Exception e) {
+                    return "?";
+                }
             }
-            else {
-                throw new RuntimeException("out of bounds value for uniform " + uniform);
-            }
-
-            MappedBuffer mappedBuffer = MappedBuffer.createFromBuffer(byteBuffer);
-            supplier = () -> mappedBuffer;
-
-            v_uniform.setSupplier(supplier);
-        }
-
+        };
     }
 
     private String[] decompose(String string, char c) {

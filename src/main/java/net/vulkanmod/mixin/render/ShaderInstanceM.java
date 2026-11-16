@@ -12,6 +12,13 @@ import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceProvider;
+import dev.elemore.iroh.shader.ShaderConversion;
+import dev.elemore.iroh.shader.ShaderFallbacks;
+import dev.elemore.iroh.shader.ShaderSources;
+import net.vulkanmod.gl.VkGlTexture;
+import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
+import net.vulkanmod.vulkan.texture.VTextureSelector;
+import net.minecraft.client.renderer.texture.MissingTextureAtlasSprite;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.gl.VkGlProgram;
 import net.vulkanmod.interfaces.ShaderMixed;
@@ -21,8 +28,6 @@ import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.shader.Pipeline;
 import net.vulkanmod.vulkan.shader.descriptor.UBO;
 import net.vulkanmod.vulkan.shader.layout.Uniform;
-import net.vulkanmod.vulkan.shader.converter.GlslConverter;
-import net.vulkanmod.vulkan.texture.VTextureSelector;
 import net.vulkanmod.vulkan.util.MappedBuffer;
 import org.apache.commons.io.IOUtils;
 import org.jetbrains.annotations.Nullable;
@@ -37,7 +42,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -69,8 +74,11 @@ public class ShaderInstanceM implements ShaderMixed {
     @Shadow @Final private VertexFormat vertexFormat;
     @Shadow @Final private int programId;
     @Shadow private static int lastProgramId;
-    @Unique private String vsPath;
-    @Unique private String fsName;
+    @Shadow public void setSampler(String string, Object object) {}
+    @Unique private String vertexName;
+    @Unique private String fragmentName;
+    /** converted from GLSL at load time (mod / pack shader), as opposed to Iroh's built-in Vulkan GLSL */
+    @Unique private boolean legacy;
 
     @Unique private GraphicsPipeline pipeline;
     @Unique boolean doUniformUpdate = false;
@@ -82,12 +90,24 @@ public class ShaderInstanceM implements ShaderMixed {
     @Inject(method = "<init>", at = @At("RETURN"))
     private void create(ResourceProvider resourceProvider, String name, VertexFormat format, CallbackInfo ci) {
         String configName = name;
-        JsonObject config = ShaderLoadUtil.getJsonConfig("core", configName);
+        try {
+            JsonObject config = ShaderLoadUtil.getJsonConfig("core", configName);
 
-        if (config == null) {
-            createLegacyShader(resourceProvider, format);
-        } else {
-            createPipeline(configName, format, config);
+            if (config == null) {
+                createLegacyShader(resourceProvider, format);
+            } else {
+                createPipeline(configName, format, config);
+            }
+        } catch (Throwable t) {
+            // P1-2a: never leave a ShaderInstance without a pipeline; vanilla and mods keep using it
+            Initializer.LOGGER.error("Iroh: shader {} could not be built", this.name, t);
+            String pack = "?";
+            try {
+                pack = sourcesOf(resourceProvider).packOf(idOf(ShaderConversion.coreProgramPath(this.vertexName, ".vsh")));
+            } catch (Throwable ignored) {
+            }
+            ShaderFallbacks.record(this.name, pack, "build", String.valueOf(t));
+            createFromResult(ShaderConversion.fallback(this.name), format);
         }
 
         VkGlProgram program = VkGlProgram.getProgram(this.programId);
@@ -96,20 +116,15 @@ public class ShaderInstanceM implements ShaderMixed {
 
     @Redirect(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/ShaderInstance;getOrCreate(Lnet/minecraft/server/packs/resources/ResourceProvider;Lcom/mojang/blaze3d/shaders/Program$Type;Ljava/lang/String;)Lcom/mojang/blaze3d/shaders/Program;"))
     private Program loadNames(ResourceProvider resourceProvider, Program.Type type, String name) {
-        String path;
-        if (this.name.contains(String.valueOf(ResourceLocation.NAMESPACE_SEPARATOR))) {
-            ResourceLocation location = ResourceLocation.tryParse(name);
-            path = location.withPath("shaders/core/%s".formatted(location.getPath())).toString();
-        } else {
-            path = "shaders/core/%s".formatted(name);
-        }
-
         switch (type) {
-            case VERTEX -> this.vsPath = path;
-            case FRAGMENT -> this.fsName = path;
+            case VERTEX -> this.vertexName = name;
+            case FRAGMENT -> this.fragmentName = name;
         }
 
-        return null;
+        // P1-2a: vanilla exposes these through getVertexProgram()/getFragmentProgram(); ImmediatelyFast reads
+        // getName() of the vanilla ones at the end of every shader reload. A null here froze the pack on the
+        // splash (NPE in the reload, rollback, recovery failure). id -1: close() is a no-op, no GL object.
+        return new Program(type, -1, name);
     }
 
     @Redirect(method = "<init>", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/shaders/Uniform;glBindAttribLocation(IILjava/lang/CharSequence;)V"))
@@ -147,10 +162,15 @@ public class ShaderInstanceM implements ShaderMixed {
 
                     if (texId != -1) {
                         RenderSystem.bindTexture(texId);
-                        RenderSystem.setShaderTexture(j, texId);
+                        // converted shaders read unit j directly (vanilla semantics); do not touch
+                        // RenderSystem's shader texture slots, other shaders read those
+                        if (!this.legacy)
+                            RenderSystem.setShaderTexture(j, texId);
                     }
                 }
             }
+            if (this.legacy)
+                RenderSystem.activeTexture(33984);
 
             for (com.mojang.blaze3d.shaders.Uniform uniform : this.uniforms) {
                 uniform.upload();
@@ -173,6 +193,12 @@ public class ShaderInstanceM implements ShaderMixed {
     public void setDefaultUniforms(VertexFormat.Mode mode, Matrix4f modelView, Matrix4f projection, Window window) {
         if (!this.doUniformUpdate)
             return;
+
+        if (this.legacy) {
+            // vanilla: Sampler0..11 follow RenderSystem's shader textures; apply() binds JSON sampler j to unit j
+            for (int i = 0; i < 12; ++i)
+                this.setSampler("Sampler" + i, RenderSystem.getShaderTexture(i));
+        }
 
         if (this.MODEL_VIEW_MATRIX != null) {
             this.MODEL_VIEW_MATRIX.set(modelView);
@@ -239,38 +265,15 @@ public class ShaderInstanceM implements ShaderMixed {
 
         Renderer renderer = Renderer.getInstance();
         renderer.bindGraphicsPipeline(pipeline);
-        VTextureSelector.bindShaderTextures(pipeline);
+        if (this.legacy)
+            bindUnitTextures(pipeline);
+        else
+            VTextureSelector.bindShaderTextures(pipeline);
         renderer.uploadAndBindUBOs(pipeline);
     }
 
     public void setupUniformSuppliers(UBO ubo) {
-        for (Uniform vUniform : ubo.getUniforms()) {
-            com.mojang.blaze3d.shaders.Uniform uniform = this.uniformMap.get(vUniform.getName());
-
-            Supplier<MappedBuffer> supplier;
-            ByteBuffer byteBuffer;
-
-            if (uniform == null) {
-                Initializer.LOGGER.error(String.format("Error: field %s not present in uniform map", vUniform.getName()));
-
-                int size = vUniform.getSize();
-                byteBuffer = MemoryUtil.memAlloc(size * 4);
-            }
-            else if (uniform.getType() <= 3) {
-                byteBuffer = MemoryUtil.memByteBuffer(uniform.getIntBuffer());
-            } else if (uniform.getType() <= 10) {
-                byteBuffer = MemoryUtil.memByteBuffer(uniform.getFloatBuffer());
-            } else {
-                throw new RuntimeException("out of bounds value for uniform " + uniform);
-            }
-
-
-            MappedBuffer mappedBuffer = MappedBuffer.createFromBuffer(byteBuffer);
-            supplier = () -> mappedBuffer;
-
-            vUniform.setSupplier(supplier);
-        }
-
+        dev.elemore.iroh.shader.UniformSlots.connect(ubo, this.uniformMap);
     }
 
     public Supplier<MappedBuffer> getUniformSupplier(String name) {
@@ -323,34 +326,94 @@ public class ShaderInstanceM implements ShaderMixed {
 
     @Unique
     private void createLegacyShader(ResourceProvider resourceProvider, VertexFormat format) {
+        ShaderSources sources = sourcesOf(resourceProvider);
+        ShaderConversion.Input input = new ShaderConversion.Input(ShaderConversion.Kind.CORE, this.name,
+                this.vertexName, this.fragmentName, new ArrayList<>(this.samplerNames),
+                new java.util.LinkedHashSet<>(this.uniformMap.keySet()), format.getElementAttributeNames());
+
+        ShaderConversion.Result result = ShaderConversion.convert(input, sources, true);
+        if (!result.ok) {
+            ShaderFallbacks.record(this.name, result.pack, result.stage, result.shortMessage());
+            result = ShaderConversion.fallback(this.name);
+        } else if (!result.output.zeroUniforms().isEmpty() || !result.output.notes().isEmpty()) {
+            Initializer.LOGGER.info("Iroh: shader {} ({}) converted; zero-filled uniforms {}; {}", this.name, result.pack,
+                    result.output.zeroUniforms(), result.output.notes());
+        }
+
         try {
-            String vertPath = this.vsPath + ".vsh";
-            Resource resource = resourceProvider.getResourceOrThrow(ResourceLocation.tryParse(vertPath));
-            InputStream inputStream = resource.open();
-            String vshSrc = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
-
-            String fragPath = this.fsName + ".fsh";
-            resource = resourceProvider.getResourceOrThrow(ResourceLocation.tryParse(fragPath));
-            inputStream = resource.open();
-            String fshSrc = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
-
-            GlslConverter converter = new GlslConverter();
-            Pipeline.Builder builder = new Pipeline.Builder(format, this.name);
-
-            converter.process(vshSrc, fshSrc);
-            UBO ubo = converter.createUBO();
-            this.setupUniformSuppliers(ubo);
-            this.setDoUniformsUpdate();
-
-            builder.setUniforms(Collections.singletonList(ubo), converter.getSamplerList());
-            builder.compileShaders(this.name, converter.getVshConverted(), converter.getFshConverted());
-
-            this.pipeline = builder.createGraphicsPipeline();
-            this.doUniformUpdate = true;
-        } catch (Exception e) {
-            Initializer.LOGGER.error("Error on shader {} conversion/compilation", this.name);
-            e.printStackTrace();
+            createFromResult(result, format);
+        } catch (Throwable t) {
+            // converted fine but the pipeline could not be made (e.g. format/shader mismatch)
+            ShaderFallbacks.record(this.name, result.pack, "pipeline", String.valueOf(t));
+            createFromResult(ShaderConversion.fallback(this.name), format);
         }
     }
-}
 
+    @Unique
+    private void createFromResult(ShaderConversion.Result result, VertexFormat format) {
+        UBO ubo = ShaderConversion.buildUbo(result.output);
+        this.setupUniformSuppliers(ubo);
+
+        List<ImageDescriptor> images = new ArrayList<>();
+        for (var s : result.output.samplers())
+            images.add(new ImageDescriptor(s.binding(), "sampler2D", s.name(), s.imageIdx()));
+
+        Pipeline.Builder builder = new Pipeline.Builder(format, this.name);
+        List<UBO> ubos = new ArrayList<>();
+        ubos.add(ubo);
+        builder.setUniforms(ubos, images);
+        builder.setSPIRVs(result.vertex, result.fragment);
+
+        this.pipeline = builder.createGraphicsPipeline();
+        this.legacy = true;
+        this.doUniformUpdate = true;
+    }
+
+    /** Converted shaders sample emulated GL texture unit {@code imageIdx}, filled by apply() as vanilla does. */
+    @Unique
+    private static void bindUnitTextures(GraphicsPipeline pipeline) {
+        for (ImageDescriptor d : pipeline.getImageDescriptors()) {
+            if (VTextureSelector.getImage(d.imageIdx) == null) {
+                VkGlTexture missing = VkGlTexture.getTexture(MissingTextureAtlasSprite.getTexture().getId());
+                VTextureSelector.bindTexture(d.imageIdx, missing.getVulkanImage());
+            }
+        }
+    }
+
+    @Unique
+    private static String idOf(String path) {
+        return path.indexOf(':') >= 0 ? path : "minecraft:" + path;
+    }
+
+    @Unique
+    private static ShaderSources sourcesOf(ResourceProvider provider) {
+        return new ShaderSources() {
+            @Override
+            public String read(String id) {
+                try {
+                    ResourceLocation loc = ResourceLocation.tryParse(id);
+                    if (loc == null)
+                        return null;
+                    var res = provider.getResource(loc);
+                    if (res.isEmpty())
+                        return null;
+                    try (InputStream in = res.get().open()) {
+                        return IOUtils.toString(in, StandardCharsets.UTF_8);
+                    }
+                } catch (Exception e) {
+                    return null;
+                }
+            }
+
+            @Override
+            public String packOf(String id) {
+                try {
+                    ResourceLocation loc = ResourceLocation.tryParse(id);
+                    return loc == null ? "?" : provider.getResource(loc).map(r -> r.sourcePackId()).orElse("?");
+                } catch (Exception e) {
+                    return "?";
+                }
+            }
+        };
+    }
+}

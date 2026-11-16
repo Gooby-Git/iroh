@@ -15,3 +15,7 @@ accessible field net/minecraft/client/renderer/texture/SpriteContents$FrameInfo 
 #1.20
 accessible field com/mojang/blaze3d/systems/RenderSystem vertexSorting Lcom/mojang/blaze3d/vertex/VertexSorting;
 accessible field net/minecraft/client/renderer/RenderStateShard name Ljava/lang/String;
+
+# P1-2a: ShaderInstance/EffectInstance under Iroh have no GL programs, but vanilla's getters must not return null
+accessible method com/mojang/blaze3d/shaders/Program <init> (Lcom/mojang/blaze3d/shaders/Program$Type;ILjava/lang/String;)V
+accessible method com/mojang/blaze3d/shaders/EffectProgram <init> (Lcom/mojang/blaze3d/shaders/Program$Type;ILjava/lang/String;)V
