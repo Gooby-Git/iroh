@@ -24,7 +24,9 @@ vec4 sample_lightmap(sampler2D lightMap, ivec2 uv) {
 }
 
 vec4 sample_lightmap2(sampler2D lightMap, uint uv) {
-    // packed light: block level in bits 4..7, sky level in bits 12..15 (vanilla uv = 16 * level)
+    // Compressed terrain vertex: block light level in bits 4..7, sky light level in bits 12..15 (vanilla uv = 16 * level).
+    // Truncating to whole levels matches OpenGL better than the full 0..255 value: Iroh's Sodium-style smooth lighting
+    // blends to fractional levels that vanilla's blend does not produce (P1-8b: calib-day grass +6% with 8 bits).
     const ivec2 lm = ivec2(bitfieldExtract(uv, 4, 4), bitfieldExtract(uv, 12, 4)) * 16;
     return minecraft_sample_lightmap(lightMap, lm);
 }

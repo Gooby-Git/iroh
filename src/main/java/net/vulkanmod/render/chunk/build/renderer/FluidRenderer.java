@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderHandlerRegistry
 import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRendering;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
+import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -128,8 +129,10 @@ public class FluidRenderer implements FluidRendering.DefaultRenderer {
         final int posY = blockPos.getY();
         final int posZ = blockPos.getZ();
 
-        boolean useAO = blockState.getLightEmission() == 0 && Minecraft.useAmbientOcclusion();
-        LightPipeline lightPipeline = useAO ? this.smoothLightPipeline : this.flatLightPipeline;
+        // P1-8b (td-1ffb2c): vanilla LiquidBlockRenderer never applies ambient occlusion. Every vertex gets one light
+        // value, the per-channel max of the fluid block and the block above, times the directional shade.
+        final int fluidLight = fluidLight(region, blockPos);
+        LightPipeline lightPipeline = this.flatLightPipeline;
 
         BlockState downState = getAdjBlockState(region, posX, posY, posZ, Direction.DOWN);
         BlockState upState = getAdjBlockState(region, posX, posY, posZ, Direction.UP);
@@ -471,7 +474,24 @@ public class FluidRenderer implements FluidRendering.DefaultRenderer {
     }
 
     private void updateQuad(ModelQuad quad, BlockPos blockPos, LightPipeline lightPipeline, Direction dir) {
-        lightPipeline.calculate(quad, blockPos, resources.quadLightData, null, dir, false);
+        final QuadLightData data = resources.quadLightData;
+        for (int i = 0; i < 4; i++) {
+            data.br[i] = 1.0f;
+            data.lm[i] = this.fluidLightPacked;
+        }
+    }
+
+    private int fluidLightPacked;
+
+    /** Vanilla LiquidBlockRenderer.getLightColor: per-channel max of this block and the one above. Returns the vanilla packing. */
+    private int fluidLight(BlockAndTintGetter region, BlockPos blockPos) {
+        final int a = LevelRenderer.getLightColor(region, blockPos);
+        final int b = LevelRenderer.getLightColor(region, mBlockPos.set(blockPos).move(Direction.UP));
+        final int block = Math.max(a & 0xFF, b & 0xFF);
+        final int sky = Math.max((a >> 16) & 0xFF, (b >> 16) & 0xFF);
+        // Iroh's terrain vertex light: block in bits 0..7, sky in bits 16..23, both on the 0..255 scale (vanilla block<<4, sky<<4)
+        this.fluidLightPacked = (sky << 16) | block;
+        return this.fluidLightPacked;
     }
 
     private void updateColor(float r, float g, float b, float brightness) {
