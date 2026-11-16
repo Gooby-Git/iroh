@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.elemore.iroh.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "gl.GL11CM",
+    "gl.GLM"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

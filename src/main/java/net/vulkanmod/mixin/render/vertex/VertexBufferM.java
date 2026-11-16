@@ -45,20 +45,21 @@ public class VertexBufferM {
     @Overwrite
     public static void unbind() {}
 
-    /**
-     * @author
-     */
-    @Overwrite
-    public void upload(MeshData meshData) {
+    // upload and uploadIndexBuffer are cancelled at HEAD instead of @Overwritten so the vanilla body stays in the
+    // class: GPUBooster (dsa.VertexBufferMixin @Redirect on uploadVertexBuffer / uploadIndexBuffer, require 1) and
+    // ImmediatelyFast (fast_buffer_upload.MixinVertexBuffer @Redirect on RenderSystem.glBufferData) aim their
+    // injectors at calls inside these two methods and would otherwise abort the boot (P1-1b, tools/injector_scan.py).
+    // The vanilla body is dead code: ci.cancel() always runs first.
+    @Inject(method = "upload", at = @At("HEAD"), cancellable = true)
+    private void irohUpload(MeshData meshData, CallbackInfo ci) {
         vbo.upload(meshData);
+        ci.cancel();
     }
 
-    /**
-     * @author
-     */
-    @Overwrite
-    public void uploadIndexBuffer(ByteBufferBuilder.Result result) {
+    @Inject(method = "uploadIndexBuffer(Lcom/mojang/blaze3d/vertex/ByteBufferBuilder$Result;)V", at = @At("HEAD"), cancellable = true)
+    private void irohUploadIndexBuffer(ByteBufferBuilder.Result result, CallbackInfo ci) {
         vbo.uploadIndexBuffer(result.byteBuffer());
+        ci.cancel();
     }
 
     /**

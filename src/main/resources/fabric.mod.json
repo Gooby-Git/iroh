@@ -24,7 +24,8 @@
     ]
   },
   "mixins": [
-    "iroh.mixins.json"
+    "iroh.mixins.json",
+    "iroh-compat.mixins.json"
   ],
   "accessWidener" : "vulkanmod.accesswidener",
 

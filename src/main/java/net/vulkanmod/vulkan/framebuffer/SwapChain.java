@@ -106,7 +106,12 @@ public class SwapChain extends Framebuffer {
             createInfo.imageColorSpace(surfaceFormat.colorSpace());
             createInfo.imageExtent(extent);
             createInfo.imageArrayLayers(1);
-            createInfo.imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+            int imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            // Screenshots and blits copy from the swapchain image
+            if ((surfaceProperties.capabilities.supportedUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0) {
+                imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            }
+            createInfo.imageUsage(imageUsage);
 
             Queue.QueueFamilyIndices indices = Queue.getQueueFamilies();
 

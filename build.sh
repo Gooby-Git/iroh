@@ -10,8 +10,10 @@ export PATH="$JAVA_HOME/bin:$PATH"
 INSTANCE="$HOME/.local/share/atlauncher/instances/Vulkan"
 
 if [ "${INSTALL:-0}" = 1 ]; then
-  # Match only a real game JVM (KnotClient + the instance path). [K] stops grep matching itself.
-  if ps -eo args | grep -F "[K]notClient" | grep -F "$INSTANCE" >/dev/null; then
+  # Match only a real game JVM: KnotClient AND --gameDir equal to the instance (P1-1 fix: the old
+  # `grep -F "[K]notClient"` searched for the literal text "[K]notClient" and never matched anything).
+  # Proctor clones run from ~/.cache/proctor/<name>/instance and do not block an install.
+  if ps -eo args | grep -E "KnotClient" | grep -E -- "--gameDir $INSTANCE/?( |$)" >/dev/null; then
     echo "build.sh: the Vulkan instance game is running; refusing to install." >&2
     exit 1
   fi

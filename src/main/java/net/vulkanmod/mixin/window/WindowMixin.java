@@ -54,7 +54,10 @@ public abstract class WindowMixin {
 
     @Shadow public abstract int getHeight();
 
-    @Redirect(method = "<init>", at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwWindowHint(II)V"))
+    // Iroh (P1-1): require = 0. GPUBooster (gb.tgl WindowMixin, priority 1001) redirects the same GL context hints and
+    // wins the conflict, so ours is skipped. Harmless: vulkanHint() below sets GLFW_CLIENT_API = NO_API right before
+    // glfwCreateWindow, after every vanilla (or GPUBooster) hint, so no GL context is requested either way.
+    @Redirect(method = "<init>", at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwWindowHint(II)V"), require = 0)
     private void redirect(int hint, int value) { }
 
     @Redirect(method = "<init>", at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwMakeContextCurrent(J)V"))

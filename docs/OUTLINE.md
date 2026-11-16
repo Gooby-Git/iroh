@@ -41,6 +41,18 @@ Improvements from `dev` (1.21.11) and tags up to 0.6.6 are back-ported where the
 newer Minecraft internals (card P2-1). The Modrinth 0.6.7+1.21.1 jar may be read for behaviour but
 its decompiled code is not copied unless matching source is published.
 
+Mod id decision (2026-11-15, from the P0-3 ledger): Iroh stays `iroh` and does **not** declare
+`provides: vulkanmod`. Reason: ImmediatelyFast and Resourcify declare `breaks: vulkanmod`, so
+providing it would stop the game from loading, and their jars may not be edited. Their GL hooks
+(listed in `pack-compat.md`) must instead be made harmless by `glshim/` and `compat/`. Two mods
+carry a real VulkanMod code path gated on the id `vulkanmod`: AsyncParticles
+(`VkCompParticleRenderer`, `RendererAddon`, calling `net.vulkanmod.vulkan.*`) and DreamDisplays
+(`RenderBackendCompat.isVulkanModLoaded`). Iroh keeps the upstream `net.vulkanmod` package names
+and API shapes those classes call, and `compat/asyncparticles`, `compat/dreamdisplays` turn their
+gates on with a runtime mixin into the gate method (a mixin applied in memory is not a change to
+their jar). Any class under `net.vulkanmod.vulkan.*` that those mods call is frozen API: changing
+its signature needs a retro entry.
+
 ---
 
 ## Phase 0: groundwork and build
@@ -362,7 +374,27 @@ what hardware, what is not.
 
 `R-<n>` cards are appended here by the orchestrator from `knowledge/retro-queue.md`.
 
-(none yet)
+**R-1 [O] Own scene target (RQ-6).** After gate `boot` is green on the unmodified base and before
+P1-2. Main render target becomes Iroh's own colour + depth images (size independent of the
+window, format selectable, RGBA8 at native size by default so Raster parity is unchanged), with one
+blit to the swapchain at the end of the frame after GUI. `Minecraft.getMainRenderTarget()` users
+(mods binding, reading, blitting or resizing it) keep working: list them from `pack-compat.md` and
+test each. Screenshots read from this target. Leave hooks, unused for now, for render scale, a
+float format and extra attachments. **Reads** `vulkanmod.md` sections on framebuffers and section
+11, `mc1211-render.md` RenderTarget section. **Owns** `vulkan/framebuffer/**`, `vulkan/pass/**`,
+`mixin/**/MainTarget*`. **Accept** gates boot + world green, parity scenes inside tolerance,
+screenshot works, window resize and fullscreen toggle scenario passes, no validation errors.
+
+**R-2 [S] Base bug fixes found by P0-4.** Confirm each by reading the code and the Vulkan spec,
+fix the confirmed ones in separate commits, leave the rest documented: (1) `ImageUtil.generateMipmaps`
+passing usage bits where layouts are expected; (2) swapchain images created without TRANSFER_SRC
+while screenshots / blits copy from them; (3) EXCLUSIVE-sharing buffers used on both transfer and
+graphics queues without ownership transfer; (4) pipeline cache never saved to disk; (5) no SPIR-V
+cache for converted shaders (add an on-disk cache keyed by source hash). Not in scope: the
+spherical-vs-cylinder terrain fog and other parity gaps (those are P1 work). **Owns** only the
+files each fix touches; no refactors. **Accept** `./build.sh` passes; each fix has a line in
+`vulkanmod.md` weak-spots list marked FIXED(commit) or NOT A BUG(reason). In-game proof comes
+with the first Iroh boot gate.
 
 ## Standing jobs
 

@@ -11,6 +11,9 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.Unique;
 
 import static org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
@@ -28,13 +31,16 @@ public class MTextureUtil {
         return VkGlTexture.genTextureId();
     }
 
-    /**
-     * @author
-     */
-    @Overwrite(remap = false)
-    public static void prepareImage(NativeImage.InternalGlFormat internalGlFormat, int id, int mipLevels, int width, int height) {
+    // P1-1b: HEAD-cancel instead of @Overwrite so the vanilla body (with its bind(int) call) stays in the class:
+    // owo braid.TextureUtilMixin injects at INVOKE TextureUtil.bind(I)V there (require 1). Retargeting a @Shadow call
+    // did not help (launch 2 crashed anyway). owo's handler would now sit in dead code, so its one effect, recording
+    // the texture size for Braid, is forwarded below.
+    @Inject(method = "prepareImage(Lcom/mojang/blaze3d/platform/NativeImage$InternalGlFormat;IIII)V", at = @At("HEAD"), cancellable = true)
+    private static void irohPrepareImage(NativeImage.InternalGlFormat internalGlFormat, int id, int mipLevels, int width, int height, CallbackInfo ci) {
+        ci.cancel();
+        dev.elemore.iroh.glshim.OwoCompat.registerTextureSize(id, width, height);
         RenderSystem.assertOnRenderThreadOrInit();
-        VkGlTexture.bindTexture(id);
+        GlStateManager._bindTexture(id);
         VkGlTexture glTexture = VkGlTexture.getBoundTexture();
         VulkanImage image = glTexture.getVulkanImage();
 
