@@ -86,6 +86,10 @@ public class UploadManager {
             VkBufferMemoryBarrier.Buffer bufferMemoryBarriers = VkBufferMemoryBarrier.calloc(1, stack);
             VkBufferMemoryBarrier bufferMemoryBarrier = bufferMemoryBarriers.get(0);
             bufferMemoryBarrier.sType$Default();
+            // calloc leaves both family indices at 0; the buffers are CONCURRENT (MemoryManager.createBuffer), where
+            // barriers must name VK_QUEUE_FAMILY_IGNORED (P1-8b, td-ed94f3).
+            bufferMemoryBarrier.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+            bufferMemoryBarrier.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
             bufferMemoryBarrier.buffer(src.getId());
             bufferMemoryBarrier.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT);
             bufferMemoryBarrier.dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT);
