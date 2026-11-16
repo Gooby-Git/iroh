@@ -83,7 +83,7 @@ public final class GlState {
      * True when the bound Vulkan framebuffer is an off-screen target. Iroh stores off-screen targets in GL's memory
      * layout (row 0 = GL's bottom row; positive Vulkan viewport height), so mods sampling them with GL texture
      * coordinates, reading them back, or blitting sub-rectangles get what GL gives. Only the main scene target is
-     * stored top-down (negative viewport height) because it is copied 1:1 to the swapchain; see RQ-11 / RQ-14.
+     * stored top-down (negative viewport height) because it is copied 1:1 to the swapchain; see RQ-11 / RQ-16.
      */
     public static boolean offscreenBound() {
         Renderer r = Renderer.getInstance();
@@ -202,7 +202,7 @@ public final class GlState {
     /**
      * GL semantics (factor = slope, units = constant) are tracked; Iroh applies them the way the base's
      * GlStateManagerM always did ({@code VRenderSystem.polygonOffset(units, factor)}), so raw-GL and GlStateManager
-     * callers get the same depth bias. Whether that swap is right is RQ-15.
+     * callers get the same depth bias. Whether that swap is right is RQ-17.
      */
     public static void polygonOffset(float factor, float units) {
         polygonOffsetFactor = factor;
