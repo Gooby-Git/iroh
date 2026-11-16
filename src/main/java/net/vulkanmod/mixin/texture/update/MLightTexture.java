@@ -58,7 +58,12 @@ public class MLightTexture {
     private void irohAfterUpload(float f, CallbackInfo ci) {
         CommandPool.CommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkGlTexture.getTexture(this.lightTexture.getId()).getVulkanImage().readOnlyLayout(stack, commandBuffer.getHandle());
+            var image = VkGlTexture.getTexture(this.lightTexture.getId()).getVulkanImage();
+            // P1-8b: LightTexture calls setFilter(true, true), but MNativeImage._upload resets the sampler to the
+            // upload call's blur=false (nearest) on every upload. Vanilla terrain shaders do a filtered lookup
+            // between lightmap texels (td-ad8c2f), so restore linear filtering after each upload.
+            image.updateTextureSampler(true, false, false);
+            image.readOnlyLayout(stack, commandBuffer.getHandle());
         }
         ImageUploadHelper.INSTANCE.submitCommands();
     }
