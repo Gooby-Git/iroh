@@ -3,11 +3,13 @@
   "minVersion": "0.8",
   "package": "dev.elemore.iroh.mixin",
   "compatibilityLevel": "JAVA_17",
+  "plugin": "dev.elemore.iroh.mixin.IrohCompatPlugin",
   "client": [
     "gl.GL11CM",
     "gl.GL15CM",
     "gl.GLM",
-    "reload.LoadingOverlayM"
+    "reload.LoadingOverlayM",
+    "compat.watermedia.GLEngineM"
   ],
   "injectors": {
     "defaultRequire": 1

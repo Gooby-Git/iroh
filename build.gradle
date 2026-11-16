@@ -14,7 +14,14 @@ loom {
 	accessWidenerPath = file("src/main/resources/vulkanmod.accesswidener")
 }
 
+// Compile-only signature stubs of other mods' public API (WaterMedia) for Iroh's compat mixins. Never packaged.
+sourceSets {
+	compatStubs
+}
+
 dependencies {
+	compileOnly sourceSets.compatStubs.output
+	testCompileOnly sourceSets.compatStubs.output
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	mappings loom.officialMojangMappings()

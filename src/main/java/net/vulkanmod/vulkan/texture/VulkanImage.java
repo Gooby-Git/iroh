@@ -566,7 +566,7 @@ public class VulkanImage {
 
         private static int formatSize(int format) {
             return switch (format) {
-                case VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
+                case VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM /* Iroh: video frames */,
                      VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT -> 4;
                 case VK_FORMAT_R8_UNORM -> 1;
