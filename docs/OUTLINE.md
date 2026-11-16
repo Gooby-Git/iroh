@@ -114,7 +114,13 @@ mods that hard-`depend` on sodium/iris need a decision per mod, recorded in the 
 **P1-2 [O] GL shim foundation.** `glshim/`: catalogue every GL / GlStateManager / RenderSystem call
 made by the 38 direct-GL mods (bytecode scan, script in `tools/glscan.py`), group by kind (state,
 framebuffer, texture, buffer, shader program, readback), and implement the kinds in order of how
-many mods use them. Unknown calls log once with the calling mod and are counted. **After** P1-1.
+many mods use them. Unknown calls log once with the calling mod and are counted. Findings from P1-1b that shape this card: the
+base's `GL11M`/`GL15M`/`GL30M` overwrite LWJGL's `GLxx` classes, but mods that call the core
+`GLxxC` classes bypass them, so move every shim to the `GLxxC` classes (as `GL11CM` does); shims
+answer only when no real GL context is current (DreamDisplays and WaterMedia create their own
+contexts and must keep the real driver); prefer `@Inject(HEAD, cancellable)` over `@Overwrite`
+so other mods' injectors keep their targets; `tools/injector_scan.py --gl` lists callers. The
+design-needed groups and their callers are in `pack-compat.md` section 0b. **After** P1-1.
 **Accept** `tools/glscan.py` report shows the coverage percentage; world gate green.
 
 **P1-3 [S] Sodium-facing API stand-ins.** For mods that only call Sodium's public API or options
