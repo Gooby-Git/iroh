@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.ints.Int2ReferenceOpenHashMap;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.VRenderSystem;
 import net.vulkanmod.vulkan.framebuffer.Framebuffer;
+import net.vulkanmod.vulkan.framebuffer.SceneTarget;
 import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import net.vulkanmod.vulkan.texture.ImageUtil;
 import net.vulkanmod.vulkan.texture.VulkanImage;
@@ -50,6 +51,16 @@ public class VkGlFramebuffer {
     }
 
     public static void bindFramebuffer(int target, int id) {
+        // Iroh (R-1): READ bindings only select the source of glBlitFramebuffer; they must not end or begin a
+        // render pass. Framebuffer 0 (null here) is the main scene target.
+        if (target == GL30.GL_READ_FRAMEBUFFER) {
+            readFramebuffer = id == 0 ? null : map.get(id);
+            return;
+        }
+        if (target == GL30.GL_FRAMEBUFFER) {
+            readFramebuffer = id == 0 ? null : map.get(id);
+        }
+
         if (id == 0) {
             Renderer.getInstance()
                     .endRenderPass();
@@ -121,8 +132,33 @@ public class VkGlFramebuffer {
 
     public static void glBlitFramebuffer(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1,
                                          int dstY1, int mask, int filter) {
-        // TODO: add missing parameters
-        ImageUtil.blitFramebuffer(boundFramebuffer.colorAttachment, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
+        // Iroh (R-1): source = READ framebuffer, destination = DRAW framebuffer; 0 (null) = main scene target.
+        // The 0.5.5 base always used the current swapchain image as source, ignored mask (a depth copy became a
+        // colour copy) and the rects.
+        VkGlFramebuffer draw = boundFramebuffer;
+        VkGlFramebuffer read = readFramebuffer;
+        SceneTarget scene = Renderer.getInstance().getMainPass().getSceneTarget();
+        if (scene == null)
+            return;
+
+        VulkanImage srcColor = read != null ? read.colorAttachment : scene.getColorAttachment();
+        VulkanImage srcDepth = read != null ? read.depthAttachment : scene.getDepthAttachment();
+        VulkanImage dstColor = draw != null ? draw.colorAttachment : scene.getColorAttachment();
+        VulkanImage dstDepth = draw != null ? draw.depthAttachment : scene.getDepthAttachment();
+
+        ImageUtil.blitFramebuffer(srcColor, srcDepth, dstColor, dstDepth,
+                                  srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+
+        // GL keeps bindings across a blit; the blit ended the render pass, so re-begin what was bound.
+        if (!Renderer.isRecording())
+            return;
+        if (draw != null && draw.framebuffer != null) {
+            beginRendering(draw);
+        } else {
+            Renderer.getInstance().getMainPass().rebindMainTarget();
+            boundFramebuffer = null;
+        }
+        readFramebuffer = read;
     }
 
     public static int glCheckFramebufferStatus(int target) {

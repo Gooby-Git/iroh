@@ -223,11 +223,21 @@ public class Renderer {
         p.pop();
         p.push("Frame_fence");
 
+        // Iroh (R-1): a 0x0 swapchain sets skipRendering (and Minecraft.noRender) until the next swapchain
+        // update, which used to come only from a GLFW framebuffer-size event. A surface that regains its
+        // extent without that event left the game frozen on the last presented frame (no acquire, no
+        // render, no present). Poll the surface while skipping instead.
+        if (skipRendering && !swapChainUpdate && swapChain.getWidth() == 0 && SwapChain.surfaceHasExtent()) {
+            Initializer.LOGGER.info("Iroh: surface extent is back while rendering was skipped; recreating the swapchain");
+            swapChainUpdate = true;
+        }
+
         if (swapChainUpdate) {
             recreateSwapChain();
             swapChainUpdate = false;
 
-            if (getSwapChain().getWidth() == 0 && getSwapChain().getHeight() == 0) {
+            if (getSwapChain().getWidth() == 0 || getSwapChain().getHeight() == 0) {
+                Initializer.LOGGER.info("Iroh: swapchain extent is 0, skipping rendering until the surface has a size");
                 skipRendering = true;
                 Minecraft.getInstance().noRender = true;
             } else {

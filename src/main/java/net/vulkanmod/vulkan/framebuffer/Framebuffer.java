@@ -30,7 +30,7 @@ public class Framebuffer {
     boolean hasColorAttachment;
     boolean hasDepthAttachment;
 
-    private VulkanImage colorAttachment;
+    protected VulkanImage colorAttachment;
     protected VulkanImage depthAttachment;
 
     private final Reference2LongArrayMap<RenderPass> renderpassToFramebufferMap = new Reference2LongArrayMap<>();
