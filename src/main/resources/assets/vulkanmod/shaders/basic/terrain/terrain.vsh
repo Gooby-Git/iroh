@@ -5,6 +5,7 @@
 
 layout (binding = 0) uniform UniformBufferObject {
     mat4 MVP;
+    int FogShape;
 };
 
 layout (push_constant) uniform pushConstant {
@@ -50,7 +51,7 @@ void main() {
     const vec4 pos = getVertexPosition();
     gl_Position = MVP * pos;
 
-    vertexDistance = fog_distance(pos.xyz, 0);
+    vertexDistance = fog_distance(pos.xyz, FogShape);
     const vec4 Color = unpackUnorm4x8(PackedColor);
     vertexColor = Color * sample_lightmap2(Sampler2, Position.a);
 
