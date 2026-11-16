@@ -162,8 +162,12 @@ public class Renderer {
     }
 
     private void createSyncObjects() {
+        // Iroh (P1-1): render-finished semaphores are per swapchain IMAGE, not per frame in flight. Presentation
+        // holds the semaphore until that image is re-acquired, so reusing it by frame index re-signals a semaphore
+        // the swapchain may still wait on (validation: "being signaled by VkQueue ... may still be in use by VkSwapchainKHR").
+        int imageCount = swapChain.getImagesNum();
         imageAvailableSemaphores = new ArrayList<>(framesNum);
-        renderFinishedSemaphores = new ArrayList<>(framesNum);
+        renderFinishedSemaphores = new ArrayList<>(imageCount);
         inFlightFences = new ArrayList<>(framesNum);
 
         try (MemoryStack stack = stackPush()) {
@@ -175,25 +179,23 @@ public class Renderer {
             fenceInfo.sType(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
             fenceInfo.flags(VK_FENCE_CREATE_SIGNALED_BIT);
 
-            LongBuffer pImageAvailableSemaphore = stack.mallocLong(1);
-            LongBuffer pRenderFinishedSemaphore = stack.mallocLong(1);
+            LongBuffer pSemaphore = stack.mallocLong(1);
             LongBuffer pFence = stack.mallocLong(1);
 
             for (int i = 0; i < framesNum; i++) {
-
-                if (vkCreateSemaphore(device, semaphoreInfo, null, pImageAvailableSemaphore) != VK_SUCCESS
-                    || vkCreateSemaphore(device, semaphoreInfo, null, pRenderFinishedSemaphore) != VK_SUCCESS
+                if (vkCreateSemaphore(device, semaphoreInfo, null, pSemaphore) != VK_SUCCESS
                     || vkCreateFence(device, fenceInfo, null, pFence) != VK_SUCCESS) {
-
                     throw new RuntimeException("Failed to create synchronization objects for the frame: " + i);
                 }
-
-                imageAvailableSemaphores.add(pImageAvailableSemaphore.get(0));
-                renderFinishedSemaphores.add(pRenderFinishedSemaphore.get(0));
+                imageAvailableSemaphores.add(pSemaphore.get(0));
                 inFlightFences.add(pFence.get(0));
-
             }
 
+            for (int i = 0; i < imageCount; i++) {
+                if (vkCreateSemaphore(device, semaphoreInfo, null, pSemaphore) != VK_SUCCESS)
+                    throw new RuntimeException("Failed to create render-finished semaphore for swapchain image: " + i);
+                renderFinishedSemaphores.add(pSemaphore.get(0));
+            }
         }
     }
 
@@ -325,7 +327,7 @@ public class Renderer {
             submitInfo.waitSemaphoreCount(1);
             submitInfo.pWaitSemaphores(stack.longs(imageAvailableSemaphores.get(currentFrame)));
             submitInfo.pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT));
-            submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(currentFrame)));
+            submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
             submitInfo.pCommandBuffers(stack.pointers(currentCmdBuffer));
 
             vkResetFences(device, inFlightFences.get(currentFrame));
@@ -338,7 +340,7 @@ public class Renderer {
             VkPresentInfoKHR presentInfo = VkPresentInfoKHR.calloc(stack);
             presentInfo.sType(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
 
-            presentInfo.pWaitSemaphores(stack.longs(renderFinishedSemaphores.get(currentFrame)));
+            presentInfo.pWaitSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
 
             presentInfo.swapchainCount(1);
             presentInfo.pSwapchains(stack.longs(swapChain.getId()));
@@ -521,7 +523,9 @@ public class Renderer {
         for (int i = 0; i < framesNum; ++i) {
             vkDestroyFence(device, inFlightFences.get(i), null);
             vkDestroySemaphore(device, imageAvailableSemaphores.get(i), null);
-            vkDestroySemaphore(device, renderFinishedSemaphores.get(i), null);
+        }
+        for (long semaphore : renderFinishedSemaphores) {
+            vkDestroySemaphore(device, semaphore, null);
         }
     }
 

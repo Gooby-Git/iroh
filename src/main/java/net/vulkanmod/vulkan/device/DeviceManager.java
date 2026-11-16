@@ -213,7 +213,8 @@ public abstract class DeviceManager {
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
-            createInfo.ppEnabledLayerNames(Vulkan.ENABLE_VALIDATION_LAYERS ? asPointerBuffer(Vulkan.VALIDATION_LAYERS) : null);
+            // Iroh (P1-1): device layers are deprecated since Vulkan 1.0 (VUID-VkDeviceCreateInfo-enabledLayerCount-12384).
+            createInfo.ppEnabledLayerNames(null);
 
             PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
 

@@ -38,24 +38,21 @@ import static org.lwjgl.vulkan.VK12.VK_API_VERSION_1_2;
 
 public class Vulkan {
 
-    public static final boolean ENABLE_VALIDATION_LAYERS = false;
-//    public static final boolean ENABLE_VALIDATION_LAYERS = true;
+    // Iroh: validation is a runtime switch, not a compile-time constant. On when -Diroh.validation=true,
+    // IROH_VALIDATION=1, or VK_INSTANCE_LAYERS names the Khronos layer (the Proctor gate recipe).
+    // Messages go to latest.log as "Validation Error: ..." / "Validation Warning: ..." so gates can see them.
+    public static boolean ENABLE_VALIDATION_LAYERS = validationRequested();
 
     //    public static final boolean DYNAMIC_RENDERING = true;
     public static final boolean DYNAMIC_RENDERING = false;
 
-    public static final Set<String> VALIDATION_LAYERS;
+    public static final Set<String> VALIDATION_LAYERS = new HashSet<>(List.of("VK_LAYER_KHRONOS_validation"));
 
-    static {
-        if (ENABLE_VALIDATION_LAYERS) {
-            VALIDATION_LAYERS = new HashSet<>();
-            VALIDATION_LAYERS.add("VK_LAYER_KHRONOS_validation");
-//            VALIDATION_LAYERS.add("VK_LAYER_KHRONOS_synchronization2");
-
-        } else {
-            // We are not going to use it, so we don't create it
-            VALIDATION_LAYERS = null;
-        }
+    private static boolean validationRequested() {
+        if (Boolean.getBoolean("iroh.validation") || "1".equals(System.getenv("IROH_VALIDATION")))
+            return true;
+        String layers = System.getenv("VK_INSTANCE_LAYERS");
+        return layers != null && layers.contains("VK_LAYER_KHRONOS_validation");
     }
 
     public static final Set<String> REQUIRED_EXTENSION = getRequiredExtensionSet();
@@ -70,24 +67,32 @@ public class Vulkan {
         return new HashSet<>(extensions);
     }
 
+    private static final java.util.Map<Integer, Integer> VALIDATION_SEEN = new java.util.concurrent.ConcurrentHashMap<>();
+    public static final java.util.concurrent.atomic.AtomicInteger VALIDATION_ERRORS = new java.util.concurrent.atomic.AtomicInteger();
+
     private static int debugCallback(int messageSeverity, int messageType, long pCallbackData, long pUserData) {
-
         VkDebugUtilsMessengerCallbackDataEXT callbackData = VkDebugUtilsMessengerCallbackDataEXT.create(pCallbackData);
+        boolean error = (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
+        if (error)
+            VALIDATION_ERRORS.incrementAndGet();
 
-        String s;
-        if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-            s = "\u001B[31m" + callbackData.pMessageString();
+        // Log the first 5 of each message id, then only a count every 1000.
+        int n = VALIDATION_SEEN.merge(callbackData.messageIdNumber(), 1, Integer::sum);
+        if (n > 5 && n % 1000 != 0)
+            return VK_FALSE;
 
-//            System.err.println("Stack dump:");
-//            Thread.dumpStack();
-        } else {
-            s = callbackData.pMessageString();
+        String msg = callbackData.pMessageString() + (n > 5 ? " (seen " + n + " times)" : "");
+        // GENERAL-only messages come from the loader and other layers (e.g. a broken implicit layer), not from
+        // Iroh's API use: logged as warnings so the gate only fails on real validation findings.
+        if ((messageType & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)) == 0) {
+            if (error) VALIDATION_ERRORS.decrementAndGet();
+            net.vulkanmod.Initializer.LOGGER.warn("Vulkan loader/layer message: {}", msg);
+            return VK_FALSE;
         }
-
-        System.err.println(s);
-
-        if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
-            System.nanoTime();
+        if (error)
+            net.vulkanmod.Initializer.LOGGER.error("Validation Error: {}", msg);
+        else
+            net.vulkanmod.Initializer.LOGGER.warn("Validation Warning: {}", msg);
 
         return VK_FALSE;
     }
@@ -204,8 +209,12 @@ public class Vulkan {
     private static void createInstance() {
 
         if (ENABLE_VALIDATION_LAYERS && !checkValidationLayerSupport()) {
-            throw new RuntimeException("Validation requested but not supported");
+            // Fails the Proctor gate on purpose: a gate that asked for validation must not pass without it.
+            net.vulkanmod.Initializer.LOGGER.error("Validation Error: VK_LAYER_KHRONOS_validation was requested but is not installed (see iroh knowledge/proctor.md); running without validation");
+            ENABLE_VALIDATION_LAYERS = false;
         }
+        if (ENABLE_VALIDATION_LAYERS)
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: Vulkan validation layer enabled");
 
         try (MemoryStack stack = stackPush()) {
 
