@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODS = os.path.expanduser("~/.local/share/atlauncher/instances/Vulkan/mods")
 IROH = None
 GL = False
+GLBOOT = False
 ONLY = None
 a = sys.argv[1:]
 while a:
@@ -29,6 +30,7 @@ while a:
     if x == "--mods": MODS = a.pop(0)
     elif x == "--iroh": IROH = a.pop(0)
     elif x == "--gl": GL = True
+    elif x == "--glboot": GLBOOT = True
     elif x == "--only": ONLY = a.pop(0)
 if IROH is None:
     IROH = sorted(p for p in glob.glob(ROOT + "/build/libs/iroh-*.jar") if "sources" not in p)[0]
@@ -118,7 +120,9 @@ def parse_class(b, want_code=False):
             i += ln
         return i
     acc, this, sup = struct.unpack(">HHH", b[i:i+6]); i += 6
-    nif = struct.unpack(">H", b[i:i+2])[0]; i += 2 + 2 * nif
+    nif = struct.unpack(">H", b[i:i+2])[0]
+    ifaces = [CL(struct.unpack(">H", b[i+2+2*k:i+4+2*k])[0]) for k in range(nif)]
+    i += 2 + 2 * nif
     nf = struct.unpack(">H", b[i:i+2])[0]; i += 2
     fields = []
     for _ in range(nf):
@@ -131,7 +135,7 @@ def parse_class(b, want_code=False):
         an = []; code = []; i = attrs(i, an, code if want_code else None)
         methods.append(dict(name=U(ni), desc=U(di), acc=a_, ann=an, code=code[0] if code else None))
     can = []; i = attrs(i, can)
-    return dict(this=CL(this), sup=CL(sup) if sup else None, ann=can, methods=methods, fields=fields, cp=cp, ref=ref, U=U, CL=CL, acc=acc)
+    return dict(this=CL(this), sup=CL(sup) if sup else None, ifaces=ifaces, ann=can, methods=methods, fields=fields, cp=cp, ref=ref, U=U, CL=CL, acc=acc)
 
 def invokes(cls, m):
     """(opcode, owner, name, desc) for every invoke / get/put field in a method body."""
@@ -143,7 +147,7 @@ def invokes(cls, m):
         op = bc[p]
         if op in (0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9):
             out.append((op,) + cls["ref"](struct.unpack(">H", bc[p+1:p+3])[0])); p += 5 if op == 0xb9 else 3
-        elif op == 0xba: p += 5
+        elif op == 0xba: out.append((op, "", "", "")); p += 5
         elif op == 0xc4: p += 6 if bc[p+1] == 0x84 else 4
         elif op == 0xaa:
             p += 1; p = (p + 3) & ~3
@@ -409,6 +413,8 @@ def main():
 
     if GL:
         gl_scan(jars)
+    if GLBOOT:
+        gl_boot(jars, pack)
 
 def gl_scan(jars):
     print("\n## C. direct org/lwjgl/opengl calls per jar (class, kind, function list)\n")
@@ -434,5 +440,121 @@ def glscan_zip(z, label):
                     if o.startswith("org/lwjgl/opengl/"): calls[m["name"]].add(f"{o.split('/')[-1]}.{nm}")
             if calls:
                 print(f"{label} :: {cls['this']} :: " + " | ".join(f"{k}: {','.join(sorted(v))}" for k, v in sorted(calls.items())))
+
+BOOT_CLASSES = {"net/minecraft/client/Minecraft", "com/mojang/blaze3d/platform/Window", "com/mojang/blaze3d/systems/RenderSystem",
+                "net/minecraft/client/renderer/GameRenderer", "net/minecraft/client/gui/screens/TitleScreen",
+                "net/minecraft/client/gui/screens/LoadingOverlay", "net/minecraft/client/gui/screens/Screen",
+                "net/minecraft/client/gui/screens/Overlay", "net/minecraft/client/gui/GuiGraphics", "net/minecraft/client/gui/Gui",
+                "net/minecraft/client/renderer/texture/TextureManager", "net/minecraft/client/renderer/texture/TextureAtlas",
+                "net/minecraft/client/renderer/texture/AbstractTexture", "net/minecraft/client/renderer/texture/SimpleTexture",
+                "net/minecraft/client/renderer/ShaderInstance", "com/mojang/blaze3d/pipeline/RenderTarget",
+                "net/minecraft/client/renderer/LevelRenderer", "net/minecraft/server/packs/resources/ReloadableResourceManager",
+                "net/minecraft/client/gui/font/FontManager", "net/minecraft/client/renderer/RenderType"}
+def tr_cls(n): return CM.get(n, n)
+
+def gl_boot(jars, pack_mixins):
+    """Reachability over each jar's own bytecode (over-approximate: virtual calls match by name+desc anywhere in the jar,
+    every lambda$ of a reached class counts) from: entrypoint classes, ResourceReloader implementations, <clinit> of any
+    reached class, and mixin handlers aimed at boot-path Minecraft classes."""
+    mix_by_mod = collections.defaultdict(list)
+    for r in pack_mixins: mix_by_mod[r["mod"]].append(r)
+    for f in jars:
+        if ONLY and ONLY not in f: continue
+        try: z = zipfile.ZipFile(os.path.join(MODS, f))
+        except Exception: continue
+        units = [(f, z)]
+        for n in z.namelist():
+            if n.startswith("META-INF/jars/") and n.endswith(".jar"):
+                try: units.append((f + "!" + os.path.basename(n), zipfile.ZipFile(io.BytesIO(z.read(n)))))
+                except Exception: pass
+        for label, zz in units:
+            gl_boot_unit(label, zz, mix_by_mod.get(label, []))
+
+def gl_boot_unit(label, z, mixrecs):
+    classes = {}
+    for n in z.namelist():
+        if n.endswith(".class") and not n.startswith("META-INF/"):
+            b = z.read(n)
+            try: classes[n[:-6]] = parse_class(b, want_code=True)
+            except Exception: pass
+    if not any(b"org/lwjgl/opengl/" in z.read(n + ".class") for n in classes): return
+    subs = collections.defaultdict(set)   # class -> all transitive subtypes / implementors inside the jar
+    direct = collections.defaultdict(set)
+    for cn, c in classes.items():
+        for sup in [c["sup"]] + c["ifaces"]:
+            if sup: direct[sup].add(cn)
+    def all_subs(x, acc=None):
+        acc = acc if acc is not None else set()
+        for y in direct.get(x, ()):
+            if y not in acc: acc.add(y); all_subs(y, acc)
+        return acc
+    def resolve(o, nm, d, virtual):
+        """methods (class, mobj) a call to o.nm:d can reach inside this jar (CHA)."""
+        out = []; cur = o; seen_c = set()
+        # nearest definition up the superclass chain
+        while cur in classes and cur not in seen_c:
+            seen_c.add(cur)
+            hit = [m2 for m2 in classes[cur]["methods"] if m2["name"] == nm and m2["desc"] == d]
+            if hit: out.append((cur, hit[0])); break
+            cur = classes[cur]["sup"]
+        if virtual:
+            for sc in all_subs(o):
+                for m2 in classes[sc]["methods"]:
+                    if m2["name"] == nm and m2["desc"] == d: out.append((sc, m2))
+        return out
+    roots = []; why = {}
+    try: fmj = jload(z.read("fabric.mod.json"))
+    except Exception: fmj = {}
+    for kind, lst in (fmj.get("entrypoints") or {}).items():
+        for e in lst:
+            cn = (e if isinstance(e, str) else e.get("value", "")).split("::")[0].replace(".", "/")
+            if cn in classes:
+                for m in classes[cn]["methods"]: roots.append((cn, m)); why[(cn, m["name"], m["desc"])] = f"entrypoint:{kind}"
+    for cn, c in classes.items():
+        if any("ResourceReloader" in i or "ResourceManagerReloadListener" in i or "PreparableReloadListener" in i for i in c["ifaces"] + [c["sup"] or ""]):
+            for m in c["methods"]: roots.append((cn, m)); why[(cn, m["name"], m["desc"])] = "reload listener"
+    for r in mixrecs:
+        if any(tr_cls(t) in BOOT_CLASSES for t in r["targets"]):
+            for inj in r["injectors"]:
+                roots.append((r["cls"], inj["meth_obj"])); why[(r["cls"], inj["meth_obj"]["name"], inj["meth_obj"]["desc"])] = "mixin into " + tr_cls(r["targets"][0]).split("/")[-1] + " " + "|".join(tr(x).split("(")[0].split(";")[-1] for x in inj["methods"])
+    seen = {}; stack = []
+    for cn, m in roots:
+        k = (cn, m["name"], m["desc"])
+        if k not in seen: seen[k] = (None, why[k]); stack.append((cn, m))
+    found = collections.defaultdict(dict)
+    def push(cn, m, par, src):
+        k = (cn, m["name"], m["desc"])
+        if k in seen: return
+        seen[k] = (par, src); stack.append((cn, m))
+    clinit_done = set()
+    def chain(k):
+        out = []
+        while k and len(out) < 8:
+            out.append(f"{k[0].split('/')[-1]}.{k[1]}"); k = seen[k][0]
+        return " <- ".join(out)
+    while stack:
+        cn, m = stack.pop(); k0 = (cn, m["name"], m["desc"]); c = classes[cn]
+        src = seen[k0][1]
+        for op, o, nm, d in invokes(c, m):
+            if op == 0xba:
+                for m2 in c["methods"]:
+                    if m2["name"].startswith("lambda$"): push(cn, m2, k0, src)
+                continue
+            if o.startswith("org/lwjgl/opengl/"):
+                fk = f"{o.split('/')[-1]}.{nm}"
+                if fk not in found[label]: found[label][fk] = chain(k0) + "   [" + src + "]"
+                continue
+            if o in classes:
+                if o not in clinit_done:
+                    clinit_done.add(o)
+                    for m2 in classes[o]["methods"]:
+                        if m2["name"] == "<clinit>": push(o, m2, k0, src)
+                virtual = op in (0xb6, 0xb9)
+                for cn2, m2 in resolve(o, nm, d, virtual): push(cn2, m2, k0, src)
+                if nm == "<init>": pass
+    for lab, fns in found.items():
+        print(f"\n{lab}")
+        for fn, ch in sorted(fns.items()):
+            print(f"   {fn:44s} {ch}")
 
 main()

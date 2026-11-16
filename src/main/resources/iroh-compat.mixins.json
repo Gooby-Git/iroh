@@ -4,7 +4,8 @@
   "package": "dev.elemore.iroh.mixin",
   "compatibilityLevel": "JAVA_17",
   "client": [
-    "gl.GL11CM"
+    "gl.GL11CM",
+    "gl.GLM"
   ],
   "injectors": {
     "defaultRequire": 1
