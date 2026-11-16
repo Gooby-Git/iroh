@@ -113,6 +113,14 @@ public class MemoryManager {
             bufferInfo.size(size);
             bufferInfo.usage(usage);
 
+            // Buffers are written on the transfer queue and read on the graphics queue.
+            // Without ownership transfers, that requires CONCURRENT sharing when the families differ.
+            Queue.QueueFamilyIndices queueFamilies = Queue.getQueueFamilies();
+            if (queueFamilies.transferFamily != queueFamilies.graphicsFamily) {
+                bufferInfo.sharingMode(VK_SHARING_MODE_CONCURRENT);
+                bufferInfo.pQueueFamilyIndices(stack.ints(queueFamilies.graphicsFamily, queueFamilies.transferFamily));
+            }
+
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack);
             allocationInfo.requiredFlags(properties);
 
