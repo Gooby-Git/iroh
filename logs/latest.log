@@ -1,6 +1,6 @@
-[15:18:52] [main/INFO]: Iroh GL shim: safety net over 2228 GL entry points (75 emulated, 75 handlers registered); calls without a GL context no longer abort
-[15:18:52] [main/INFO]: Iroh GL shim: ? called glCreateBuffers (unhandled) [?]
-[15:18:52] [main/INFO]: Iroh GL shim: ? called glCreateProgram (unhandled) [?]
-[15:18:52] [main/INFO]: Iroh GL shim: ? called glGetUniformLocation (unhandled) [?]
-[15:18:52] [main/INFO]: Iroh GL shim: ? called glGetIntegerv(0x7fff0) (unhandled) [?]
-[15:18:52] [main/INFO]: Iroh GL shim: ? called glCompressedTexImage2D (unhandled) [?]
+[15:22:39] [main/INFO]: Iroh GL shim: safety net over 2228 GL entry points (75 emulated, 75 handlers registered); calls without a GL context no longer abort
+[15:22:39] [main/INFO]: Iroh GL shim: ? called glCreateBuffers (unhandled) [?]
+[15:22:39] [main/INFO]: Iroh GL shim: ? called glCreateProgram (unhandled) [?]
+[15:22:39] [main/INFO]: Iroh GL shim: ? called glGetUniformLocation (unhandled) [?]
+[15:22:39] [main/INFO]: Iroh GL shim: ? called glGetIntegerv(0x7fff0) (unhandled) [?]
+[15:22:39] [main/INFO]: Iroh GL shim: ? called glCompressedTexImage2D (unhandled) [?]

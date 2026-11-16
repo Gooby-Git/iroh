@@ -141,4 +141,5 @@ tasks.register('glNetTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.gltest.GlNetTest'
+	jvmArgs '-Diroh.glnet.anythread=true' // no Minecraft render thread in the test
 }

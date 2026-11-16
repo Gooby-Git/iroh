@@ -29,9 +29,10 @@ public class Initializer implements ClientModInitializer {
 
 		LOGGER.info("== VulkanMod ==");
 
-		// Iroh P1-2: GL safety net (normally installed when LWJGL's GL class initialises; idempotent)
-		dev.elemore.iroh.glshim.GlNet.install();
 		Platform.init();
+		// Iroh P1-2: GL safety net (normally installed when LWJGL's GL class initialises; idempotent; after
+		// Platform.init so LWJGL's core natives are loaded before ThreadLocalUtil is touched)
+		dev.elemore.iroh.glshim.GlNet.install();
 		VideoModeManager.init();
 
 		var configPath = FabricLoader.getInstance()

@@ -89,7 +89,7 @@ public final class GlState {
         Renderer r = Renderer.getInstance();
         if (r == null) return false;
         Framebuffer fb = r.getBoundFramebuffer();
-        return fb != null && !(fb instanceof SceneTarget);
+        return fb != null && !(fb instanceof SceneTarget) && !(fb instanceof net.vulkanmod.vulkan.framebuffer.SwapChain);
     }
 
     private static int boundHeight() {

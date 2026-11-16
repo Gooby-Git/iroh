@@ -252,6 +252,17 @@ public final class GlNet {
         });
     }
 
+    /** Test hook ({@code -Diroh.glnet.anythread=true}, glNetTest only): run handlers on any thread. */
+    private static final boolean ANY_THREAD = Boolean.getBoolean("iroh.glnet.anythread");
+
+    private static boolean onRenderThread() {
+        try {
+            return com.mojang.blaze3d.systems.RenderSystem.isOnRenderThreadOrInit();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private static final class Stub implements CallbackI {
         private final String fn;
         private final Handler handler;
@@ -276,6 +287,13 @@ public final class GlNet {
             if (handler == null) {
                 try {
                     GlShim.unhandled(fn);
+                } catch (Throwable ignored) {
+                }
+            } else if (!ANY_THREAD && !onRenderThread()) {
+                // Iroh's GL emulation is render-thread state (Vulkan recording, VkGl* maps). A context-less GL call
+                // from another thread (async uploaders, decoders) is answered like an unhandled one.
+                try {
+                    GlShim.unhandled(fn + " (off render thread)");
                 } catch (Throwable ignored) {
                 }
             } else {
