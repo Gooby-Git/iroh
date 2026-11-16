@@ -40,12 +40,17 @@ public class SwapChain extends Framebuffer {
     public boolean isBGRAformat;
     private boolean vsync = false;
 
+    // Iroh (R-1): nothing renders into the swapchain any more. Each frame the scene target
+    // (SceneTarget) is copied/blitted into the acquired image at the tail of DefaultMainPass.end, so the
+    // swapchain has no depth image and needs TRANSFER_DST usage.
+    private boolean canBlitTo;
+
     public SwapChain() {
-        this.attachmentCount = 2;
+        this.attachmentCount = 1;
         this.depthFormat = Vulkan.getDefaultDepthFormat();
 
         this.hasColorAttachment = true;
-        this.hasDepthAttachment = true;
+        this.hasDepthAttachment = false;
 
         recreate();
     }
@@ -73,7 +78,8 @@ public class SwapChain extends Framebuffer {
             int presentMode = getPresentMode(surfaceProperties.presentModes);
             VkExtent2D extent = getExtent(surfaceProperties.capabilities);
 
-            if (extent.width() == 0 && extent.height() == 0) {
+            // Iroh (R-1): either side 0 is unusable (a 0xN swapchain is invalid), not only both.
+            if (extent.width() == 0 || extent.height() == 0) {
                 if (this.swapChainId != VK_NULL_HANDLE) {
                     this.swapChainImages.forEach(image -> vkDestroyImageView(device, image.getImageView(), null));
                     vkDestroySwapchainKHR(device, this.swapChainId, null);
@@ -106,11 +112,14 @@ public class SwapChain extends Framebuffer {
             createInfo.imageColorSpace(surfaceFormat.colorSpace());
             createInfo.imageExtent(extent);
             createInfo.imageArrayLayers(1);
-            int imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-            // Screenshots and blits copy from the swapchain image
-            if ((surfaceProperties.capabilities.supportedUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0) {
-                imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            int imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            int supportedUsage = surfaceProperties.capabilities.supportedUsageFlags();
+            // Iroh (R-1): the frame ends with a copy/blit from the scene target into the acquired image.
+            if ((supportedUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
+                throw new RuntimeException("Iroh: the surface does not support TRANSFER_DST swapchain images "
+                        + "(supportedUsageFlags=0x" + Integer.toHexString(supportedUsage) + "); the final scene copy needs it");
             }
+            imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
             createInfo.imageUsage(imageUsage);
 
             Queue.QueueFamilyIndices indices = Queue.getQueueFamilies();
@@ -152,17 +161,23 @@ public class SwapChain extends Framebuffer {
             this.width = extent2D.width();
             this.height = extent2D.height();
 
+            VkFormatProperties formatProperties = VkFormatProperties.calloc(stack);
+            vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(), this.format, formatProperties);
+            this.canBlitTo = (formatProperties.optimalTilingFeatures() & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0;
+
+            Initializer.LOGGER.info("Iroh: swapchain {}x{} format {} colorspace {} images {} present mode {} blitDst {}",
+                    this.width, this.height, this.format, surfaceFormat.colorSpace(), imageCount.get(0),
+                    getDisplayModeString(presentMode), this.canBlitTo);
+
             for (int i = 0; i < pSwapchainImages.capacity(); i++) {
                 long imageId = pSwapchainImages.get(i);
                 long imageView = VulkanImage.createImageView(imageId, this.format, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 
-                VulkanImage image = new VulkanImage("Swapchain", imageId, this.format, 1, this.width, this.height, 4, 0, imageView);
+                VulkanImage image = new VulkanImage("Swapchain", imageId, this.format, 1, this.width, this.height, 4, imageUsage, imageView);
                 image.updateTextureSampler(true, true, false);
                 this.swapChainImages.add(image);
             }
         }
-
-        createDepthResources();
     }
 
     private long[] createFramebuffers(RenderPass renderPass) {
@@ -172,7 +187,9 @@ public class SwapChain extends Framebuffer {
             long[] framebuffers = new long[this.swapChainImages.size()];
 
             for (int i = 0; i < this.swapChainImages.size(); ++i) {
-                LongBuffer attachments = stack.longs(this.swapChainImages.get(i).getImageView(), this.depthAttachment.getImageView());
+                LongBuffer attachments = this.depthAttachment != null
+                        ? stack.longs(this.swapChainImages.get(i).getImageView(), this.depthAttachment.getImageView())
+                        : stack.longs(this.swapChainImages.get(i).getImageView());
 
                 LongBuffer pFramebuffer = stack.mallocLong(1);
 
@@ -195,12 +212,6 @@ public class SwapChain extends Framebuffer {
         }
     }
 
-    private void createDepthResources() {
-        this.depthAttachment = VulkanImage.createDepthImage(depthFormat, this.width, this.height,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                false, false);
-    }
-
     @Override
     protected long getFramebufferId(RenderPass renderPass) {
         long[] framebuffers = this.FBO_map.computeIfAbsent(renderPass.id, renderPass1 -> createFramebuffers(renderPass));
@@ -215,10 +226,21 @@ public class SwapChain extends Framebuffer {
             this.FBO_map.clear();
         }
 
-        vkDestroySwapchainKHR(device, this.swapChainId, null);
-        this.swapChainImages.forEach(image -> vkDestroyImageView(device, image.getImageView(), null));
+        // Iroh (R-1): image views first (they belong to the swapchain images), then the swapchain.
+        // swapChainId is VK_NULL_HANDLE while minimised (0x0): nothing to destroy then.
+        if (this.swapChainId != VK_NULL_HANDLE) {
+            this.swapChainImages.forEach(image -> vkDestroyImageView(device, image.getImageView(), null));
+            vkDestroySwapchainKHR(device, this.swapChainId, null);
+            this.swapChainId = VK_NULL_HANDLE;
+        }
 
-        this.depthAttachment.free();
+        if (this.depthAttachment != null)
+            this.depthAttachment.free();
+    }
+
+    /** Iroh (R-1): whether vkCmdBlitImage may write the swapchain format (needed only when it differs from the scene format or size). */
+    public boolean canBlitTo() {
+        return this.canBlitTo;
     }
 
     public long getId() {
@@ -324,6 +346,27 @@ public class SwapChain extends Framebuffer {
                 }
             }
             return VK_PRESENT_MODE_FIFO_KHR; // If None of the request modes exist/are supported by Driver
+        }
+    }
+
+    /**
+     * Iroh (R-1): true when the surface can hold a swapchain again (non-zero extent). Renderer polls this
+     * while rendering is skipped for a 0x0 swapchain, because a surface can come back without a GLFW
+     * framebuffer-size event (seen as a frozen last frame: nothing acquired, rendered or presented).
+     */
+    public static boolean surfaceHasExtent() {
+        try (MemoryStack stack = stackPush()) {
+            VkSurfaceCapabilitiesKHR capabilities = VkSurfaceCapabilitiesKHR.malloc(stack);
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(DeviceManager.physicalDevice, Vulkan.getSurface(), capabilities);
+
+            if (capabilities.currentExtent().width() != UINT32_MAX) {
+                return capabilities.currentExtent().width() > 0 && capabilities.currentExtent().height() > 0;
+            }
+
+            IntBuffer width = stack.ints(0);
+            IntBuffer height = stack.ints(0);
+            glfwGetFramebufferSize(window, width, height);
+            return width.get(0) > 0 && height.get(0) > 0;
         }
     }
 

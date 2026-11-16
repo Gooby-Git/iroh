@@ -123,6 +123,11 @@ so other mods' injectors keep their targets; `tools/injector_scan.py --gl` lists
 design-needed groups and their callers are in `pack-compat.md` section 0b. **After** P1-1.
 **Accept** `tools/glscan.py` report shows the coverage percentage; world gate green.
 
+P1-2 starts with two retro items found by R-1 (both READY): RQ-10 (layout transitions for render
+targets sampled mid-frame are recorded into the upload command buffer, which runs before the
+frame) and RQ-11 (off-screen target row order depends on how it was bound; adopt one top-down
+convention). Prove each in game first, fix, then build the shim on top.
+
 **P1-3 [S] Sodium-facing API stand-ins.** For mods that only call Sodium's public API or options
 (18 referencing mods): provide clean-room stand-ins under the same names only where a mod would
 crash without them, behaviour written from the mod's call sites. Never copy Sodium code.
