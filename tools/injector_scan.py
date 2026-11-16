@@ -10,6 +10,10 @@ resolves method / at.target strings through each config's refmap to intermediary
      that targets the same class + method: injection point, require (own or config defaultRequire),
      priority, and for an @Overwrite whether Iroh's new body still contains the call their INVOKE aims at.
   B. the same-call collisions (two redirects / two constant mods on one call) as a separate list.
+  E. (S-1) Iroh injectors that Mixin cannot apply or that silently widen: a HEAD (or any) @Inject into a `native`
+     method (Mixin NPE "insnNode is null"), and any injector whose method string has no descriptor although the
+     target class declares several overloads of that name. Target classes are read from the loom named jar, the
+     lwjgl jars in the gradle cache and the pack jars; the check is skipped (and says so) for an unresolvable target.
   C. with --gl: every call a pack jar's bytecode makes into org/lwjgl/opengl/** , with the owning class and
      whether it sits in a mixin, an entrypoint-ish class or a static initializer (boot-path triage).
 
@@ -286,6 +290,7 @@ def meth_match(a, b):
     if "*" in na or "*" in nb: return na.startswith(nb.rstrip("*")) or nb.startswith(na.rstrip("*"))
     return na == nb and (da is None or db is None or da == db)
 
+body_shadow = {}
 BODY_FREE = {"HEAD", "RETURN", "TAIL"}
 def verdict(hd, hd_cancel, inj, r, pi, pr, body):
     pk = pi["kind"]
@@ -308,7 +313,10 @@ def verdict(hd, hd_cancel, inj, r, pi, pr, body):
             if pr["prio"] < r["prio"] and q == "CRASH": return f"NOOP (their mixin applies first, prio {pr['prio']} < {r['prio']}; Iroh's overwrite then discards their change: {tr(lost[0])})"
             if pr["prio"] == r["prio"] and q == "CRASH": q = "CRASH?"
             if any(l.endswith("?") for l in lost) and len(lost) == len([1 for l in lost if l.endswith("?")]): q = "REVIEW"
-            return f"{q} (target gone from Iroh body: {tr(lost[0])})"
+            sh = body_shadow.get(id(body), set())
+            via = ""
+            if any(split_ref(l)[1] in sh for l in lost if not l.endswith("?")): via = ", reached only via a @Shadow/own call in the overwrite"
+            return f"{q} (target gone from Iroh body: {tr(lost[0])}{via})"
         if pk in ("ModifyVariable", "ModifyConstant", "ModifyArgs"): return "REVIEW (locals / constants of the overwritten body)"
         if pk == "WrapMethod": return "OK (wraps the whole method)"
         return "REVIEW"
@@ -359,7 +367,14 @@ def main():
             body = None
             if hd == "Overwrite":
                 # calls to @Shadow / merged methods carry the mixin class as owner; after the merge they are calls on the target
-                body = {((t0 if o == r["cls"] else o), n) for _, o, n, _ in invokes(r["classobj"], inj["meth_obj"]) for t0 in r["targets"][:1]}
+                # S-1: a call made through the mixin's own @Shadow (or merged helper) method does NOT satisfy another
+                # mod's INVOKE injector (lesson P1-1b: owo TextureUtil.bind). Only calls whose owner is NOT the mixin
+                # class itself count as still present; shadow calls are kept apart and printed as lost.
+                body = set(); shadow_lost = set()
+                for _, o, n, _ in invokes(r["classobj"], inj["meth_obj"]):
+                    if o == r["cls"]: shadow_lost.add(n)
+                    else: body.add((o, n))
+                body_shadow[id(body)] = shadow_lost
             for t in r["targets"]:
                 for pr in by_cls.get(t, []):
                     for pi in pr["injectors"]:
@@ -371,7 +386,8 @@ def main():
                             atx = "; ".join(f"{a_['value']}:{tr(a_['target'])}" + (f"#{a_['ordinal']}" if a_.get("ordinal") not in (None, -1) else "") for a_ in pi["at"]) or "-"
                             print(f"{v}\n  iroh: {r['cls'].split('/')[-1]}.{inj['handler']} [{hd}{'(cancel@HEAD)' if hd_cancel else ''}] prio={r['prio']} -> {tr(t)} {tr(im)}"
                                   f"\n  pack: {pr['mod']} :: {pr['cls']}.{pi['handler']} [{pi['kind']}] at={atx} require={pi['require']}(eff {pi['eff_require']}) prio={pr['prio']} pseudo={pr['pseudo']} plugin={pr['plugin']}"
-                                  + (f"\n  iroh body calls: " + ",".join(sorted(f"{o.split('/')[-1]}.{n}" for o, n in body if not o.startswith("java/")))[:240] if body is not None else ""))
+                                  + (f"\n  iroh body calls: " + ",".join(sorted(f"{o.split('/')[-1]}.{n}" for o, n in body if not o.startswith("java/")))[:240]
+                                     + (f"\n  iroh shadow/own-method calls (do NOT satisfy others' injectors): " + ",".join(sorted(tr(x) for x in body_shadow.get(id(body), ())))[:240] if body_shadow.get(id(body)) else "") if body is not None else ""))
     print(f"\n# A pairs: {n_hit}  verdicts: {dict(verd_count)}")
 
     print("\n## B. single-slot collisions: Iroh Redirect/ModifyConstant at a call another mod also redirects/modifies\n")
@@ -411,10 +427,88 @@ def main():
                             print(f"{pr['mod']} :: {pr['cls']}.{pi['handler']} [Overwrite prio={pr['prio']}] vs Iroh {ir['cls'].split('/')[-1]}.{ii['handler']} [{ii['kind']}] {tr(t)} {tr(pi['methods'][0])}")
     print(f"\n# D hits: {nd}")
 
+    section_e(iroh, pack)
     if GL:
         gl_scan(jars)
     if GLBOOT:
         gl_boot(jars, pack)
+
+
+# ---------------------------------------------------------------- E. native HEAD injects, overloads without descriptor
+_cls_index = None
+def class_index(jars):
+    global _cls_index
+    if _cls_index is not None: return _cls_index
+    idx = {}
+    def add(z):
+        for n in z.namelist():
+            if n.endswith(".class") and not n.startswith("META-INF/"): idx.setdefault(n[:-6], z)
+            elif n.startswith("META-INF/jars/") and n.endswith(".jar"):
+                try: add(zipfile.ZipFile(io.BytesIO(z.read(n))))
+                except Exception: pass
+    mc = []
+    for base in (ROOT, os.path.expanduser("~/Projects/iroh")):
+        mc += glob.glob(base + "/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-merged-*/*/minecraft-merged-*.jar")
+    for jp in sorted(set(mc)):
+        if "sources" not in jp: add(zipfile.ZipFile(jp))
+    for jp in glob.glob(os.path.expanduser("~/.gradle/caches/modules-2/files-2.1/org.lwjgl/*/*/*/*.jar")):
+        if "sources" not in jp and "natives" not in jp: add(zipfile.ZipFile(jp))
+    for f in jars:
+        try: add(zipfile.ZipFile(os.path.join(MODS, f)))
+        except Exception: pass
+    _cls_index = idx; return idx
+
+_cls_cache = {}
+def target_class(name, jars):
+    if name in _cls_cache: return _cls_cache[name]
+    idx = class_index(jars); res = None
+    for cand in (tr_cls(name), name):
+        z = idx.get(cand)
+        if z is not None:
+            try: res = parse_class(z.read(cand + ".class"), want_code=False)
+            except Exception: res = None
+            break
+    _cls_cache[name] = res; return res
+
+def section_e(iroh, pack):
+    jars = sorted(f for f in os.listdir(MODS) if f.endswith(".jar") and not f.startswith("iroh-"))
+    print("\n## E. Iroh injectors Mixin cannot apply (native HEAD inject) or that name no descriptor on an overloaded method\n")
+    ne = 0; skipped = set()
+    for r in iroh:
+        for inj in r["injectors"]:
+            if inj["kind"] == "Overwrite": continue
+            for t in r["targets"]:
+                tc = target_class(t, jars)
+                if tc is None: skipped.add(t); continue
+                for im in inj["methods"]:
+                    o, n, d = split_ref(im)
+                    if "*" in n: continue
+                    n2 = MM.get(n, n)
+                    cands = [m for m in tc["methods"] if m["name"] in (n, n2) and (d is None or tr(m["desc"]) == tr(d) or m["desc"] == d)]
+                    if not cands: continue
+                    heads = inj["kind"] == "Inject" and any(a_["value"] == "HEAD" for a_ in inj["at"])
+                    if inj["kind"] == "Inject" and all(m["acc"] & 0x100 for m in cands):
+                        ne += 1
+                        print(f"CRASH (native target; Mixin NPE 'insnNode is null' at apply{' (HEAD inject)' if heads else ''})\n  iroh: {r['cls'].split('/')[-1]}.{inj['handler']} [{inj['kind']}] -> {tr(t)} {tr(im)}")
+                    if d is None:
+                        allm = [m for m in tc["methods"] if m["name"] in (n, n2)]
+                        if len(allm) > 1:
+                            ne += 1
+                            print(f"NODESC (overloaded x{len(allm)}, injects into ALL overloads; add a descriptor)\n  iroh: {r['cls'].split('/')[-1]}.{inj['handler']} [{inj['kind']}] -> {tr(t)} {tr(im)}  overloads: " + " ".join(tr(m['desc']) for m in allm)[:200])
+    npk = 0
+    for r in pack:
+        for inj in r["injectors"]:
+            if inj["kind"] != "Inject" or not any(a_["value"] == "HEAD" for a_ in inj["at"]): continue
+            for t in r["targets"]:
+                if not t.startswith("org/lwjgl"): continue
+                tc = target_class(t, jars)
+                if tc is None: continue
+                for im in inj["methods"]:
+                    o, n, d = split_ref(im)
+                    cands = [m for m in tc["methods"] if m["name"] == n]
+                    if cands and all(m["acc"] & 0x100 for m in cands):
+                        npk += 1; print(f"INFO pack HEAD inject into native {tr(t)} {n}: {r['mod']} :: {r['cls']}.{inj['handler']}")
+    print(f"\n# E hits: {ne} (pack native HEAD informational: {npk}); target classes not found: {sorted(skipped)[:10]}")
 
 def gl_scan(jars):
     print("\n## C. direct org/lwjgl/opengl calls per jar (class, kind, function list)\n")
