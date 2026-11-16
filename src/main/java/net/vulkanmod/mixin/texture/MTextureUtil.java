@@ -35,7 +35,7 @@ public class MTextureUtil {
     // owo braid.TextureUtilMixin injects at INVOKE TextureUtil.bind(I)V there (require 1). Retargeting a @Shadow call
     // did not help (launch 2 crashed anyway). owo's handler would now sit in dead code, so its one effect, recording
     // the texture size for Braid, is forwarded below.
-    @Inject(method = "prepareImage", at = @At("HEAD"), cancellable = true, remap = false)
+    @Inject(method = "prepareImage(Lcom/mojang/blaze3d/platform/NativeImage$InternalGlFormat;IIII)V", at = @At("HEAD"), cancellable = true)
     private static void irohPrepareImage(NativeImage.InternalGlFormat internalGlFormat, int id, int mipLevels, int width, int height, CallbackInfo ci) {
         ci.cancel();
         dev.elemore.iroh.glshim.OwoCompat.registerTextureSize(id, width, height);
