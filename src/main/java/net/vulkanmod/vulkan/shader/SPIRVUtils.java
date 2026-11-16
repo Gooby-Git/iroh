@@ -89,7 +89,8 @@ public class SPIRVUtils {
         if (cacheName != null) {
             SPIRV cached = loadCached(cacheName);
             if (cached != null) {
-                CACHE_HITS.incrementAndGet();
+                if (CACHE_HITS.incrementAndGet() == 1)
+                    net.vulkanmod.Initializer.LOGGER.info("SPIR-V cache: 1 hits so far (first hit this session)");
                 return cached;
             }
         }
