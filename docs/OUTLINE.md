@@ -151,6 +151,20 @@ screen with every option the pack relied on (list from P0-3), fog, leaves cullin
 if used, Indium-style Fabric Rendering API support (FRAPI) complete, translucency sorting,
 block entity and particle culling. **Accept** FRAPI test mod scenes match baselines.
 
+**P1-6b [O design, S build] `api/` hooks our own mods need** (from S-2, 2026-11-16). elemore-core
+is now safe without Sodium/Iris, but these features go quiet on Iroh until Iroh offers a hook:
+(1) `isShaderPackInUse()`, `getCurrentPackName()`, `setShadersEnabledAndApply(boolean)` for
+ShaderGuard (it is simply off under Iroh until then; in Phase 3 it must again enforce Navidson on
+the Pack path, and must not block the RT path); (2) held-light override so a trinket-slot lantern
+lights the world (TrinketLanternHeldLightMixin); (3) face-cull veto in the mesher
+`(state, view, pos, face) -> boolean` plus a leaves-quality getter (LeafCull; also replaces Cull
+Fewer Leaves, `randomRejection 20`); (4) `isSectionVisible` / `isBoxVisible` on the chunk renderer
+(Clavis padlock culling); (5) `isRenderingShadowPass()` (item/XP-orb skip); (6) cloud veto:
+confirm `LevelRenderer.renderClouds` HEAD-cancel still works on Iroh (Outside of Time has no
+clouds). The Iris buffer-sweep throttle needs nothing unless Iroh adds batched entity buffers.
+Then elemore-core gets an `IrohBridge` beside `SodiumBridge`. **Accept** each feature has a
+Proctor scenario that passes on OpenGL (frozen clone) and on Iroh.
+
 **P1-7 [P] Parity sweep.** Run every baseline scene and every `mods/*` scenario; file one td bug
 per difference with the two screenshots; loop with P1-5 owners until clean. Also the full existing
 Proctor smoke suite (bosses, cooking, menus, character creation) to prove gameplay did not change.
