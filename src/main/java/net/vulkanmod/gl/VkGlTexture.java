@@ -22,6 +22,8 @@ public class VkGlTexture {
     private static int boundTextureId = 0;
     private static VkGlTexture boundTexture;
     private static int activeTexture = 0;
+    /** Iroh (P1-2): GL binds a texture per unit; glActiveTexture selects which unit later calls act on. */
+    private static final int[] unitBinding = new int[32];
 
     private static int unpackRowLength;
     private static int unpackSkipRows;
@@ -42,6 +44,8 @@ public class VkGlTexture {
     public static void bindTexture(int id) {
         boundTextureId = id;
         boundTexture = map.get(id);
+        if (activeTexture >= 0 && activeTexture < unitBinding.length)
+            unitBinding[activeTexture] = id;
 
         if (id <= 0)
             return;
@@ -61,6 +65,13 @@ public class VkGlTexture {
     }
 
     public static void glDeleteTextures(int i) {
+        // GL: deleting a bound texture unbinds it from every unit
+        for (int u = 0; u < unitBinding.length; u++)
+            if (unitBinding[u] == i) unitBinding[u] = 0;
+        if (boundTextureId == i) {
+            boundTextureId = 0;
+            boundTexture = null;
+        }
         VkGlTexture glTexture = map.remove(i);
         VulkanImage image = glTexture != null ? glTexture.vulkanImage : null;
         if (image != null)
@@ -77,6 +88,30 @@ public class VkGlTexture {
     public static void activeTexture(int i) {
         activeTexture = i - GL30.GL_TEXTURE0;
         VTextureSelector.setActiveTexture(activeTexture);
+        // Iroh (P1-2): later glBindTexture/glTexParameter/glTexImage act on THIS unit's texture (GL semantics);
+        // the base kept the previous unit's texture as the target.
+        if (activeTexture >= 0 && activeTexture < unitBinding.length) {
+            boundTextureId = unitBinding[activeTexture];
+            boundTexture = map.get(boundTextureId);
+        }
+    }
+
+    /** Active unit index (0 = GL_TEXTURE0). */
+    public static int getActiveUnit() {
+        return activeTexture;
+    }
+
+    /** Texture id bound to a unit (GL_TEXTURE_BINDING_2D with that unit active). */
+    public static int getUnitBinding(int unit) {
+        return unit >= 0 && unit < unitBinding.length ? unitBinding[unit] : 0;
+    }
+
+    public static int getBoundTextureId() {
+        return boundTextureId;
+    }
+
+    public static boolean exists(int id) {
+        return map.containsKey(id);
     }
 
     public static void texImage2D(int target, int level, int internalFormat, int width, int height, int border, int format, int type, long pixels) {

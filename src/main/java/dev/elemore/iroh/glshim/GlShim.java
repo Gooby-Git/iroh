@@ -2,30 +2,38 @@ package dev.elemore.iroh.glshim;
 
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
-import net.vulkanmod.Initializer;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Shared plumbing for the context-free GL answers (P1-1b, boot path only; the full shim is P1-2).
+ * Shared plumbing for Iroh's GL answers (P1-1b boot path, P1-2 safety net and state shim).
  *
  * <ul>
  *   <li>{@link #noContext()}: true when the calling thread has no real GL context. Iroh never makes one current,
  *       but mods such as DreamDisplays or WaterMedia can create their own GLFW context on a helper thread; their
- *       calls must reach the real driver, so every shim declines to answer when a context is current.</li>
- *   <li>{@link #note(String, Object)}: one log line per distinct (call, calling mod) at DEBUG, plus a counter.
- *       Raise to INFO with {@code -Diroh.glshim.log=info} (P1-2 wants the real usage). {@link #counts()} exposes
- *       the counters.</li>
+ *       calls must reach the real driver, so every Java-level shim declines to answer when a context is current
+ *       (the native-level safety net in {@link GlNet} only ever sees threads without capabilities).</li>
+ *   <li>{@link #note(String, Object)}: a handled call; one DEBUG line per distinct (call, calling mod), INFO with
+ *       {@code -Diroh.glshim.log=info}.</li>
+ *   <li>{@link #unhandled(String)}: a GL entry point Iroh does not emulate was called on a thread without a GL
+ *       context. It returned 0 / GL_FALSE / nothing. Always logged once per (function, mod) at INFO as
+ *       {@code Iroh GL shim: <mod> called <fn> (unhandled)} so a Proctor run can list them; counted.</li>
  * </ul>
  */
 public final class GlShim {
+    public static final Logger LOGGER = LogManager.getLogger("Iroh");
     private static final boolean INFO = "info".equalsIgnoreCase(System.getProperty("iroh.glshim.log"));
     private static final Map<String, AtomicLong> COUNTS = new ConcurrentHashMap<>();
+    private static final Map<String, AtomicLong> UNHANDLED = new ConcurrentHashMap<>();
     private static final Map<String, String> MOD_OF_CLASS = new ConcurrentHashMap<>();
+    private static final StackWalker WALKER = StackWalker.getInstance();
 
     private GlShim() {}
 
@@ -37,21 +45,55 @@ public final class GlShim {
         }
     }
 
+    /** Handled calls, key "call <- mod". */
     public static Map<String, AtomicLong> counts() {
         return COUNTS;
     }
 
+    /** Unhandled calls, key "fn <- mod". */
+    public static Map<String, AtomicLong> unhandledCounts() {
+        return UNHANDLED;
+    }
+
     /** Records one shimmed call. {@code call} is e.g. "glGetString(0x1f00)"; the first hit per call+mod is logged. */
     public static void note(String call, Object answer) {
-        String caller = StackWalker.getInstance().walk(s -> s
-                .map(StackWalker.StackFrame::getClassName)
-                .filter(c -> !c.startsWith("dev.elemore.iroh.") && !c.startsWith("org.lwjgl.") && !c.startsWith("net.vulkanmod."))
-                .findFirst().orElse("?"));
+        String caller = callerClass();
         String key = call + " <- " + modOf(caller);
         if (COUNTS.computeIfAbsent(key, k -> new AtomicLong()).getAndIncrement() == 0) {
-            if (INFO) Initializer.LOGGER.info("Iroh GL shim: {} from {} ({}) -> {}", call, modOf(caller), caller, answer);
-            else Initializer.LOGGER.debug("Iroh GL shim: {} from {} ({}) -> {}", call, modOf(caller), caller, answer);
+            if (INFO) LOGGER.info("Iroh GL shim: {} from {} ({}) -> {}", call, modOf(caller), caller, answer);
+            else LOGGER.debug("Iroh GL shim: {} from {} ({}) -> {}", call, modOf(caller), caller, answer);
         }
+    }
+
+    /** A GL function with no emulation was called without a GL context (see {@link GlNet}). */
+    public static void unhandled(String fn) {
+        String caller = callerClass();
+        String mod = modOf(caller);
+        if (UNHANDLED.computeIfAbsent(fn + " <- " + mod, k -> new AtomicLong()).getAndIncrement() == 0)
+            LOGGER.info("Iroh GL shim: {} called {} (unhandled) [{}]", mod, fn, caller);
+    }
+
+    /** A handler threw; the call returned 0. Logged once per function. */
+    public static void failed(String fn, Throwable t) {
+        if (UNHANDLED.computeIfAbsent(fn + " <- (handler error)", k -> new AtomicLong()).getAndIncrement() == 0)
+            LOGGER.warn("Iroh GL shim: handler for {} threw (call ignored, called by {})", fn, modOf(callerClass()), t);
+    }
+
+    /** One line per unhandled (function, mod) with its count, sorted; for logs and tests. */
+    public static String unhandledSummary() {
+        StringBuilder sb = new StringBuilder();
+        new TreeMap<>(UNHANDLED).forEach((k, v) -> sb.append(k).append(" x").append(v.get()).append('\n'));
+        return sb.toString();
+    }
+
+    /** First frame that is not Iroh, LWJGL, the base, or blaze3d's GL wrappers (GlStateManager calls on behalf of someone). */
+    static String callerClass() {
+        return WALKER.walk(s -> s
+                .map(StackWalker.StackFrame::getClassName)
+                .filter(c -> !c.startsWith("dev.elemore.iroh.") && !c.startsWith("org.lwjgl.")
+                        && !c.startsWith("net.vulkanmod.") && !c.startsWith("com.mojang.blaze3d.")
+                        && !c.startsWith("jdk.internal.") && !c.startsWith("java."))
+                .findFirst().orElse("?"));
     }
 
     /** Mod id owning a class, by matching the class's code source against every mod's root paths. "?" if unknown. */
@@ -67,7 +109,7 @@ public final class GlShim {
                         if (root.toUri().toString().contains(loc) || loc.contains(root.toString())) return m.getMetadata().getId();
             } catch (Throwable ignored) {
             }
-            return cn.startsWith("net.minecraft.") || cn.startsWith("com.mojang.") ? "minecraft" : "?";
+            return cn.startsWith("net.minecraft.") || cn.startsWith("com.mojang.") ? "minecraft" : cn;
         });
     }
 }

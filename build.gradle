@@ -125,3 +125,13 @@ tasks.register('shaderHarness', JavaExec) {
 	}
 	args a
 }
+
+// GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).
+// ./gradlew glNetTest ; last line "# glnet PASS n/n". A JVM abort means the net failed.
+tasks.register('glNetTest', JavaExec) {
+	group = 'verification'
+	description = 'Call LWJGL GL functions without a GL context through Iroh\'s safety net'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.gltest.GlNetTest'
+}

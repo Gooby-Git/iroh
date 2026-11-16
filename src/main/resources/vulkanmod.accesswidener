@@ -19,3 +19,27 @@ accessible field net/minecraft/client/renderer/RenderStateShard name Ljava/lang/
 # P1-2a: ShaderInstance/EffectInstance under Iroh have no GL programs, but vanilla's getters must not return null
 accessible method com/mojang/blaze3d/shaders/Program <init> (Lcom/mojang/blaze3d/shaders/Program$Type;ILjava/lang/String;)V
 accessible method com/mojang/blaze3d/shaders/EffectProgram <init> (Lcom/mojang/blaze3d/shaders/Program$Type;ILjava/lang/String;)V
+
+# Iroh P1-2 (GlState): keep vanilla's GlStateManager caches in step; mods read them (ImmediatelyFast reads DEPTH)
+accessible class com/mojang/blaze3d/platform/GlStateManager$BlendState
+accessible class com/mojang/blaze3d/platform/GlStateManager$BooleanState
+accessible class com/mojang/blaze3d/platform/GlStateManager$DepthState
+accessible class com/mojang/blaze3d/platform/GlStateManager$CullState
+accessible class com/mojang/blaze3d/platform/GlStateManager$PolygonOffsetState
+accessible class com/mojang/blaze3d/platform/GlStateManager$ColorLogicState
+accessible class com/mojang/blaze3d/platform/GlStateManager$StencilState
+accessible class com/mojang/blaze3d/platform/GlStateManager$StencilFunc
+accessible class com/mojang/blaze3d/platform/GlStateManager$ScissorState
+accessible class com/mojang/blaze3d/platform/GlStateManager$TextureState
+accessible class com/mojang/blaze3d/platform/GlStateManager$ColorMask
+accessible field com/mojang/blaze3d/platform/GlStateManager BLEND Lcom/mojang/blaze3d/platform/GlStateManager$BlendState;
+accessible field com/mojang/blaze3d/platform/GlStateManager DEPTH Lcom/mojang/blaze3d/platform/GlStateManager$DepthState;
+accessible field com/mojang/blaze3d/platform/GlStateManager CULL Lcom/mojang/blaze3d/platform/GlStateManager$CullState;
+accessible field com/mojang/blaze3d/platform/GlStateManager POLY_OFFSET Lcom/mojang/blaze3d/platform/GlStateManager$PolygonOffsetState;
+accessible field com/mojang/blaze3d/platform/GlStateManager COLOR_LOGIC Lcom/mojang/blaze3d/platform/GlStateManager$ColorLogicState;
+accessible field com/mojang/blaze3d/platform/GlStateManager STENCIL Lcom/mojang/blaze3d/platform/GlStateManager$StencilState;
+accessible field com/mojang/blaze3d/platform/GlStateManager SCISSOR Lcom/mojang/blaze3d/platform/GlStateManager$ScissorState;
+accessible field com/mojang/blaze3d/platform/GlStateManager COLOR_MASK Lcom/mojang/blaze3d/platform/GlStateManager$ColorMask;
+accessible field com/mojang/blaze3d/platform/GlStateManager TEXTURES [Lcom/mojang/blaze3d/platform/GlStateManager$TextureState;
+accessible field com/mojang/blaze3d/platform/GlStateManager activeTexture I
+accessible field com/mojang/blaze3d/platform/GlStateManager$BooleanState enabled Z

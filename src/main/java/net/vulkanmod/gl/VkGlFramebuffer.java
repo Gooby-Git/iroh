@@ -166,6 +166,24 @@ public class VkGlFramebuffer {
         return GL30.GL_FRAMEBUFFER_COMPLETE;
     }
 
+    /** GL_DRAW_FRAMEBUFFER_BINDING (0 = the main target). */
+    public static int getBoundDrawId() {
+        return boundFramebuffer != null ? boundFramebuffer.id : 0;
+    }
+
+    /** GL_READ_FRAMEBUFFER_BINDING (0 = the main target). */
+    public static int getBoundReadId() {
+        return readFramebuffer != null ? readFramebuffer.id : 0;
+    }
+
+    /**
+     * Iroh (RQ-10): put back the bound off-screen framebuffer after a render pass was ended and re-begun around a
+     * layout transition ({@code Renderer.endRenderPass} forgets it). No viewport/scissor/cull side effects.
+     */
+    public static void restoreBinding(VkGlFramebuffer framebuffer) {
+        boundFramebuffer = framebuffer;
+    }
+
     public static VkGlFramebuffer getBoundFramebuffer() {
         return boundFramebuffer;
     }

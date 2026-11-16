@@ -691,7 +691,10 @@ public class Renderer {
     }
 
     public static void setInvertedViewport(int x, int y, int width, int height) {
-        setViewportState(x, y + height, width, -height);
+        // Iroh (RQ-11): GL row order on purpose (post passes, off-screen FBO begin). Applied directly: going through
+        // GlStateManager._viewport would now pick the layout from the bound target and flip it a second time.
+        setViewport(x, y + height, width, -height);
+        dev.elemore.iroh.glshim.GlState.recordViewport(x, y, width, height);
     }
 
     public static void resetViewport() {

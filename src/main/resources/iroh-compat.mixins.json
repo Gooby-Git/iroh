@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_17",
   "client": [
     "gl.GL11CM",
+    "gl.GL15CM",
     "gl.GLM",
     "reload.LoadingOverlayM"
   ],

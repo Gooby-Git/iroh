@@ -9,6 +9,9 @@ import java.util.Objects;
 import static org.lwjgl.vulkan.VK10.*;
 
 public class PipelineState {
+    /** Iroh (P1-2): first, because DEFAULT below already encodes state (static init order). */
+    private static final java.util.Set<String> LOGGED_UNKNOWN = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private static final int DEFAULT_DEPTH_OP = 515;
 //    private static final int DEFAULT_DEPTH_OP = 518;
 
@@ -36,7 +39,13 @@ public class PipelineState {
     }
 
     public static int getAssemblyRasterState() {
-        return AssemblyRasterState.encode(VRenderSystem.cull, VRenderSystem.topology, VRenderSystem.polygonMode);
+        // Iroh (RQ-11): off-screen targets are drawn in GL row order (positive viewport height), which mirrors the
+        // winding Vulkan sees; culling FRONT there removes the same triangles GL's back-face cull removes.
+        int state = AssemblyRasterState.encode(VRenderSystem.cull, VRenderSystem.topology, VRenderSystem.polygonMode);
+        if (VRenderSystem.cull && dev.elemore.iroh.glshim.GlState.offscreenBound())
+            state = (state & ~(AssemblyRasterState.CULL_MODE_MASK << AssemblyRasterState.CULL_MODE_OFFSET))
+                    | (VK_CULL_MODE_FRONT_BIT << AssemblyRasterState.CULL_MODE_OFFSET);
+        return state;
     }
 
     public static int getDepthState() {
@@ -176,14 +185,8 @@ public class PipelineState {
                 case 0x8008 -> VK_BLEND_OP_MAX;
                 case 0x800A -> VK_BLEND_OP_SUBTRACT;
                 case 0x800B -> VK_BLEND_OP_REVERSE_SUBTRACT;
-                default -> throw new RuntimeException("unknown blend factor: " + value);
-
-
-//                GL_FUNC_ADD = 0x8006,
-//                GL_MIN      = 0x8007,
-//                GL_MAX      = 0x8008;
-//                GL_FUNC_SUBTRACT         = 0x800A,
-//                GL_FUNC_REVERSE_SUBTRACT = 0x800B;
+                // Iroh (P1-2): total; an unknown value logs once and falls back to GL's default (FUNC_ADD)
+                default -> unknown("blend equation", value, VK_BLEND_OP_ADD);
             };
         }
 
@@ -197,26 +200,24 @@ public class PipelineState {
                 case 769 -> VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
                 case 774 -> VK_BLEND_FACTOR_DST_COLOR;
                 case 768 -> VK_BLEND_FACTOR_SRC_COLOR;
-                default -> throw new RuntimeException("unknown blend factor: " + value);
-
-
-//                        CONSTANT_ALPHA(32771),
-//                        CONSTANT_COLOR(32769),
-//                        DST_ALPHA(772),
-//                        DST_COLOR(774),
-//                        ONE(1),
-//                        ONE_MINUS_CONSTANT_ALPHA(32772),
-//                        ONE_MINUS_CONSTANT_COLOR(32770),
-//                        ONE_MINUS_DST_ALPHA(773),
-//                        ONE_MINUS_DST_COLOR(775),
-//                        ONE_MINUS_SRC_ALPHA(771),
-//                        ONE_MINUS_SRC_COLOR(769),
-//                        SRC_ALPHA(770),
-//                        SRC_ALPHA_SATURATE(776),
-//                        SRC_COLOR(768),
-//                        ZERO(0);
+                // Iroh (P1-2): the rest of GlStateManager.SourceFactor / DestFactor
+                case 772 -> VK_BLEND_FACTOR_DST_ALPHA;
+                case 773 -> VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+                case 776 -> VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+                case 32769 -> VK_BLEND_FACTOR_CONSTANT_COLOR;
+                case 32770 -> VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+                case 32771 -> VK_BLEND_FACTOR_CONSTANT_ALPHA;
+                case 32772 -> VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+                default -> unknown("blend factor", value, VK_BLEND_FACTOR_ONE);
             };
         }
+    }
+
+    /** Iroh (P1-2): a GL value Iroh cannot map logs once and falls back instead of throwing mid-frame. */
+    static int unknown(String what, int glValue, int fallback) {
+        if (LOGGED_UNKNOWN.add(what + glValue))
+            net.vulkanmod.Initializer.LOGGER.warn("Iroh: unknown GL {} {} (0x{}); using the default", what, glValue, Integer.toHexString(glValue));
+        return fallback;
     }
 
     public static class BlendState {
@@ -298,12 +299,13 @@ public class PipelineState {
         }
 
         public static int glToVulkan(int f) {
-            return switch (f) {
-                case 5387 -> VK_LOGIC_OP_OR_REVERSE;
-                //TODO complete
-
-                default -> VK_LOGIC_OP_AND;
-            };
+            // Iroh (P1-2): GL_CLEAR (0x1500) .. GL_SET (0x150F) are in the same order as VkLogicOp 0..15.
+            // The base mapped only OR_REVERSE and turned every other op into AND.
+            if (f >= 0x1500 && f <= 0x150F)
+                return f - 0x1500;
+            if (f == 0) // VRenderSystem.logicOpFun before any glLogicOp (logic op disabled then)
+                return VK_LOGIC_OP_COPY;
+            return unknown("logic op", f, VK_LOGIC_OP_COPY);
         }
 
     }
@@ -377,28 +379,17 @@ public class PipelineState {
 
         private static int glToVulkan(int value) {
             return switch (value) {
-                case 515 -> VK_COMPARE_OP_LESS_OR_EQUAL;
-                case 519 -> VK_COMPARE_OP_ALWAYS;
-                case 516 -> VK_COMPARE_OP_GREATER;
-                case 518 -> VK_COMPARE_OP_GREATER_OR_EQUAL;
+                case 512 -> VK_COMPARE_OP_NEVER;
+                case 513 -> VK_COMPARE_OP_LESS;
                 case 514 -> VK_COMPARE_OP_EQUAL;
-                default -> throw new RuntimeException("unknown blend factor..");
-
-//                case 515 -> VK_COMPARE_OP_GREATER_OR_EQUAL;
-//                case 519 -> VK_COMPARE_OP_ALWAYS;
-//                case 516 -> VK_COMPARE_OP_GREATER;
-//                case 518 -> VK_COMPARE_OP_LESS_OR_EQUAL;
-//                case 514 -> VK_COMPARE_OP_EQUAL;
-//                default -> throw new RuntimeException("unknown blend factor..");
-
-//                public static final int GL_NEVER = 512;
-//                public static final int GL_LESS = 513;
-//                public static final int GL_EQUAL = 514;
-//                public static final int GL_LEQUAL = 515;
-//                public static final int GL_GREATER = 516;
-//                public static final int GL_NOTEQUAL = 517;
-//                public static final int GL_GEQUAL = 518;
-//                public static final int GL_ALWAYS = 519;
+                case 515 -> VK_COMPARE_OP_LESS_OR_EQUAL;
+                case 516 -> VK_COMPARE_OP_GREATER;
+                case 517 -> VK_COMPARE_OP_NOT_EQUAL;
+                case 518 -> VK_COMPARE_OP_GREATER_OR_EQUAL;
+                case 519 -> VK_COMPARE_OP_ALWAYS;
+                // Iroh (P1-2): was "unknown blend factor.." thrown mid-frame (ImmediatelyFast HUD batching crash,
+                // P1-2b blocker D); now logs once and uses Minecraft's default depth func (GL_LEQUAL).
+                default -> unknown("depth func", value, VK_COMPARE_OP_LESS_OR_EQUAL);
             };
         }
 

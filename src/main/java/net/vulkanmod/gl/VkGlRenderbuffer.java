@@ -19,6 +19,10 @@ public class VkGlRenderbuffer {
     private static int boundId = 0;
     private static VkGlRenderbuffer bound;
 
+    public static int getBoundId() {
+        return boundId;
+    }
+
     public static int genId() {
         int id = ID_COUNTER;
         map.put(id, new VkGlRenderbuffer(id));

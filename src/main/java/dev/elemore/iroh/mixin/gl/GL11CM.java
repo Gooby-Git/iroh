@@ -1,21 +1,28 @@
 package dev.elemore.iroh.mixin.gl;
 
 import dev.elemore.iroh.glshim.GlShim;
+import dev.elemore.iroh.glshim.GlState;
 import dev.elemore.iroh.glshim.GlStrings;
+import net.vulkanmod.gl.VkGlTexture;
 import org.lwjgl.opengl.GL11C;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Core-profile GL11 entry points that mods call directly and that would abort the JVM with
- * "No context is current" under Iroh. Boot path only (P1-1, P1-1b); the full shim is P1-2.
- * GL11.glGetString / glGetError delegate here, so both are covered.
- *
- * Injected at HEAD instead of overwritten, and answering only when the thread has no real GL context: a mod that
- * created its own GLFW context on a helper thread (DreamDisplays, WaterMedia) keeps talking to the real driver.
+ * GL11C entry points that the native-level safety net ({@code GlNet}) cannot answer:
+ * <ul>
+ *   <li>glGetString: the Java wrapper turns the native's char* into a String; Iroh answers with Java strings.</li>
+ *   <li>array overloads ({@code int[]}, {@code float[]}): LWJGL calls them through {@code GL.getICD()} and
+ *       {@code JNI.callPV}, not through the per-thread table, so the net never sees them. Without a context they
+ *       would reach libGL's no-op entry points and return nothing; these answer from {@link GlState} instead.</li>
+ * </ul>
+ * Every inject is HEAD + cancellable on a non-native method (vanilla body kept for threads with a real context:
+ * DreamDisplays, WaterMedia on their own threads), and answers only when no context is current.
+ * GL11 delegates to GL11C, so callers of either are covered. glGetError moved to the net (P1-2): it is a native,
+ * and the old @Overwrite also answered 0 to threads with a real context.
  */
 @Mixin(value = GL11C.class, remap = false)
 public class GL11CM {
@@ -26,16 +33,31 @@ public class GL11CM {
         if (GlShim.noContext()) cir.setReturnValue(GlStrings.get(name));
     }
 
-    // glGetError is a JNI native: there is no bytecode to inject into (HEAD inject died with an NPE in Mixin,
-    // P1-1b launch 1), so it is overwritten and cannot delegate. A helper-thread real context (DreamDisplays,
-    // WaterMedia) therefore always reads GL_NO_ERROR; harmless.
-    /**
-     * @author Iroh
-     * @reason no GL context; ImmediatelyFast's MixinGL11 (switch on), XaeroWorldMap, WaterMedia
-     */
-    @Overwrite(remap = false)
-    public static int glGetError() {
-        GlShim.note("glGetError()", 0);
-        return 0;
+    @Inject(method = "glGetIntegerv(I[I)V", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void irohGetIntegervArray(int pname, int[] params, CallbackInfo ci) {
+        if (!GlShim.noContext()) return;
+        GlState.getIntegerv(pname, params);
+        ci.cancel();
+    }
+
+    @Inject(method = "glGetFloatv(I[F)V", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void irohGetFloatvArray(int pname, float[] params, CallbackInfo ci) {
+        if (!GlShim.noContext()) return;
+        GlState.getFloatv(pname, params);
+        ci.cancel();
+    }
+
+    @Inject(method = "glGenTextures([I)V", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void irohGenTexturesArray(int[] textures, CallbackInfo ci) {
+        if (!GlShim.noContext()) return;
+        for (int k = 0; k < textures.length; k++) textures[k] = VkGlTexture.genTextureId();
+        ci.cancel();
+    }
+
+    @Inject(method = "glDeleteTextures([I)V", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void irohDeleteTexturesArray(int[] textures, CallbackInfo ci) {
+        if (!GlShim.noContext()) return;
+        for (int t : textures) VkGlTexture.glDeleteTextures(t);
+        ci.cancel();
     }
 }

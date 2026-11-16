@@ -25,6 +25,13 @@ public class VkGlBuffer {
         return id;
     }
 
+    /** Iroh (P1-2): every target's binding is tracked for glGetIntegerv; only pixel pack/unpack buffers have storage. */
+    private static final it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap bindings = new it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap();
+
+    public static int getBinding(int target) {
+        return bindings.get(target);
+    }
+
     public static void glBindBuffer(int target, int buffer) {
         boundId = buffer;
         VkGlBuffer glBuffer = map.get(buffer);
@@ -32,41 +39,61 @@ public class VkGlBuffer {
         if (buffer > 0 && glBuffer == null)
             throw new NullPointerException("bound texture is null");
 
-        if (glBuffer != null) {
-            glBuffer.target = target;
-        }
+        bindings.put(target, buffer);
 
         switch (target) {
             case GL32.GL_PIXEL_PACK_BUFFER -> pixelPackBufferBound = glBuffer;
             case GL32.GL_PIXEL_UNPACK_BUFFER -> pixelUnpackBufferBound = glBuffer;
-            default -> throw new IllegalStateException("Unexpected value: " + target);
+            // Iroh (P1-2): vertex/index/uniform/copy targets have no storage here (the base threw); tracked only.
+            default -> {
+                return;
+            }
+        }
+
+        if (glBuffer != null) {
+            glBuffer.target = target;
         }
     }
 
     public static void glBufferData(int target, ByteBuffer byteBuffer, int usage) {
-        checkTarget(target);
+        VkGlBuffer buffer = boundTo(target);
+        if (buffer == null)
+            return;
 
-        // TODO
+        // Iroh (P1-2): the base left this a TODO and rebound the unpack buffer to a stale object.
+        int size = byteBuffer != null ? byteBuffer.remaining() : 0;
+        buffer.allocate(size);
+        if (byteBuffer != null && size > 0)
+            MemoryUtil.memCopy(MemoryUtil.memAddress(byteBuffer), MemoryUtil.memAddress(buffer.data), size);
+    }
 
-        pixelUnpackBufferBound = boundBuffer;
+    /** Pixel buffer bound to a target, or null (non-pixel targets have no storage under Iroh). */
+    public static VkGlBuffer boundTo(int target) {
+        return switch (target) {
+            case GL32.GL_PIXEL_PACK_BUFFER -> pixelPackBufferBound;
+            case GL32.GL_PIXEL_UNPACK_BUFFER -> pixelUnpackBufferBound;
+            default -> null;
+        };
+    }
+
+    /** GL_BUFFER_SIZE of the buffer bound to a target (0 when none or no storage). */
+    public static int boundSize(int target) {
+        VkGlBuffer b = boundTo(target);
+        return b != null && b.data != null ? b.data.capacity() : 0;
     }
 
     public static void glBufferData(int target, long size, int usage) {
-        VkGlBuffer buffer = switch (target) {
-            case GL32.GL_PIXEL_PACK_BUFFER -> pixelPackBufferBound;
-            case GL32.GL_PIXEL_UNPACK_BUFFER -> pixelUnpackBufferBound;
-            default -> throw new IllegalStateException("Unexpected value: " + target);
-        };
+        VkGlBuffer buffer = boundTo(target);
+        if (buffer == null)
+            return;
 
         buffer.allocate((int) size);
     }
 
     public static ByteBuffer glMapBuffer(int target, int access) {
-        VkGlBuffer buffer = switch (target) {
-            case GL32.GL_PIXEL_PACK_BUFFER -> pixelPackBufferBound;
-            case GL32.GL_PIXEL_UNPACK_BUFFER -> pixelUnpackBufferBound;
-            default -> throw new IllegalStateException("Unexpected value: " + target);
-        };
+        VkGlBuffer buffer = boundTo(target);
+        if (buffer == null || buffer.data == null)
+            return null;
 
         ByteBuffer mappedBuffer = buffer.data;
         mappedBuffer.position(0);
@@ -84,7 +111,10 @@ public class VkGlBuffer {
     }
 
     public static void glDeleteBuffers(int id) {
+        bindings.int2IntEntrySet().removeIf(e -> e.getIntValue() == id);
         var buffer = map.remove(id);
+        if (buffer != null && buffer == pixelPackBufferBound) pixelPackBufferBound = null;
+        if (buffer != null && buffer == pixelUnpackBufferBound) pixelUnpackBufferBound = null;
 
         if (buffer != null)
             buffer.freeData();
@@ -125,6 +155,7 @@ public class VkGlBuffer {
 
     private void freeData() {
         MemoryUtil.memFree(data);
+        data = null;
     }
 
 }

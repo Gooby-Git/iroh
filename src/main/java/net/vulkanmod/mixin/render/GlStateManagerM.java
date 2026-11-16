@@ -23,7 +23,7 @@ public class GlStateManagerM {
      */
     @Overwrite(remap = false)
     public static void _bindTexture(int i) {
-        VkGlTexture.bindTexture(i);
+        dev.elemore.iroh.glshim.GlState.bindTexture(i);
     }
 
     /**
@@ -32,7 +32,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _disableBlend() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.disableBlend();
+        dev.elemore.iroh.glshim.GlState.disable(3042);
     }
 
     /**
@@ -41,7 +41,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _enableBlend() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.enableBlend();
+        dev.elemore.iroh.glshim.GlState.enable(3042);
     }
 
     /**
@@ -50,7 +50,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _blendFunc(int i, int j) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.blendFunc(i, j);
+        dev.elemore.iroh.glshim.GlState.blendFunc(i, j);
     }
 
     /**
@@ -59,7 +59,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _blendFuncSeparate(int i, int j, int k, int l) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.blendFuncSeparate(i, j, k, l);
+        dev.elemore.iroh.glshim.GlState.blendFuncSeparate(i, j, k, l);
     }
 
     /**
@@ -68,7 +68,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _blendEquation(int i) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.blendOp(i);
+        dev.elemore.iroh.glshim.GlState.blendEquation(i);
     }
 
     /**
@@ -76,21 +76,23 @@ public class GlStateManagerM {
      */
     @Overwrite(remap = false)
     public static void _disableScissorTest() {
-        Renderer.resetScissor();
+        dev.elemore.iroh.glshim.GlState.disable(3089);
     }
 
     /**
      * @author
      */
     @Overwrite(remap = false)
-    public static void _enableScissorTest() {}
+    public static void _enableScissorTest() {
+        dev.elemore.iroh.glshim.GlState.enable(3089);
+    }
 
     /**
      * @author
      */
     @Overwrite(remap = false)
     public static void _enableCull() {
-        VRenderSystem.enableCull();
+        dev.elemore.iroh.glshim.GlState.enable(2884);
     }
 
     /**
@@ -98,7 +100,7 @@ public class GlStateManagerM {
      */
     @Overwrite(remap = false)
     public static void _disableCull() {
-        VRenderSystem.disableCull();
+        dev.elemore.iroh.glshim.GlState.disable(2884);
     }
 
     /**
@@ -106,7 +108,8 @@ public class GlStateManagerM {
      */
     @Redirect(method = "_viewport", at = @At(value = "INVOKE", target = "Lorg/lwjgl/opengl/GL11;glViewport(IIII)V"), remap = false)
     private static void _viewport(int x, int y, int width, int height) {
-        Renderer.setViewport(x, y, width, height);
+        // Iroh P1-2 / RQ-11: layout follows the bound target (GL layout off-screen, top-down main)
+        dev.elemore.iroh.glshim.GlState.viewport(x, y, width, height);
     }
 
     /**
@@ -114,7 +117,7 @@ public class GlStateManagerM {
      */
     @Overwrite(remap = false)
     public static void _scissorBox(int x, int y, int width, int height) {
-        Renderer.setScissor(x, y, width, height);
+        dev.elemore.iroh.glshim.GlState.scissor(x, y, width, height);
     }
 
     /**
@@ -148,7 +151,7 @@ public class GlStateManagerM {
      */
     @Overwrite(remap = false)
     public static void _activeTexture(int i) {
-        VkGlTexture.activeTexture(i);
+        dev.elemore.iroh.glshim.GlState.activeTexture(i);
     }
 
     /**
@@ -181,7 +184,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _pixelStore(int pname, int param) {
         RenderSystem.assertOnRenderThread();
-        VkGlTexture.pixelStoreI(pname, param);
+        dev.elemore.iroh.glshim.GlState.pixelStore(pname, param);
     }
 
     /**
@@ -208,7 +211,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _colorMask(boolean red, boolean green, boolean blue, boolean alpha) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.colorMask(red, green, blue, alpha);
+        dev.elemore.iroh.glshim.GlState.colorMask(red, green, blue, alpha);
     }
 
     /**
@@ -217,7 +220,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _polygonMode(int face, int mode) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.setPolygonModeGL(mode);
+        dev.elemore.iroh.glshim.GlState.polygonMode(face, mode);
     }
 
     /**
@@ -226,7 +229,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _enablePolygonOffset() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.enablePolygonOffset();
+        dev.elemore.iroh.glshim.GlState.enable(32823);
     }
 
     /**
@@ -235,7 +238,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _disablePolygonOffset() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.disablePolygonOffset();
+        dev.elemore.iroh.glshim.GlState.disable(32823);
     }
 
     /**
@@ -244,7 +247,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _polygonOffset(float f, float g) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.polygonOffset(g, f);
+        dev.elemore.iroh.glshim.GlState.polygonOffset(f, g);
     }
 
     /**
@@ -253,7 +256,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _enableColorLogicOp() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.enableColorLogicOp();
+        dev.elemore.iroh.glshim.GlState.enable(3058);
     }
 
     /**
@@ -262,7 +265,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _disableColorLogicOp() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.disableColorLogicOp();
+        dev.elemore.iroh.glshim.GlState.disable(3058);
     }
 
     /**
@@ -271,7 +274,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _logicOp(int i) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.logicOp(i);
+        dev.elemore.iroh.glshim.GlState.logicOp(i);
     }
 
     /**
@@ -307,7 +310,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _disableDepthTest() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.disableDepthTest();
+        dev.elemore.iroh.glshim.GlState.disable(2929);
     }
 
     /**
@@ -316,7 +319,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _enableDepthTest() {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.enableDepthTest();
+        dev.elemore.iroh.glshim.GlState.enable(2929);
     }
 
     /**
@@ -325,7 +328,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _depthFunc(int i) {
         RenderSystem.assertOnRenderThreadOrInit();
-        VRenderSystem.depthFunc(i);
+        dev.elemore.iroh.glshim.GlState.depthFunc(i);
     }
 
     /**
@@ -334,7 +337,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _depthMask(boolean bl) {
         RenderSystem.assertOnRenderThread();
-        VRenderSystem.depthMask(bl);
+        dev.elemore.iroh.glshim.GlState.depthMask(bl);
 
     }
 
@@ -486,7 +489,7 @@ public class GlStateManagerM {
     @Overwrite(remap = false)
     public static void _glUseProgram(int i) {
         RenderSystem.assertOnRenderThread();
-        VkGlProgram.glUseProgram(i);
+        dev.elemore.iroh.glshim.GlState.useProgram(i);
     }
 
     /**
