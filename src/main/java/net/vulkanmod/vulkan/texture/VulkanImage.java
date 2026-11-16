@@ -2,6 +2,9 @@ package net.vulkanmod.vulkan.texture;
 
 import net.vulkanmod.render.texture.ImageUploadHelper;
 import net.vulkanmod.vulkan.Renderer;
+import net.vulkanmod.gl.VkGlFramebuffer;
+import net.vulkanmod.vulkan.framebuffer.Framebuffer;
+import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.memory.MemoryManager;
 import net.vulkanmod.vulkan.memory.buffer.StagingBuffer;
@@ -246,7 +249,35 @@ public class VulkanImage {
             return;
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            if (Renderer.getInstance().getBoundRenderPass() != null) {
+            Renderer renderer = Renderer.getInstance();
+            RenderPass boundPass = renderer.getBoundRenderPass();
+            if (boundPass != null) {
+                if (isAttachmentLayout(this.currentLayout)) {
+                    // Iroh (RQ-10): this image was rendered to earlier in this frame (a render target left in an
+                    // attachment layout, e.g. the main scene colour sampled while an off-screen pass is bound).
+                    // The upload command buffer runs BEFORE the frame's commands, so recording the transition there
+                    // executes it before the rendering it must follow. Record it in the frame command buffer
+                    // between render passes instead, then resume the pass that was bound.
+                    Framebuffer boundFb = renderer.getBoundFramebuffer();
+                    if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {
+                        // sampling an attachment of the bound pass (GL feedback loop): cannot be made valid, keep the old path
+                        logFeedbackOnce();
+                        readOnlyLayout(stack, ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle());
+                        return;
+                    }
+                    VkGlFramebuffer glFb = VkGlFramebuffer.getBoundFramebuffer();
+                    renderer.endRenderPass();
+                    readOnlyLayout(stack, Renderer.getCommandBuffer());
+                    if (glFb == null && boundFb instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
+                        renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
+                    } else if (boundFb != null) {
+                        renderer.beginRendering(boundPass, boundFb);        // off-screen passes load (VkGlFramebuffer)
+                        VkGlFramebuffer.restoreBinding(glFb);
+                    }
+                    // Framebuffer.beginRenderPass reset viewport and scissor to full size
+                    dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+                    return;
+                }
                 CommandPool.CommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer();
                 VkCommandBuffer vkCommandBuffer = commandBuffer.getHandle();
 
@@ -256,6 +287,20 @@ public class VulkanImage {
                 readOnlyLayout(stack, Renderer.getCommandBuffer());
             }
         }
+    }
+
+    private static boolean loggedFeedback;
+
+    private static void logFeedbackOnce() {
+        if (!loggedFeedback) {
+            loggedFeedback = true;
+            net.vulkanmod.Initializer.LOGGER.warn("Iroh: a texture attached to the bound render pass is sampled by the same pass (GL feedback loop); its layout transition stays in the upload buffer (RQ-10)");
+        }
+    }
+
+    private static boolean isAttachmentLayout(int layout) {
+        return layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+               || layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     public void readOnlyLayout(MemoryStack stack, VkCommandBuffer commandBuffer) {

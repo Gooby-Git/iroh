@@ -74,10 +74,9 @@ public abstract class RenderTargetMixin {
 
         VkGlTexture.bindTexture(this.colorTextureId);
 
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkGlTexture.getBoundTexture().getVulkanImage()
-                       .readOnlyLayout(stack, Renderer.getCommandBuffer());
-        }
+        // Iroh (RQ-10): the base recorded this barrier straight into the frame command buffer, inside whatever
+        // render pass was bound (invalid). readOnlyLayout() picks the right buffer and ends/resumes the pass.
+        VkGlTexture.getBoundTexture().getVulkanImage().readOnlyLayout();
     }
 
     /**
