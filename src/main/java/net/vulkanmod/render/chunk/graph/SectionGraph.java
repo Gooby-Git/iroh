@@ -144,7 +144,27 @@ public class SectionGraph {
         return vis;
     }
 
+    /** Sections the last graph update reached that can be built (chunk data and light present) but have no compiled result yet. */
+    private int unbuiltSections;
+
+    public int getUnbuiltSections() {
+        return this.unbuiltSections;
+    }
+
+    private void countUnbuilt(RenderSection renderSection) {
+        if (renderSection.isCompiled() || !renderSection.isChunkRenderReady())
+            return;
+
+        this.unbuiltSections++;
+
+        // Ready, never compiled, not queued and nothing in flight: it would never be built (the chunk became ready after
+        // the section was last marked clean). Queue it again so the count can reach zero.
+        if (!renderSection.isDirty() && this.taskDispatcher.isIdle())
+            renderSection.setDirty(false);
+    }
+
     private void initUpdate() {
+        this.unbuiltSections = 0;
         this.resetUpdateQueues();
 
         this.lastFrame++;
@@ -181,6 +201,8 @@ public class SectionGraph {
                 this.blockEntitiesSections.ensureCapacity(1);
                 this.blockEntitiesSections.add(renderSection);
             }
+
+            countUnbuilt(renderSection);
 
             if (renderSection.isDirty()) {
                 this.rebuildQueue.ensureCapacity(1);
@@ -258,6 +280,8 @@ public class SectionGraph {
                 this.chunkAreaQueue.add(renderSection.getChunkArea());
                 this.nonEmptyChunks++;
             }
+
+            countUnbuilt(renderSection);
 
             if (renderSection.isDirty()) {
                 this.rebuildQueue.ensureCapacity(1);

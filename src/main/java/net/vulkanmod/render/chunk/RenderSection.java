@@ -320,6 +320,10 @@ public class RenderSection {
         return compileStatus.compiledSection;
     }
 
+    public boolean isChunkRenderReady() {
+        return ChunkStatusMap.INSTANCE.chunkRenderReady(this.xOffset >> 4, this.zOffset >> 4);
+    }
+
     public boolean isCompiled() {
         return this.compileStatus.compiledSection != CompiledSection.UNCOMPILED;
     }

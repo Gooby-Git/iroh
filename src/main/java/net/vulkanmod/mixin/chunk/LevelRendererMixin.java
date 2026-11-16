@@ -117,7 +117,7 @@ public abstract class LevelRendererMixin {
      */
     @Overwrite
     public boolean hasRenderedAllSections() {
-        return !this.worldRenderer.graphNeedsUpdate() && this.worldRenderer.getTaskDispatcher().isIdle();
+        return this.worldRenderer.hasRenderedAllSections();
     }
 
     /**

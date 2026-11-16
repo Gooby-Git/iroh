@@ -417,6 +417,15 @@ public class WorldRenderer {
         this.graphNeedsUpdate = true;
     }
 
+    /**
+     * Truthful "everything in view is built" (P1-8b, td-9f5b8e): no graph update pending, no build task queued or running,
+     * no compile result waiting for upload, and no reachable section that can be built but has no compiled result.
+     */
+    public boolean hasRenderedAllSections() {
+        return this.sectionGraph != null && !this.graphNeedsUpdate && this.taskDispatcher.isIdle()
+                && this.sectionGraph.getUnbuiltSections() == 0;
+    }
+
     public boolean graphNeedsUpdate() {
         return this.graphNeedsUpdate;
     }
