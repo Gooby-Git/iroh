@@ -12,6 +12,7 @@ layout(location = 4) in vec3 Normal;
 layout(binding = 0) uniform UniformBufferObject {
     mat4 MVP;
     vec3 ChunkOffset;
+   int FogShape;
 };
 
 layout(binding = 3) uniform sampler2D Sampler2;
@@ -24,7 +25,7 @@ void main() {
     vec3 pos = Position + ChunkOffset;
     gl_Position = MVP * vec4(pos, 1.0);
 
-    vertexDistance = fog_distance(pos, 0);
+    vertexDistance = fog_distance(pos, FogShape);
     vertexColor = Color * minecraft_sample_lightmap(Sampler2, UV2);
     texCoord0 = UV0;
 }

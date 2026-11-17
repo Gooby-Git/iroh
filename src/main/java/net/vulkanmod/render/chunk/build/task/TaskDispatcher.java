@@ -23,6 +23,8 @@ public class TaskDispatcher {
     private Thread[] threads;
     private BuilderResources[] resources;
     private int idleThreads;
+    /** Tasks queued or running (P1-8b): the idle-thread count alone is true while a woken thread has not yet taken its task. */
+    private final java.util.concurrent.atomic.AtomicInteger pendingTasks = new java.util.concurrent.atomic.AtomicInteger();
     private final Queue<ChunkTask> highPriorityTasks = Queues.newConcurrentLinkedQueue();
     private final Queue<ChunkTask> lowPriorityTasks = Queues.newConcurrentLinkedQueue();
 
@@ -88,13 +90,19 @@ public class TaskDispatcher {
             if(task == null)
                 continue;
 
-            task.runTask(builderResources);
+            try {
+                task.runTask(builderResources);
+            } finally {
+                this.pendingTasks.decrementAndGet();
+            }
         }
     }
 
     public void schedule(ChunkTask chunkTask) {
         if(chunkTask == null)
             return;
+
+        this.pendingTasks.incrementAndGet();
 
         if (chunkTask.highPriority) {
             this.highPriorityTasks.offer(chunkTask);
@@ -182,13 +190,14 @@ public class TaskDispatcher {
         }
     }
 
-    public boolean isIdle() { return this.idleThreads == this.threads.length && this.compileResults.isEmpty(); }
+    public boolean isIdle() { return this.pendingTasks.get() == 0 && this.compileResults.isEmpty(); }
 
     public void clearBatchQueue() {
         while(!this.highPriorityTasks.isEmpty()) {
             ChunkTask chunkTask = this.highPriorityTasks.poll();
             if (chunkTask != null) {
                 chunkTask.cancel();
+                this.pendingTasks.decrementAndGet();
             }
         }
 
@@ -196,6 +205,7 @@ public class TaskDispatcher {
             ChunkTask chunkTask = this.lowPriorityTasks.poll();
             if (chunkTask != null) {
                 chunkTask.cancel();
+                this.pendingTasks.decrementAndGet();
             }
         }
     }

@@ -37,7 +37,7 @@ public class GraphicsPipeline extends Pipeline {
         this.pushConstants = builder.pushConstants;
         this.vertexFormat = builder.vertexFormat;
 
-        this.vertexInputDescription = new VertexInputDescription(this.vertexFormat);
+        this.vertexInputDescription = new VertexInputDescription(this.vertexFormat, inputLocations(builder.vertShaderSPIRV));
 
         createDescriptorSetLayout();
         createPipelineLayout();
@@ -211,6 +211,39 @@ public class GraphicsPipeline extends Pipeline {
         }
     }
 
+    /** Bit mask of the vertex input locations (below 64) the SPIR-V declares; 0 when it cannot be read. */
+    static long inputLocations(SPIRVUtils.SPIRV vert) {
+        try {
+            ByteBuffer code = vert.bytecode().duplicate().order(java.nio.ByteOrder.nativeOrder());
+            java.util.Map<Integer, Integer> locationOf = new java.util.HashMap<>();
+            java.util.List<Integer> inputs = new java.util.ArrayList<>();
+            int words = code.remaining() / 4;
+            int pos = 5; // after the header
+            while (pos < words) {
+                int w = code.getInt(code.position() + pos * 4);
+                int count = w >>> 16;
+                int op = w & 0xFFFF;
+                if (count == 0)
+                    return 0L;
+                if (op == 71 && count >= 4 && code.getInt(code.position() + (pos + 2) * 4) == 30) { // OpDecorate Location
+                    locationOf.put(code.getInt(code.position() + (pos + 1) * 4), code.getInt(code.position() + (pos + 3) * 4));
+                } else if (op == 59 && count >= 4 && code.getInt(code.position() + (pos + 3) * 4) == 1) { // OpVariable Input
+                    inputs.add(code.getInt(code.position() + (pos + 2) * 4));
+                }
+                pos += count;
+            }
+            long mask = 0L;
+            for (int id : inputs) {
+                Integer loc = locationOf.get(id);
+                if (loc != null && loc < 64)
+                    mask |= 1L << loc;
+            }
+            return mask;
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
     private void createShaderModules(SPIRVUtils.SPIRV vertSpirv, SPIRVUtils.SPIRV fragSpirv) {
         this.vertShaderModule = createShaderModule(vertSpirv.bytecode());
         this.fragShaderModule = createShaderModule(fragSpirv.bytecode());
@@ -240,9 +273,46 @@ public class GraphicsPipeline extends Pipeline {
         final VkVertexInputAttributeDescription.Buffer attributeDescriptions;
         final VkVertexInputBindingDescription.Buffer bindingDescriptions;
 
-        VertexInputDescription(VertexFormat vertexFormat) {
+        VertexInputDescription(VertexFormat vertexFormat, long consumedLocations) {
             this.bindingDescriptions = getBindingDescription(vertexFormat);
-            this.attributeDescriptions = getAttributeDescriptions(vertexFormat);
+            this.attributeDescriptions = dropUnconsumed(getAttributeDescriptions(vertexFormat), consumedLocations);
+        }
+
+        /**
+         * Validation warns for every attribute the vertex shader does not read. The binding stride (the vertex layout)
+         * stays as the format defines it; only the attribute descriptions the shader never consumes are left out (P1-8b).
+         */
+        private static VkVertexInputAttributeDescription.Buffer dropUnconsumed(VkVertexInputAttributeDescription.Buffer all, long consumed) {
+            if (consumed == 0L)
+                return all;
+
+            int kept = 0;
+            for (int i = 0; i < all.remaining(); i++) {
+                if (isConsumed(all.get(i).location(), consumed))
+                    kept++;
+            }
+
+            if (kept == all.remaining() || kept == 0)
+                return all;
+
+            VkVertexInputAttributeDescription.Buffer out = VkVertexInputAttributeDescription.calloc(kept);
+            int n = 0;
+            for (int i = 0; i < all.remaining(); i++) {
+                VkVertexInputAttributeDescription d = all.get(i);
+                if (isConsumed(d.location(), consumed)) {
+                    VkVertexInputAttributeDescription o = out.get(n++);
+                    o.binding(d.binding());
+                    o.location(d.location());
+                    o.format(d.format());
+                    o.offset(d.offset());
+                }
+            }
+            MemoryUtil.memFree(all);
+            return out.rewind();
+        }
+
+        private static boolean isConsumed(int location, long consumed) {
+            return location >= 64 || (consumed & (1L << location)) != 0;
         }
 
         void cleanUp() {

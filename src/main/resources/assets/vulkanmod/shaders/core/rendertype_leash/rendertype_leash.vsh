@@ -9,6 +9,7 @@ layout(location = 2) in ivec2 UV2;
 layout(binding = 0) uniform UniformBufferObject {
    mat4 MVP;
    vec4 ColorModulator;
+   int FogShape;
 };
 
 layout(binding = 2) uniform sampler2D Sampler2;
@@ -19,6 +20,6 @@ layout(location = 1) out float vertexDistance;
 void main() {
     gl_Position = MVP * vec4(Position, 1.0);
 
-    vertexDistance = fog_distance(Position.xyz, 0);
+    vertexDistance = fog_distance(Position.xyz, FogShape);
     vertexColor = Color * ColorModulator * texelFetch(Sampler2, UV2 / 16, 0);
 }
