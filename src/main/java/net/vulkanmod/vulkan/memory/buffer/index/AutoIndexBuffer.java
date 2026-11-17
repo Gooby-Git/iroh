@@ -60,6 +60,7 @@ public class AutoIndexBuffer {
     public void checkCapacity(int vertexCount) {
         if(vertexCount > this.vertexCount) {
             int newVertexCount = this.vertexCount * 2;
+            while (newVertexCount < vertexCount) newVertexCount *= 2; // a mesh over twice the capacity must not index past the end
             Initializer.LOGGER.info("Reallocating AutoIndexBuffer from {} to {}", this.vertexCount, newVertexCount);
 
             this.indexBuffer.scheduleFree();

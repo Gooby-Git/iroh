@@ -27,6 +27,8 @@ public class VBO {
 
     private VertexFormat.Mode mode;
     private boolean autoIndexed = false;
+    /** The shared index buffer this VBO draws with (null when it owns its indices). Re-read at draw time: a bigger mesh elsewhere replaces and frees the shared buffer (td-570096). */
+    private AutoIndexBuffer autoIndexSource;
     private int indexCount;
     private int vertexCount;
 
@@ -90,6 +92,7 @@ public class VBO {
                 this.indexBuffer.scheduleFree();
             }
 
+            this.autoIndexSource = autoIndexBuffer;
             if (autoIndexBuffer != null) {
                 autoIndexBuffer.checkCapacity(this.vertexCount);
                 this.indexBuffer = autoIndexBuffer.getIndexBuffer();
@@ -102,13 +105,21 @@ public class VBO {
                 this.indexBuffer.scheduleFree();
             }
 
+            this.autoIndexSource = null;
             this.indexBuffer = new IndexBuffer(data.remaining(), MemoryTypes.GPU_MEM);
             this.indexBuffer.copyBuffer(data, data.remaining());
         }
     }
 
+    private void refreshAutoIndex() {
+        if (this.autoIndexSource != null) {
+            this.indexBuffer = this.autoIndexSource.getIndexBuffer();
+        }
+    }
+
     public void drawWithShader(Matrix4f modelView, Matrix4f projection, ShaderInstance shaderInstance) {
         if (this.indexCount != 0) {
+            refreshAutoIndex();
             RenderSystem.assertOnRenderThread();
 
             RenderSystem.setShader(() -> shaderInstance);
@@ -133,6 +144,7 @@ public class VBO {
 
     public void drawWithShader(Matrix4f modelView, Matrix4f projection, GraphicsPipeline pipeline) {
         if (this.indexCount != 0) {
+            refreshAutoIndex();
             RenderSystem.assertOnRenderThread();
 
             VRenderSystem.applyMVP(modelView, projection);
@@ -157,6 +169,7 @@ public class VBO {
 
     public void draw() {
         if (this.indexCount != 0) {
+            refreshAutoIndex();
             if (this.indexBuffer != null) {
                 Renderer.getDrawer().drawIndexed(this.vertexBuffer, this.indexBuffer, this.indexCount);
             }

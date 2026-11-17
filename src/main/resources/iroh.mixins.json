@@ -8,6 +8,7 @@
   ],
   "client": [
     "window.WindowMixin",
+    "render.PackFogM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",
