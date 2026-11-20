@@ -280,6 +280,12 @@ public final class GlState {
         if (scissorEnabled) applyScissor();
     }
 
+    /** After Renderer.flushCmds began a new command buffer (resetDynamicState zeroed depth bias and line width). */
+    public static void reapplyDynamicState() {
+        if (polygonOffsetFill) Renderer.setDepthBias(polygonOffsetFactor, polygonOffsetUnits); // as polygonOffset() applies it (RQ-17)
+        VRenderSystem.setLineWidth(lineWidth);
+    }
+
     public static void activeTexture(int unitEnum) {
         VkGlTexture.activeTexture(unitEnum);
         int unit = unitEnum - GL_TEXTURE0;

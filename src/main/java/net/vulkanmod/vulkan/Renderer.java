@@ -301,6 +301,9 @@ public class Renderer {
         }
 
         recordingCmds = true;
+        // Iroh (td-4a9be3): a new frame command buffer; uses recorded in the previous one have executed or will
+        // execute before anything recorded from now on (see VulkanImage.uploadOwned / frameUse).
+        net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
         mainPass.begin(commandBuffer, stack);
 
         resetDynamicState(commandBuffer);
