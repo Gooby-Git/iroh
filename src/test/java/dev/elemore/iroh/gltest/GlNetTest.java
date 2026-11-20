@@ -135,6 +135,13 @@ public final class GlNetTest {
         check(where + ": glCopyTexSubImage2D / glReadPixels not in the unhandled list",
                 GlShim.unhandledCounts().keySet().stream().noneMatch(k -> k.startsWith("glCopyTexSubImage2D <-") || k.startsWith("glReadPixels <-")));
 
+        // slice 2 item 4: fences are signalled at creation (readbacks complete synchronously)
+        long sync = org.lwjgl.opengl.GL32C.glFenceSync(0x9117, 0);
+        check(where + ": glFenceSync handle, glClientWaitSync ALREADY_SIGNALED",
+                sync != 0 && org.lwjgl.opengl.GL32C.glClientWaitSync(sync, 1, 1_000_000L) == 0x911A
+                && org.lwjgl.opengl.GL32C.glGetSynci(sync, 0x9114, null) == 0x9119);
+        org.lwjgl.opengl.GL32C.glDeleteSync(sync);
+
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);

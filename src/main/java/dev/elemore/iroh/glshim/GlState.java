@@ -72,6 +72,7 @@ public final class GlState {
     private static final float[] blendColor = new float[4];
 
     private static int currentProgram, vertexArray;
+    private static long fenceCounter;
     private static int nextVertexArray = 1;
     // pixel store: unpack / pack alignment, row length, skip rows, skip pixels
     private static int unpackAlignment = 4, unpackRowLength, unpackSkipRows, unpackSkipPixels;
@@ -847,6 +848,28 @@ public final class GlState {
             int n = i(a, 0);
             long p = p(a, 1);
             for (int k = 0; k < n; k++) GlPrograms.deleteVertexArray(memGetInt(p + 4L * k));
+            return 0;
+        });
+
+        // ---- sync objects (P1-2 slice 2, item 4). Every emulated GL command that produces host-visible data
+        // (glReadPixels, glGetTexImage, buffer storage) completes before it returns (FrameSync), so a fence is
+        // signalled when it is created; GPU work stays ordered by Iroh's own submission order.
+        on("glFenceSync", "P:II", a -> 0x5EC00000L + (++fenceCounter));
+        on("glIsSync", "Z:P", a -> p(a, 0) != NULL ? 1 : 0);
+        on("glDeleteSync", "V:P", a -> 0);
+        on("glWaitSync", "V:PIJ", a -> 0);
+        on("glClientWaitSync", "I:PIJ", a -> 0x911A); // GL_ALREADY_SIGNALED
+        on("glGetSynciv", "V:PIIPP", a -> {
+            int pname = i(a, 1), bufSize = i(a, 2);
+            long length = p(a, 3), values = p(a, 4);
+            int v = switch (pname) {
+                case 0x9112 -> 0x9116;  // OBJECT_TYPE -> SYNC_FENCE
+                case 0x9113 -> 0x9117;  // SYNC_CONDITION -> SYNC_GPU_COMMANDS_COMPLETE
+                case 0x9114 -> 0x9119;  // SYNC_STATUS -> SIGNALED
+                default -> 0;           // SYNC_FLAGS
+            };
+            if (values != NULL && bufSize > 0) memPutInt(values, v);
+            if (length != NULL) memPutInt(length, 1);
             return 0;
         });
 
