@@ -3,6 +3,7 @@ package dev.elemore.iroh.gltest;
 import com.mojang.blaze3d.platform.GlStateManager;
 import dev.elemore.iroh.glshim.GlNet;
 import dev.elemore.iroh.glshim.GlShim;
+import dev.elemore.iroh.glshim.PixelTransfer;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11C;
@@ -52,6 +53,8 @@ public final class GlNetTest {
             JNI.callPV(0x0B74, out, icd.glGetIntegerv);
             check("libGL glGetIntegerv without context is a no-op (value untouched)", out[0] == 12345);
         }
+
+        pixelTransferChecks();
 
         System.out.print(GlShim.unhandledSummary());
         System.out.println(FAILS.isEmpty() ? "# glnet PASS " + checks + "/" + checks
@@ -125,6 +128,45 @@ public final class GlNetTest {
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);
+    }
+
+    /** P1-2 slice 2 (td-834bea): GL unpack / pack rules, pure CPU. */
+    private static void pixelTransferChecks() {
+        // Xaero: 64x64 BGRA + UNSIGNED_INT_8_8_8_8, row length 0, alignment 4 -> RGBA8
+        int w = 64, h = 64;
+        java.nio.ByteBuffer src = org.lwjgl.system.MemoryUtil.memAlloc(w * h * 4);
+        for (int i = 0; i < w * h; i++) src.putInt(i * 4, 0x11223344 + i); // B=0x11 G=0x22 R=0x33 A=0x44(+i) as a packed int
+        long stride = PixelTransfer.rowStride(w, 0, 4, PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8);
+        check("pixel: row length 0 -> width * bpp", stride == 256);
+        java.nio.ByteBuffer dst = PixelTransfer.alloc(w, h, PixelTransfer.Dst.RGBA8);
+        boolean ok = PixelTransfer.unpack(org.lwjgl.system.MemoryUtil.memAddress(src), stride, w, h,
+                PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8, PixelTransfer.Dst.RGBA8, org.lwjgl.system.MemoryUtil.memAddress(dst));
+        check("pixel: BGRA/8_8_8_8 unpack supported", ok);
+        check("pixel: BGRA/8_8_8_8 -> R,G,B,A bytes", (dst.get(0) & 0xFF) == 0x33 && (dst.get(1) & 0xFF) == 0x22
+                && (dst.get(2) & 0xFF) == 0x11 && (dst.get(3) & 0xFF) == 0x44);
+        int last = (w * h - 1) * 4;
+        check("pixel: last pixel converted (no staging garbage)", (dst.get(last + 3) & 0xFF) == ((0x44 + w * h - 1) & 0xFF));
+        // pack back to the same format through a stride with skip
+        java.nio.ByteBuffer back = org.lwjgl.system.MemoryUtil.memCalloc(w * h * 4);
+        PixelTransfer.pack(org.lwjgl.system.MemoryUtil.memAddress(dst), PixelTransfer.Dst.RGBA8, w, h,
+                PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8, org.lwjgl.system.MemoryUtil.memAddress(back), stride);
+        check("pixel: pack round trip BGRA/8_8_8_8", back.getInt(0) == src.getInt(0) && back.getInt(last) == src.getInt(last));
+        // RGB unsigned byte, width 3, alignment 4 -> stride 12 (9 bytes padded)
+        check("pixel: RGB stride padded to alignment", PixelTransfer.rowStride(3, 0, 4, PixelTransfer.GL_RGB, PixelTransfer.GL_UNSIGNED_BYTE) == 12);
+        check("pixel: RGB alignment 1 unpadded", PixelTransfer.rowStride(3, 0, 1, PixelTransfer.GL_RGB, PixelTransfer.GL_UNSIGNED_BYTE) == 9);
+        check("pixel: float element >= alignment unpadded", PixelTransfer.rowStride(3, 0, 4, PixelTransfer.GL_RED, PixelTransfer.GL_FLOAT) == 12);
+        check("pixel: skip rows/pixels with row length", PixelTransfer.skipOffset(10, 16, 4, 2, 3, PixelTransfer.GL_RGBA, PixelTransfer.GL_UNSIGNED_BYTE) == 2 * 64 + 12);
+        // RGBA bytes are identical to RGBA8 (memcpy path); BGRA bytes are not
+        check("pixel: RGBA/UNSIGNED_BYTE identical to RGBA8", PixelTransfer.identical(PixelTransfer.GL_RGBA, PixelTransfer.GL_UNSIGNED_BYTE, PixelTransfer.Dst.RGBA8));
+        check("pixel: BGRA/8_8_8_8 not identical to RGBA8", !PixelTransfer.identical(PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8, PixelTransfer.Dst.RGBA8));
+        // RGB -> RGBA8 fills alpha 1
+        java.nio.ByteBuffer rgb = org.lwjgl.system.MemoryUtil.memAlloc(12);
+        rgb.put(0, (byte) 10).put(1, (byte) 20).put(2, (byte) 30);
+        java.nio.ByteBuffer one = PixelTransfer.alloc(1, 1, PixelTransfer.Dst.RGBA8);
+        PixelTransfer.unpack(org.lwjgl.system.MemoryUtil.memAddress(rgb), 12, 1, 1, PixelTransfer.GL_RGB, PixelTransfer.GL_UNSIGNED_BYTE,
+                PixelTransfer.Dst.RGBA8, org.lwjgl.system.MemoryUtil.memAddress(one));
+        check("pixel: RGB -> RGBA8 alpha 255", one.get(0) == 10 && one.get(2) == 30 && (one.get(3) & 0xFF) == 255);
+        for (java.nio.ByteBuffer b : new java.nio.ByteBuffer[]{src, dst, back, rgb, one}) org.lwjgl.system.MemoryUtil.memFree(b);
     }
 
     private static void check(String what, boolean ok) {
