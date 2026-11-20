@@ -18,7 +18,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.List;
 
-@Mixin(ModelPart.class)
+@Mixin(value = ModelPart.class, priority = 1500)
 public abstract class ModelPartM {
     @Shadow @Final private List<ModelPart.Cube> cubes;
 

@@ -28,7 +28,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * These are overrides on MainTarget only; every other RenderTarget keeps the vanilla methods (and every mod
  * injector on them). createFrameBuffer uses a HEAD-cancel inject, not an Overwrite (lessons.md P1-1b).
  */
-@Mixin(MainTarget.class)
+@Mixin(value = MainTarget.class, priority = 500)
 public class MainTargetMixin extends RenderTarget {
 
     // RenderTarget.clearChannels is private; MainTarget keeps its own copy (vanilla default 1,1,1,0).
