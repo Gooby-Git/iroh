@@ -145,6 +145,8 @@ public final class ShaderHarness {
         }
         if (!mode.equals("legacy"))
             lines.addAll(SelfCases.run(show, detail));
+        if (!mode.equals("legacy"))
+            lines.addAll(GlProgramCases.run(mods, opt.get("programs"), show, detail));
         lines.sort(null);
 
         List<String> report = new ArrayList<>();

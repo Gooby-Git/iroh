@@ -347,6 +347,14 @@ public final class GlState {
         clearStencil = s;
     }
 
+    public static int currentProgram() {
+        return currentProgram;
+    }
+
+    public static int currentVertexArray() {
+        return vertexArray;
+    }
+
     public static void useProgram(int id) {
         currentProgram = id;
         if (id == 0 || VkGlProgram.getProgram(id) != null) VkGlProgram.glUseProgram(id);
@@ -821,7 +829,15 @@ public final class GlState {
             return 0;
         });
         on("glBindVertexArray", "V:I", a -> { vertexArray = i(a, 0); return 0; });
-        on("glDeleteVertexArrays", "V:IP", a -> 0);
+        on("glDeleteVertexArrays", "V:IP", a -> {
+            int n = i(a, 0);
+            long p = p(a, 1);
+            for (int k = 0; k < n; k++) GlPrograms.deleteVertexArray(memGetInt(p + 4L * k));
+            return 0;
+        });
+
+        // ---- GLSL programs through raw GL, vertex arrays, draws (P1-2 slice 2, item 2)
+        GlPrograms.register();
     }
 
     /** glReadPixels: rectangle of the READ framebuffer (GL row order, RQ-16) with pack state and pack buffers. */

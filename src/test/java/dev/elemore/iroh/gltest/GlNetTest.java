@@ -55,6 +55,7 @@ public final class GlNetTest {
         }
 
         pixelTransferChecks();
+        programChecks();
 
         System.out.print(GlShim.unhandledSummary());
         System.out.println(FAILS.isEmpty() ? "# glnet PASS " + checks + "/" + checks
@@ -67,8 +68,9 @@ public final class GlNetTest {
         check(where + ": glCreateBuffers (GL45, unhandled) returns 0", GL45C.glCreateBuffers() == 0);
         GL20C.glUseProgram(0);
         int prog = GL20C.glCreateProgram();
-        check(where + ": glCreateProgram (unhandled) returns 0", prog == 0);
-        check(where + ": glGetUniformLocation (unhandled, string arg) returns 0", GL20C.glGetUniformLocation(7, "Foo") == 0);
+        check(where + ": glCreateProgram (emulated since slice 2) returns an id", prog != 0);
+        check(where + ": glGetUniformLocation of an unlinked program is -1", GL20C.glGetUniformLocation(prog, "Foo") == -1);
+        check(where + ": glGetUniformBlockIndex (unhandled, string arg) returns 0", org.lwjgl.opengl.GL31C.glGetUniformBlockIndex(7, "Foo") == 0);
         check(where + ": glGetError handled -> 0", GL11C.glGetError() == 0);
 
         // depth func round trip, incl. GL_LESS (ImmediatelyFast blocker D) and vanilla cache sync
@@ -135,6 +137,40 @@ public final class GlNetTest {
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);
+    }
+
+    /** P1-2 slice 2 item 2: shader objects capture sources through the real LWJGL entry points; the link translates. */
+    private static void programChecks() {
+        String vs = "#version 150\nin vec2 Position;\nin vec4 Color;\nout vec4 c;\nvoid main(){ c = Color; gl_Position = vec4(Position,0,1); }\n";
+        String fs = "#version 150\nuniform vec4 Tint;\nuniform sampler2D Tex;\nin vec4 c;\nout vec4 o;\nvoid main(){ o = c * Tint * texture(Tex, vec2(0.5)); }\n";
+        int v = GL20C.glCreateShader(0x8B31), f = GL20C.glCreateShader(0x8B30);
+        check("prog: glCreateShader answered", v != 0 && f != 0 && v != f);
+        GL20C.glShaderSource(v, vs);
+        GL20C.glShaderSource(f, fs);
+        check("prog: glShaderSource captured", vs.equals(dev.elemore.iroh.glshim.GlPrograms.sourceOf(v)) && fs.equals(dev.elemore.iroh.glshim.GlPrograms.sourceOf(f)));
+        GL20C.glCompileShader(v);
+        check("prog: COMPILE_STATUS true (errors come at link)", GL20C.glGetShaderi(v, 0x8B81) == 1);
+        int prog = GL20C.glCreateProgram();
+        check("prog: glCreateProgram answered", prog != 0);
+        GL20C.glAttachShader(prog, v);
+        GL20C.glAttachShader(prog, f);
+        GL20C.glBindAttribLocation(prog, 2, "Color");
+        check("prog: glBindAttribLocation recorded", Integer.valueOf(2).equals(dev.elemore.iroh.glshim.GlPrograms.boundAttribsOf(prog).get("Color")));
+        dev.elemore.iroh.glshim.GlPrograms.LinkResult r = dev.elemore.iroh.glshim.GlPrograms.LinkResult.link(
+                vs, fs, dev.elemore.iroh.glshim.GlPrograms.boundAttribsOf(prog), true);
+        check("prog: link translates + compiles (" + r.log + ")", r.ok);
+        check("prog: bound location kept, free slot filled", r.ok && "Color".equals(r.attributes.get(2)) && "Position".equals(r.attributes.get(0)));
+        check("prog: uniform in block, sampler bound", r.ok && r.output.uniforms().size() == 1 && r.output.samplers().size() == 1);
+        dev.elemore.iroh.glshim.GlPrograms.LinkResult legacy = dev.elemore.iroh.glshim.GlPrograms.LinkResult.link(
+                "#version 110\nvoid main(){ gl_Position = ftransform(); }", "#version 110\nvoid main(){ gl_FragColor = vec4(1); }",
+                new java.util.HashMap<>(), false);
+        check("prog: fixed-function built-ins refused like a core profile", !legacy.ok && legacy.log.contains("ftransform"));
+        if (r.vertex != null) r.vertex.free();
+        if (r.fragment != null) r.fragment.free();
+        // no program current: draw is reported, not crashed
+        GL11C.glDrawArrays(0x0004, 0, 3);
+        check("prog: glDrawArrays without a program logged as unhandled",
+                GlShim.unhandledCounts().keySet().stream().anyMatch(k -> k.startsWith("glDrawArrays(no GL program current)")));
     }
 
     /** P1-2 slice 2 (td-834bea): GL unpack / pack rules, pure CPU. */

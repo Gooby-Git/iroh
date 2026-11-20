@@ -67,13 +67,46 @@ public class VkGlBuffer {
             MemoryUtil.memCopy(MemoryUtil.memAddress(byteBuffer), MemoryUtil.memAddress(buffer.data), size);
     }
 
-    /** Pixel buffer bound to a target, or null (non-pixel targets have no storage under Iroh). */
+    /**
+     * Buffer bound to a target, or null. Iroh (P1-2 slice 2): every target has CPU storage now, so raw-GL draws
+     * (GlPrograms) can read vertex / index data that mods put in GL_ARRAY_BUFFER / GL_ELEMENT_ARRAY_BUFFER.
+     */
     public static VkGlBuffer boundTo(int target) {
         return switch (target) {
             case GL32.GL_PIXEL_PACK_BUFFER -> pixelPackBufferBound;
             case GL32.GL_PIXEL_UNPACK_BUFFER -> pixelUnpackBufferBound;
-            default -> null;
+            default -> {
+                int id = bindings.get(target);
+                yield id != 0 ? map.get(id) : null;
+            }
         };
+    }
+
+    /** Address of a buffer's storage (0 if none), and its size. */
+    public static long dataAddress(int id) {
+        VkGlBuffer b = map.get(id);
+        return b != null && b.data != null ? MemoryUtil.memAddress0(b.data) : 0L;
+    }
+
+    public static long dataSize(int id) {
+        VkGlBuffer b = map.get(id);
+        return b != null && b.data != null ? b.data.capacity() : 0L;
+    }
+
+    /** glBufferSubData. */
+    public static void bufferSubData(int target, long offset, long size, long src) {
+        VkGlBuffer b = boundTo(target);
+        if (b == null || b.data == null || src == 0L || offset < 0 || offset + size > b.data.capacity())
+            return;
+        MemoryUtil.memCopy(src, MemoryUtil.memAddress0(b.data) + offset, size);
+    }
+
+    /** glMapBufferRange: CPU storage, so the mapping is the storage itself (flags ignored). */
+    public static long mapRange(int target, long offset, long length) {
+        VkGlBuffer b = boundTo(target);
+        if (b == null || b.data == null || offset < 0 || offset + length > b.data.capacity())
+            return 0L;
+        return MemoryUtil.memAddress0(b.data) + offset;
     }
 
     /** GL_BUFFER_SIZE of the buffer bound to a target (0 when none or no storage). */

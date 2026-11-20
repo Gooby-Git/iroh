@@ -1,0 +1,6 @@
+# id vertex fragment expect   (expect: PASS, or FAIL:<substring of the log>)
+# A source "jar:<jar name prefix>!<entry>" is read from the mods folder at run time (third-party shader files are
+# never copied into this repo; Replay Mod is GPL).
+fancymenu/shadertoy fancymenu/quad.vsh fancymenu/shadertoy.fsh PASS
+fancymenu/direct_glfragcolor fancymenu/quad.vsh fancymenu/direct_glfragcolor.fsh PASS
+replaymod/ods jar:replaymod-!assets/replaymod/shader/ods.vert jar:replaymod-!assets/replaymod/shader/ods.frag FAIL:legacy fixed-function

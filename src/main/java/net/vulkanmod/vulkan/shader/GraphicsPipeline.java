@@ -441,6 +441,17 @@ public class GraphicsPipeline extends Pipeline {
 
                         offset += 4;
                     }
+                    else if (type == VertexFormatElement.Type.FLOAT && elementCount >= 1 && elementCount <= 4) {
+                        // Iroh (P1-2 slice 2): raw-GL program draws (dev.elemore.iroh.glshim.GlPrograms) feed floats
+                        posDescription.format(switch (elementCount) {
+                            case 1 -> VK_FORMAT_R32_SFLOAT;
+                            case 2 -> VK_FORMAT_R32G32_SFLOAT;
+                            case 3 -> VK_FORMAT_R32G32B32_SFLOAT;
+                            default -> VK_FORMAT_R32G32B32A32_SFLOAT;
+                        });
+                        posDescription.offset(offset);
+                        offset += 4 * elementCount;
+                    }
                     else {
                         throw new RuntimeException(String.format("Unknown format: %s", usage));
                     }
