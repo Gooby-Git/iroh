@@ -165,13 +165,15 @@ public class DefaultMainPass implements MainPass {
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 
+        // Iroh (RQ-16): the scene target holds GL row order (row 0 = bottom), the swapchain is top-down: one blit
+        // with the destination rows swapped. Copy only if blitting is impossible (picture would be upside down).
+        boolean copy = !swapChain.canBlitTo();
         boolean sameSize = src.width == dst.width && src.height == dst.height;
-        boolean copy = sameSize && src.format == dst.format;
 
         if (!this.loggedCopyMode) {
             Initializer.LOGGER.info("Iroh: frame end {} scene {}x{} fmt {} -> swapchain {}x{} fmt {}",
-                    copy ? "vkCmdCopyImage" : "vkCmdBlitImage", src.width, src.height, src.format,
-                    dst.width, dst.height, dst.format);
+                    copy ? "vkCmdCopyImage (NO FLIP: swapchain format has no BLIT_DST)" : "vkCmdBlitImage (vertical flip)",
+                    src.width, src.height, src.format, dst.width, dst.height, dst.format);
             this.loggedCopyMode = true;
         }
 
@@ -181,23 +183,18 @@ public class DefaultMainPass implements MainPass {
             region.dstSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
             region.srcOffset().set(0, 0, 0);
             region.dstOffset().set(0, 0, 0);
-            region.extent().set(src.width, src.height, 1);
+            region.extent().set(Math.min(src.width, dst.width), Math.min(src.height, dst.height), 1);
 
             vkCmdCopyImage(commandBuffer, src.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            dst.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
         } else {
-            if (!swapChain.canBlitTo())
-                throw new IllegalStateException("Iroh: swapchain format " + dst.format
-                        + " has no BLIT_DST support and differs from the scene target (format " + src.format
-                        + ", " + src.width + "x" + src.height + " vs " + dst.width + "x" + dst.height + ")");
-
             VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
             blit.srcSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
             blit.dstSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
             blit.srcOffsets(0).set(0, 0, 0);
             blit.srcOffsets(1).set(src.width, src.height, 1);
-            blit.dstOffsets(0).set(0, 0, 0);
-            blit.dstOffsets(1).set(dst.width, dst.height, 1);
+            blit.dstOffsets(0).set(0, dst.height, 0);
+            blit.dstOffsets(1).set(dst.width, 0, 1);
 
             vkCmdBlitImage(commandBuffer, src.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            dst.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit,

@@ -80,16 +80,38 @@ public final class GlState {
     // ================================================================ GL-layout of the bound target (RQ-11)
 
     /**
-     * True when the bound Vulkan framebuffer is an off-screen target. Iroh stores off-screen targets in GL's memory
-     * layout (row 0 = GL's bottom row; positive Vulkan viewport height), so mods sampling them with GL texture
-     * coordinates, reading them back, or blitting sub-rectangles get what GL gives. Only the main scene target is
-     * stored top-down (negative viewport height) because it is copied 1:1 to the swapchain; see RQ-11 / RQ-16.
+     * True when the bound Vulkan framebuffer stores GL's row order (row 0 = GL's bottom row; positive Vulkan viewport
+     * height). Since RQ-16 that is EVERY render target, the main scene target included: mods that sample a target with
+     * GL texture coordinates, read it back, copy or blit sub-rectangles get what GL gives, and gl_FragCoord.y counts
+     * from the bottom as in GL. Only the swapchain is top-down; nothing draws into it (the frame ends with one flipped
+     * blit from the scene target, DefaultMainPass.copyToSwapChain).
      */
+    public static boolean glLayoutBound() {
+        Renderer r = Renderer.getInstance();
+        if (r == null) return true;
+        Framebuffer fb = r.getBoundFramebuffer();
+        return !(fb instanceof net.vulkanmod.vulkan.framebuffer.SwapChain);
+    }
+
+    /** Pre-RQ-16 name, kept for callers outside the shim: an off-screen (non-main) target is bound. */
     public static boolean offscreenBound() {
         Renderer r = Renderer.getInstance();
         if (r == null) return false;
         Framebuffer fb = r.getBoundFramebuffer();
         return fb != null && !(fb instanceof SceneTarget) && !(fb instanceof net.vulkanmod.vulkan.framebuffer.SwapChain);
+    }
+
+    /**
+     * Vulkan cull mode for the GL cull state (glCullFace + glFrontFace). GL-layout targets mirror the winding Vulkan
+     * sees (positive viewport height), so GL's back faces are Vulkan's front faces with VK_FRONT_FACE_COUNTER_CLOCKWISE.
+     */
+    public static int vkCullMode() {
+        boolean mirrored = glLayoutBound() ^ (frontFace == 0x0900 /* GL_CW */);
+        return switch (cullFaceMode) {
+            case 0x0404 /* GL_FRONT */ -> mirrored ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
+            case 0x0408 /* GL_FRONT_AND_BACK */ -> VK_CULL_MODE_FRONT_AND_BACK;
+            default /* GL_BACK */ -> mirrored ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+        };
     }
 
     private static int boundHeight() {
@@ -239,8 +261,8 @@ public final class GlState {
         viewport[1] = y;
         viewport[2] = w;
         viewport[3] = h;
-        if (offscreenBound()) Renderer.setViewport(x, y + h, w, -h); // GL layout: positive Vulkan height
-        else Renderer.setViewport(x, y, w, h);                       // main target: flipped (top-down)
+        if (glLayoutBound()) Renderer.setViewport(x, y + h, w, -h); // GL layout: positive Vulkan height (RQ-16)
+        else Renderer.setViewport(x, y, w, h);                      // swapchain: top-down
     }
 
     /** Iroh's own GL-layout viewport (Renderer.setInvertedViewport: post passes, FBO begin): tracked, not re-derived. */
@@ -266,7 +288,7 @@ public final class GlState {
     public static void applyScissor() {
         int x = scissorBox[0], y = scissorBox[1], w = scissorBox[2], h = scissorBox[3];
         if (w <= 0 || h <= 0) return;
-        if (offscreenBound()) Renderer.setScissor(x, boundHeight() - (y + h), w, h);
+        if (glLayoutBound()) Renderer.setScissor(x, boundHeight() - (y + h), w, h);
         else Renderer.setScissor(x, y, w, h);
     }
 
@@ -274,7 +296,7 @@ public final class GlState {
     public static void reapplyViewportAndScissor() {
         if (viewport[2] > 0 && viewport[3] > 0) {
             int x = viewport[0], y = viewport[1], w = viewport[2], h = viewport[3];
-            if (offscreenBound()) Renderer.setViewport(x, y + h, w, -h);
+            if (glLayoutBound()) Renderer.setViewport(x, y + h, w, -h);
             else Renderer.setViewport(x, y, w, h);
         }
         if (scissorEnabled) applyScissor();

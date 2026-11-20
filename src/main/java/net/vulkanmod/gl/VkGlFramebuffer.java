@@ -35,9 +35,7 @@ public class VkGlFramebuffer {
 
             Renderer.setInvertedViewport(0, 0, viewWidth, viewHeight);
             Renderer.setScissor(0, 0, viewWidth, viewHeight);
-
-            // TODO: invert cull instead of disabling
-            VRenderSystem.disableCull();
+            // Iroh (RQ-16): no cull change on bind (GL keeps cull state); GlState.vkCullMode handles the winding.
         }
 
         boundFramebuffer = glFramebuffer;

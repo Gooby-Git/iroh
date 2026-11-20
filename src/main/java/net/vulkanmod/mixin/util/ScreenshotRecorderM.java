@@ -16,7 +16,7 @@ public class ScreenshotRecorderM {
     /**
      * Iroh (R-1): for the main target this reads the scene colour image (never a swapchain image), so it is
      * valid between frames (F2 runs from the key callback after present) and mid-frame (after a flush).
-     * Rows are already top-down (Vulkan viewport flip), so no flipY. The NativeImage is sized from the image
+     * Iroh (RQ-16): every target holds GL row order, so the rows are flipped like vanilla does. The NativeImage is sized from the image
      * itself: ImageUtil.downloadTexture copies the whole image, and a target whose width/height fields
      * disagreed with its image would overflow the buffer.
      * @author
@@ -38,9 +38,10 @@ public class ScreenshotRecorderM {
 
         // Need to submit and wait cmds if screenshot was requested
         // before the end of the frame
-        Renderer.getInstance().flushCmds();
+        dev.elemore.iroh.glshim.FrameSync.flushFrame();
 
         nativeimage.downloadTexture(0, true);
+        nativeimage.flipY();
         return nativeimage;
     }
 }
