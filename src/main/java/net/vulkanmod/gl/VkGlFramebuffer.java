@@ -98,33 +98,105 @@ public class VkGlFramebuffer {
             return;
         }
 
-        boundFramebuffer = map.remove(id);
-
-        if (boundFramebuffer == null)
-            throw new NullPointerException("bound framebuffer is null");
-
-        boundFramebuffer.cleanUp(true);
-        boundFramebuffer = null;
+        // Iroh (P1-2 slice 2): GL semantics. Deleting an unknown name is a no-op; deleting the bound framebuffer
+        // reverts that binding to 0; deleting another one leaves the binding alone (the base re-bound to the
+        // deleted object and threw on unknown names). Attached textures stay alive: they belong to their owners.
+        VkGlFramebuffer fb = map.remove(id);
+        if (fb == null)
+            return;
+        if (readFramebuffer == fb)
+            readFramebuffer = null;
+        if (boundFramebuffer == fb) {
+            bindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0);
+        }
+        if (fb.framebuffer != null)
+            fb.cleanUp(false);
     }
 
     public static void framebufferTexture2D(int target, int attachment, int texTarget, int texture, int level) {
+        VkGlFramebuffer fb = target == GL30.GL_READ_FRAMEBUFFER ? readFramebuffer : boundFramebuffer;
+        if (fb == null)
+            return;
+        // Iroh (P1-2 slice 2): unsupported attachments make the framebuffer report itself incomplete
+        // (glCheckFramebufferStatus) instead of throwing into the mod.
+        if (attachment == 0x821A /* DEPTH_STENCIL_ATTACHMENT */)
+            attachment = GL30.GL_DEPTH_ATTACHMENT;
+        if (attachment == 0x8D20 /* STENCIL_ATTACHMENT */) {
+            dev.elemore.iroh.glshim.GlShim.unhandled("glFramebufferTexture2D(GL_STENCIL_ATTACHMENT)");
+            return;
+        }
         if (attachment != GL30.GL_COLOR_ATTACHMENT0 && attachment != GL30.GL_DEPTH_ATTACHMENT) {
-            throw new UnsupportedOperationException();
+            fb.unsupported = "attachment 0x" + Integer.toHexString(attachment);
+            dev.elemore.iroh.glshim.GlShim.unhandled("glFramebufferTexture2D(" + fb.unsupported + ")");
+            return;
         }
-        if (texTarget != GL11.GL_TEXTURE_2D) {
-            throw new UnsupportedOperationException();
+        if (texture != 0 && (texTarget != GL11.GL_TEXTURE_2D || level != 0)) {
+            fb.unsupported = texTarget != GL11.GL_TEXTURE_2D ? "texture target 0x" + Integer.toHexString(texTarget) : "mip level " + level;
+            dev.elemore.iroh.glshim.GlShim.unhandled("glFramebufferTexture2D(" + fb.unsupported + ")");
+            return;
         }
-        if (level != 0) {
-            throw new UnsupportedOperationException();
+        if (texture == 0) {
+            // detach
+            if (attachment == GL30.GL_COLOR_ATTACHMENT0) fb.colorAttachment = null;
+            else fb.depthAttachment = null;
+            if (fb.framebuffer != null) fb.cleanUp(false);
+            if (fb.colorAttachment != null) fb.createAndBind();
+            return;
         }
 
-        boundFramebuffer.setAttachmentTexture(attachment, texture);
+        fb.setAttachmentTexture(attachment, texture);
     }
+
+    /**
+     * glCheckFramebufferStatus, honestly: COMPLETE only when Iroh can render into it (a colour attachment; Iroh has
+     * no depth-only render passes yet), MISSING_ATTACHMENT without attachments, UNSUPPORTED for what Iroh cannot
+     * attach (mip level > 0, other attachment points or texture targets). Framebuffer 0 is complete.
+     */
+    public static int checkStatus(int target) {
+        VkGlFramebuffer fb = target == GL30.GL_READ_FRAMEBUFFER ? readFramebuffer : boundFramebuffer;
+        if (fb == null)
+            return GL30.GL_FRAMEBUFFER_COMPLETE;
+        if (fb.unsupported != null)
+            return 0x8CDD; // GL_FRAMEBUFFER_UNSUPPORTED
+        if (fb.colorAttachment == null && fb.depthAttachment == null)
+            return 0x8CD7; // GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT
+        if (fb.colorAttachment == null)
+            return 0x8CDD;
+        return GL30.GL_FRAMEBUFFER_COMPLETE;
+    }
+
+    /** glDrawBuffers / glDrawBuffer / glReadBuffer state of the bound framebuffers (answered by glGet). */
+    public static void drawBuffer(int buf) {
+        if (boundFramebuffer != null) boundFramebuffer.drawBuffer = buf;
+        else defaultDrawBuffer = buf;
+    }
+
+    public static void readBuffer(int buf) {
+        if (readFramebuffer != null) readFramebuffer.readBuffer = buf;
+        else defaultReadBuffer = buf;
+    }
+
+    public static int getDrawBuffer() {
+        return boundFramebuffer != null ? boundFramebuffer.drawBuffer : defaultDrawBuffer;
+    }
+
+    public static int getReadBuffer() {
+        return readFramebuffer != null ? readFramebuffer.readBuffer : defaultReadBuffer;
+    }
+
+    private static int defaultDrawBuffer = 0x0405 /* GL_BACK */, defaultReadBuffer = 0x0405;
 
     public static void framebufferRenderbuffer(int target, int attachment, int renderbuffertarget, int renderbuffer) {
         if (boundFramebuffer == null)
             return;
 
+        if (attachment == 0x821A /* DEPTH_STENCIL_ATTACHMENT */)
+            attachment = GL30.GL_DEPTH_ATTACHMENT;
+        if (attachment != GL30.GL_COLOR_ATTACHMENT0 && attachment != GL30.GL_DEPTH_ATTACHMENT) {
+            dev.elemore.iroh.glshim.GlShim.unhandled("glFramebufferRenderbuffer(attachment 0x" + Integer.toHexString(attachment) + ")");
+            if (attachment != 0x8D20) boundFramebuffer.unsupported = "attachment 0x" + Integer.toHexString(attachment);
+            return;
+        }
         boundFramebuffer.setAttachmentRenderbuffer(attachment, renderbuffer);
     }
 
@@ -160,8 +232,7 @@ public class VkGlFramebuffer {
     }
 
     public static int glCheckFramebufferStatus(int target) {
-        //TODO
-        return GL30.GL_FRAMEBUFFER_COMPLETE;
+        return checkStatus(target == GL30.GL_FRAMEBUFFER ? GL30.GL_DRAW_FRAMEBUFFER : target);
     }
 
     /**
@@ -211,6 +282,9 @@ public class VkGlFramebuffer {
 
     VulkanImage colorAttachment;
     VulkanImage depthAttachment;
+    /** Iroh: why this framebuffer cannot be complete (null = fine). */
+    String unsupported;
+    int drawBuffer = GL30.GL_COLOR_ATTACHMENT0, readBuffer = GL30.GL_COLOR_ATTACHMENT0;
 
     VkGlFramebuffer(int i) {
         this.id = i;
@@ -223,8 +297,10 @@ public class VkGlFramebuffer {
     void setAttachmentTexture(int attachment, int texture) {
         VkGlTexture glTexture = VkGlTexture.getTexture(texture);
 
-        if (glTexture == null)
-            throw new NullPointerException(String.format("Texture %d is null", texture));
+        if (glTexture == null) {
+            this.unsupported = "unknown texture " + texture; // GL: INVALID_OPERATION, attachment unchanged
+            return;
+        }
 
         if (glTexture.vulkanImage == null)
             return;

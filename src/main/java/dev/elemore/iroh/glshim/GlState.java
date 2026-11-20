@@ -444,6 +444,8 @@ public final class GlState {
             // --- objects
             case 0x8CA6 -> { out[0] = VkGlFramebuffer.getBoundDrawId(); return 1; }  // GL_(DRAW_)FRAMEBUFFER_BINDING
             case 0x8CAA -> { out[0] = VkGlFramebuffer.getBoundReadId(); return 1; }  // GL_READ_FRAMEBUFFER_BINDING
+            case 0x0C01, 0x8825 -> { out[0] = VkGlFramebuffer.getDrawBuffer(); return 1; } // GL_DRAW_BUFFER(0)
+            case 0x0C02 -> { out[0] = VkGlFramebuffer.getReadBuffer(); return 1; }        // GL_READ_BUFFER
             case 0x8CA7 -> { out[0] = VkGlRenderbuffer.getBoundId(); return 1; }     // GL_RENDERBUFFER_BINDING
             case 0x85B5 -> { out[0] = vertexArray; return 1; }                        // GL_VERTEX_ARRAY_BINDING
             case 0x8B8D -> { out[0] = currentProgram; return 1; }                     // GL_CURRENT_PROGRAM
@@ -798,6 +800,18 @@ public final class GlState {
             return 0;
         });
         on("glCheckFramebufferStatus", "I:I", a -> VkGlFramebuffer.glCheckFramebufferStatus(i(a, 0)));
+        on("glFramebufferTexture", "V:IIII", a -> {
+            VkGlFramebuffer.framebufferTexture2D(i(a, 0), i(a, 1), GL_TEXTURE_2D, i(a, 2), i(a, 3));
+            return 0;
+        });
+        on("glDrawBuffer", "V:I", a -> { VkGlFramebuffer.drawBuffer(i(a, 0)); return 0; });
+        on("glDrawBuffers", "V:IP", a -> {
+            int n = i(a, 0);
+            if (n > 1) GlShim.unhandled("glDrawBuffers(n > 1: one colour attachment under Iroh)");
+            if (n >= 1) VkGlFramebuffer.drawBuffer(memGetInt(p(a, 1)));
+            return 0;
+        });
+        on("glReadBuffer", "V:I", a -> { VkGlFramebuffer.readBuffer(i(a, 0)); return 0; });
         on("glBlitFramebuffer", "V:IIIIIIIIII", a -> {
             VkGlFramebuffer.glBlitFramebuffer(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), i(a, 6), i(a, 7), i(a, 8), i(a, 9));
             return 0;

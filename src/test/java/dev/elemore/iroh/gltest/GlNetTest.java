@@ -56,6 +56,7 @@ public final class GlNetTest {
 
         pixelTransferChecks();
         programChecks();
+        framebufferChecks();
 
         System.out.print(GlShim.unhandledSummary());
         System.out.println(FAILS.isEmpty() ? "# glnet PASS " + checks + "/" + checks
@@ -137,6 +138,19 @@ public final class GlNetTest {
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);
+    }
+
+    /** P1-2 slice 2 item 3: honest completeness and draw/read buffer state (no Vulkan objects are made here). */
+    private static void framebufferChecks() {
+        check("fbo: default framebuffer complete", GL30C.glCheckFramebufferStatus(0x8D40) == 0x8CD5);
+        int fb = GL30C.glGenFramebuffers();
+        GL30C.glBindFramebuffer(0x8D40, fb);
+        check("fbo: no attachments -> INCOMPLETE_MISSING_ATTACHMENT", GL30C.glCheckFramebufferStatus(0x8D40) == 0x8CD7);
+        GL30C.glFramebufferTexture2D(0x8D40, 0x8CE0, 0x0DE1, 999999, 1);
+        check("fbo: mip level > 0 / unknown texture -> UNSUPPORTED, no throw", GL30C.glCheckFramebufferStatus(0x8D40) == 0x8CDD);
+        org.lwjgl.opengl.GL20C.glDrawBuffers(0x8CE0);
+        GL11C.glReadBuffer(0x8CE0);
+        check("fbo: GL_DRAW_BUFFER0 / GL_READ_BUFFER answered", GL11C.glGetInteger(0x8825) == 0x8CE0 && GL11C.glGetInteger(0x0C02) == 0x8CE0);
     }
 
     /** P1-2 slice 2 item 2: shader objects capture sources through the real LWJGL entry points; the link translates. */
