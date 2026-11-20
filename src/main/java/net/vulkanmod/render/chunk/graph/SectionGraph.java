@@ -13,6 +13,7 @@ import net.vulkanmod.Initializer;
 import net.vulkanmod.interfaces.FrustumMixed;
 import net.vulkanmod.render.chunk.*;
 import net.vulkanmod.render.chunk.build.RenderRegionBuilder;
+import net.vulkanmod.render.chunk.build.task.CompiledSection;
 import net.vulkanmod.render.chunk.build.task.TaskDispatcher;
 import net.vulkanmod.render.chunk.frustum.VFrustum;
 import net.vulkanmod.render.chunk.util.AreaSetQueue;
@@ -215,14 +216,62 @@ public class SectionGraph {
         }
     }
 
+    /** Debug switch (P1-9): reproduce the old behaviour (a section whose chunk was not render-ready was marked clean and lost). */
+    private static final boolean LEGACY_DROP = Boolean.getBoolean("iroh.legacyDirtyDrop");
+    private static final boolean STATS = Boolean.getBoolean("iroh.rebuildStats");
+    private final java.util.IdentityHashMap<RenderSection, CompiledSection> droppedStats = new java.util.IdentityHashMap<>();
+    private long statsDropEvents, statsLastLog;
+
+    /** True when the last graph update left dirty sections it could not schedule because their chunk was not render-ready. */
+    private boolean deferredRebuilds;
+
+    public boolean hasDeferredRebuilds() {
+        return this.deferredRebuilds;
+    }
+
     private void scheduleRebuilds() {
+        boolean deferred = false;
         for (int i = 0; i < this.rebuildQueue.size(); i++) {
             RenderSection section = this.rebuildQueue.get(i);
 
-            section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
-            section.setNotDirty();
+            boolean scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
+            if (scheduled || LEGACY_DROP) {
+                if (!scheduled && STATS) {
+                    this.statsDropEvents++;
+                    this.droppedStats.putIfAbsent(section, section.getCompiledSection());
+                }
+                section.setNotDirty();
+            } else {
+                // Chunk (or its neighbours) not render-ready: stay dirty. ChunkStatusMap asks for a graph update when
+                // a chunk becomes ready, so there is no per-frame retry.
+                deferred = true;
+                if (STATS) {
+                    this.statsDropEvents++;
+                    this.droppedStats.putIfAbsent(section, section.getCompiledSection());
+                }
+            }
         }
+        this.deferredRebuilds = deferred;
         this.rebuildQueue.clear();
+
+        if (STATS) {
+            long now = System.currentTimeMillis();
+            if (now - this.statsLastLog > 3000 && this.statsDropEvents > 0) {
+                this.statsLastLog = now;
+                int compiledSince = 0, neverCompiled = 0, stale = 0, dirtyNow = 0;
+                for (var e : this.droppedStats.entrySet()) {
+                    RenderSection s = e.getKey();
+                    boolean wasUncompiled = e.getValue() == CompiledSection.UNCOMPILED;
+                    boolean changed = s.getCompiledSection() != e.getValue();
+                    if (s.isDirty()) dirtyNow++;
+                    if (changed) compiledSince++;
+                    else if (wasUncompiled) neverCompiled++;
+                    else stale++;
+                }
+                Initializer.LOGGER.info("[iroh-rebuild-stats] legacy={} dropEvents={} distinctSections={} compiledSince={} neverCompiled={} staleKeptOldMesh={} dirtyNow={}",
+                        LEGACY_DROP, this.statsDropEvents, this.droppedStats.size(), compiledSince, neverCompiled, stale, dirtyNow);
+            }
+        }
     }
 
     private boolean notInFrustum(RenderSection renderSection) {

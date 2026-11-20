@@ -54,7 +54,14 @@ public class ChunkStatusMap {
         for (int x1 = x - 1; x1 <= x + 1; ++x1) {
             for (int z1 = z - 1; z1 <= z + 1; ++z1) {
                 if (checkNeighbours(x1, z1)) {
-                    map.put(ChunkPos.asLong(x1, z1), ALL_FLAGS);
+                    long key = ChunkPos.asLong(x1, z1);
+                    if (map.put(key, ALL_FLAGS) != ALL_FLAGS) {
+                        // A chunk just became render-ready: dirty sections the last graph update could not schedule
+                        // (P1-9) get another chance on the next frame.
+                        WorldRenderer wr = WorldRenderer.getInstance();
+                        if (wr != null)
+                            wr.chunkBecameRenderReady();
+                    }
                 }
                 else {
                     long l = ChunkPos.asLong(x1, z1);
