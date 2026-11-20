@@ -127,7 +127,7 @@ tasks.register('shaderHarness', JavaExec) {
 	mainClass = 'dev.elemore.iroh.shadertest.ShaderHarness'
 	jvmArgs '-Xmx2g'
 	def a = []
-	['mods', 'mode', 'shader', 'out', 'instance'].each { k ->
+	['mods', 'mode', 'shader', 'out', 'instance', 'programs'].each { k ->
 		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
 	}
 	args a

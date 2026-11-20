@@ -3,6 +3,7 @@ package dev.elemore.iroh.gltest;
 import com.mojang.blaze3d.platform.GlStateManager;
 import dev.elemore.iroh.glshim.GlNet;
 import dev.elemore.iroh.glshim.GlShim;
+import dev.elemore.iroh.glshim.PixelTransfer;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11C;
@@ -53,6 +54,10 @@ public final class GlNetTest {
             check("libGL glGetIntegerv without context is a no-op (value untouched)", out[0] == 12345);
         }
 
+        pixelTransferChecks();
+        programChecks();
+        framebufferChecks();
+
         System.out.print(GlShim.unhandledSummary());
         System.out.println(FAILS.isEmpty() ? "# glnet PASS " + checks + "/" + checks
                 : "# glnet FAIL " + FAILS.size() + "/" + checks + " " + FAILS);
@@ -64,8 +69,9 @@ public final class GlNetTest {
         check(where + ": glCreateBuffers (GL45, unhandled) returns 0", GL45C.glCreateBuffers() == 0);
         GL20C.glUseProgram(0);
         int prog = GL20C.glCreateProgram();
-        check(where + ": glCreateProgram (unhandled) returns 0", prog == 0);
-        check(where + ": glGetUniformLocation (unhandled, string arg) returns 0", GL20C.glGetUniformLocation(7, "Foo") == 0);
+        check(where + ": glCreateProgram (emulated since slice 2) returns an id", prog != 0);
+        check(where + ": glGetUniformLocation of an unlinked program is -1", GL20C.glGetUniformLocation(prog, "Foo") == -1);
+        check(where + ": glGetUniformBlockIndex (unhandled, string arg) returns 0", org.lwjgl.opengl.GL31C.glGetUniformBlockIndex(7, "Foo") == 0);
         check(where + ": glGetError handled -> 0", GL11C.glGetError() == 0);
 
         // depth func round trip, incl. GL_LESS (ImmediatelyFast blocker D) and vanilla cache sync
@@ -122,9 +128,109 @@ public final class GlNetTest {
         // unknown pname answers 0
         check(where + ": unknown pname -> 0", GL11C.glGetInteger(0x7FFF0) == 0);
 
+        // slice 2: copies / readbacks are handled (no target here: answered without touching Vulkan)
+        GL11C.glCopyTexSubImage2D(0x0DE1, 0, 0, 0, 0, 0, 16, 16);
+        ByteBuffer px = BufferUtils.createByteBuffer(16);
+        GL11C.glReadPixels(0, 0, 2, 2, 0x1908, 0x1401, px);
+        check(where + ": glCopyTexSubImage2D / glReadPixels not in the unhandled list",
+                GlShim.unhandledCounts().keySet().stream().noneMatch(k -> k.startsWith("glCopyTexSubImage2D <-") || k.startsWith("glReadPixels <-")));
+
+        // slice 2 item 4: fences are signalled at creation (readbacks complete synchronously)
+        long sync = org.lwjgl.opengl.GL32C.glFenceSync(0x9117, 0);
+        check(where + ": glFenceSync handle, glClientWaitSync ALREADY_SIGNALED",
+                sync != 0 && org.lwjgl.opengl.GL32C.glClientWaitSync(sync, 1, 1_000_000L) == 0x911A
+                && org.lwjgl.opengl.GL32C.glGetSynci(sync, 0x9114, null) == 0x9119);
+        org.lwjgl.opengl.GL32C.glDeleteSync(sync);
+
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);
+    }
+
+    /** P1-2 slice 2 item 3: honest completeness and draw/read buffer state (no Vulkan objects are made here). */
+    private static void framebufferChecks() {
+        check("fbo: default framebuffer complete", GL30C.glCheckFramebufferStatus(0x8D40) == 0x8CD5);
+        int fb = GL30C.glGenFramebuffers();
+        GL30C.glBindFramebuffer(0x8D40, fb);
+        check("fbo: no attachments -> INCOMPLETE_MISSING_ATTACHMENT", GL30C.glCheckFramebufferStatus(0x8D40) == 0x8CD7);
+        GL30C.glFramebufferTexture2D(0x8D40, 0x8CE0, 0x0DE1, 999999, 1);
+        check("fbo: mip level > 0 / unknown texture -> UNSUPPORTED, no throw", GL30C.glCheckFramebufferStatus(0x8D40) == 0x8CDD);
+        org.lwjgl.opengl.GL20C.glDrawBuffers(0x8CE0);
+        GL11C.glReadBuffer(0x8CE0);
+        check("fbo: GL_DRAW_BUFFER0 / GL_READ_BUFFER answered", GL11C.glGetInteger(0x8825) == 0x8CE0 && GL11C.glGetInteger(0x0C02) == 0x8CE0);
+    }
+
+    /** P1-2 slice 2 item 2: shader objects capture sources through the real LWJGL entry points; the link translates. */
+    private static void programChecks() {
+        String vs = "#version 150\nin vec2 Position;\nin vec4 Color;\nout vec4 c;\nvoid main(){ c = Color; gl_Position = vec4(Position,0,1); }\n";
+        String fs = "#version 150\nuniform vec4 Tint;\nuniform sampler2D Tex;\nin vec4 c;\nout vec4 o;\nvoid main(){ o = c * Tint * texture(Tex, vec2(0.5)); }\n";
+        int v = GL20C.glCreateShader(0x8B31), f = GL20C.glCreateShader(0x8B30);
+        check("prog: glCreateShader answered", v != 0 && f != 0 && v != f);
+        GL20C.glShaderSource(v, vs);
+        GL20C.glShaderSource(f, fs);
+        check("prog: glShaderSource captured", vs.equals(dev.elemore.iroh.glshim.GlPrograms.sourceOf(v)) && fs.equals(dev.elemore.iroh.glshim.GlPrograms.sourceOf(f)));
+        GL20C.glCompileShader(v);
+        check("prog: COMPILE_STATUS true (errors come at link)", GL20C.glGetShaderi(v, 0x8B81) == 1);
+        int prog = GL20C.glCreateProgram();
+        check("prog: glCreateProgram answered", prog != 0);
+        GL20C.glAttachShader(prog, v);
+        GL20C.glAttachShader(prog, f);
+        GL20C.glBindAttribLocation(prog, 2, "Color");
+        check("prog: glBindAttribLocation recorded", Integer.valueOf(2).equals(dev.elemore.iroh.glshim.GlPrograms.boundAttribsOf(prog).get("Color")));
+        dev.elemore.iroh.glshim.GlPrograms.LinkResult r = dev.elemore.iroh.glshim.GlPrograms.LinkResult.link(
+                vs, fs, dev.elemore.iroh.glshim.GlPrograms.boundAttribsOf(prog), true);
+        check("prog: link translates + compiles (" + r.log + ")", r.ok);
+        check("prog: bound location kept, free slot filled", r.ok && "Color".equals(r.attributes.get(2)) && "Position".equals(r.attributes.get(0)));
+        check("prog: uniform in block, sampler bound", r.ok && r.output.uniforms().size() == 1 && r.output.samplers().size() == 1);
+        dev.elemore.iroh.glshim.GlPrograms.LinkResult legacy = dev.elemore.iroh.glshim.GlPrograms.LinkResult.link(
+                "#version 110\nvoid main(){ gl_Position = ftransform(); }", "#version 110\nvoid main(){ gl_FragColor = vec4(1); }",
+                new java.util.HashMap<>(), false);
+        check("prog: fixed-function built-ins refused like a core profile", !legacy.ok && legacy.log.contains("ftransform"));
+        if (r.vertex != null) r.vertex.free();
+        if (r.fragment != null) r.fragment.free();
+        // no program current: draw is reported, not crashed
+        GL11C.glDrawArrays(0x0004, 0, 3);
+        check("prog: glDrawArrays without a program logged as unhandled",
+                GlShim.unhandledCounts().keySet().stream().anyMatch(k -> k.startsWith("glDrawArrays(no GL program current)")));
+    }
+
+    /** P1-2 slice 2 (td-834bea): GL unpack / pack rules, pure CPU. */
+    private static void pixelTransferChecks() {
+        // Xaero: 64x64 BGRA + UNSIGNED_INT_8_8_8_8, row length 0, alignment 4 -> RGBA8
+        int w = 64, h = 64;
+        java.nio.ByteBuffer src = org.lwjgl.system.MemoryUtil.memAlloc(w * h * 4);
+        for (int i = 0; i < w * h; i++) src.putInt(i * 4, 0x11223344 + i); // B=0x11 G=0x22 R=0x33 A=0x44(+i) as a packed int
+        long stride = PixelTransfer.rowStride(w, 0, 4, PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8);
+        check("pixel: row length 0 -> width * bpp", stride == 256);
+        java.nio.ByteBuffer dst = PixelTransfer.alloc(w, h, PixelTransfer.Dst.RGBA8);
+        boolean ok = PixelTransfer.unpack(org.lwjgl.system.MemoryUtil.memAddress(src), stride, w, h,
+                PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8, PixelTransfer.Dst.RGBA8, org.lwjgl.system.MemoryUtil.memAddress(dst));
+        check("pixel: BGRA/8_8_8_8 unpack supported", ok);
+        check("pixel: BGRA/8_8_8_8 -> R,G,B,A bytes", (dst.get(0) & 0xFF) == 0x33 && (dst.get(1) & 0xFF) == 0x22
+                && (dst.get(2) & 0xFF) == 0x11 && (dst.get(3) & 0xFF) == 0x44);
+        int last = (w * h - 1) * 4;
+        check("pixel: last pixel converted (no staging garbage)", (dst.get(last + 3) & 0xFF) == ((0x44 + w * h - 1) & 0xFF));
+        // pack back to the same format through a stride with skip
+        java.nio.ByteBuffer back = org.lwjgl.system.MemoryUtil.memCalloc(w * h * 4);
+        PixelTransfer.pack(org.lwjgl.system.MemoryUtil.memAddress(dst), PixelTransfer.Dst.RGBA8, w, h,
+                PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8, org.lwjgl.system.MemoryUtil.memAddress(back), stride);
+        check("pixel: pack round trip BGRA/8_8_8_8", back.getInt(0) == src.getInt(0) && back.getInt(last) == src.getInt(last));
+        // RGB unsigned byte, width 3, alignment 4 -> stride 12 (9 bytes padded)
+        check("pixel: RGB stride padded to alignment", PixelTransfer.rowStride(3, 0, 4, PixelTransfer.GL_RGB, PixelTransfer.GL_UNSIGNED_BYTE) == 12);
+        check("pixel: RGB alignment 1 unpadded", PixelTransfer.rowStride(3, 0, 1, PixelTransfer.GL_RGB, PixelTransfer.GL_UNSIGNED_BYTE) == 9);
+        check("pixel: float element >= alignment unpadded", PixelTransfer.rowStride(3, 0, 4, PixelTransfer.GL_RED, PixelTransfer.GL_FLOAT) == 12);
+        check("pixel: skip rows/pixels with row length", PixelTransfer.skipOffset(10, 16, 4, 2, 3, PixelTransfer.GL_RGBA, PixelTransfer.GL_UNSIGNED_BYTE) == 2 * 64 + 12);
+        // RGBA bytes are identical to RGBA8 (memcpy path); BGRA bytes are not
+        check("pixel: RGBA/UNSIGNED_BYTE identical to RGBA8", PixelTransfer.identical(PixelTransfer.GL_RGBA, PixelTransfer.GL_UNSIGNED_BYTE, PixelTransfer.Dst.RGBA8));
+        check("pixel: BGRA/8_8_8_8 not identical to RGBA8", !PixelTransfer.identical(PixelTransfer.GL_BGRA, PixelTransfer.GL_UNSIGNED_INT_8_8_8_8, PixelTransfer.Dst.RGBA8));
+        // RGB -> RGBA8 fills alpha 1
+        java.nio.ByteBuffer rgb = org.lwjgl.system.MemoryUtil.memAlloc(12);
+        rgb.put(0, (byte) 10).put(1, (byte) 20).put(2, (byte) 30);
+        java.nio.ByteBuffer one = PixelTransfer.alloc(1, 1, PixelTransfer.Dst.RGBA8);
+        PixelTransfer.unpack(org.lwjgl.system.MemoryUtil.memAddress(rgb), 12, 1, 1, PixelTransfer.GL_RGB, PixelTransfer.GL_UNSIGNED_BYTE,
+                PixelTransfer.Dst.RGBA8, org.lwjgl.system.MemoryUtil.memAddress(one));
+        check("pixel: RGB -> RGBA8 alpha 255", one.get(0) == 10 && one.get(2) == 30 && (one.get(3) & 0xFF) == 255);
+        for (java.nio.ByteBuffer b : new java.nio.ByteBuffer[]{src, dst, back, rgb, one}) org.lwjgl.system.MemoryUtil.memFree(b);
     }
 
     private static void check(String what, boolean ok) {

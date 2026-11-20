@@ -136,10 +136,11 @@ public class Framebuffer {
 
     public VkViewport.Buffer viewport(MemoryStack stack) {
         VkViewport.Buffer viewport = VkViewport.malloc(1, stack);
+        // Iroh (RQ-16): GL row order for every target (positive height); see GlState.glLayoutBound
         viewport.x(0.0f);
-        viewport.y(this.height);
+        viewport.y(0.0f);
         viewport.width(this.width);
-        viewport.height(-this.height);
+        viewport.height(this.height);
         viewport.minDepth(0.0f);
         viewport.maxDepth(1.0f);
 

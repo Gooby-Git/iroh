@@ -1,0 +1,10 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "dev.elemore.iroh.mixin.gates",
+  "compatibilityLevel": "JAVA_17",
+  "plugin": "dev.elemore.iroh.compat.asyncparticles.AsyncParticlesGate",
+  "priority": 100,
+  "client": [
+  ]
+}

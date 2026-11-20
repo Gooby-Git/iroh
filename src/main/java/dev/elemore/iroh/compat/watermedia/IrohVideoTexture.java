@@ -115,7 +115,9 @@ public final class IrohVideoTexture {
 
     /** GL texture id to sample, 0 until the first frame is on the GPU (FancyMenu treats 0 as "not ready"). */
     public long textureId() {
-        if (RenderSystem.isOnRenderThread() && dirty) flush();
+        // A frame that already drew the video keeps that picture (td-4a9be3): uploading now would have to end the
+        // render pass; the scheduled flush picks the frame up before the next frame's draws.
+        if (RenderSystem.isOnRenderThread() && dirty && (image == null || !image.usedThisFrame())) flush();
         return uploadedOnce ? texId : 0L;
     }
 

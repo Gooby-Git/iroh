@@ -70,7 +70,21 @@ public final class GlShim {
         String caller = callerClass();
         String mod = modOf(caller);
         if (UNHANDLED.computeIfAbsent(fn + " <- " + mod, k -> new AtomicLong()).getAndIncrement() == 0)
-            LOGGER.info("Iroh GL shim: {} called {} (unhandled) [{}]", mod, fn, caller);
+            LOGGER.info("Iroh GL shim: {} called {} (unhandled) [{}]", mod, fn, callerFrame());
+    }
+
+    /** "class.method" of the first non-Iroh frame: a mixin merged into a vanilla class shows its own method name. */
+    static String callerFrame() {
+        return WALKER.walk(s -> s
+                .filter(f -> isForeign(f.getClassName()))
+                .map(f -> f.getClassName() + "." + f.getMethodName())
+                .findFirst().orElse("?"));
+    }
+
+    private static boolean isForeign(String c) {
+        return !c.startsWith("dev.elemore.iroh.") && !c.startsWith("org.lwjgl.")
+               && !c.startsWith("net.vulkanmod.") && !c.startsWith("com.mojang.blaze3d.")
+               && !c.startsWith("jdk.internal.") && !c.startsWith("java.");
     }
 
     /** A handler threw; the call returned 0. Logged once per function. */
@@ -103,10 +117,16 @@ public final class GlShim {
                 Class<?> c = Class.forName(cn, false, GlShim.class.getClassLoader());
                 java.security.CodeSource cs = c.getProtectionDomain().getCodeSource();
                 if (cs == null) return "?";
-                String loc = Path.of(cs.getLocation().toURI()).toString();
-                for (ModContainer m : FabricLoader.getInstance().getAllMods())
-                    for (Path root : m.getRootPaths())
-                        if (root.toUri().toString().contains(loc) || loc.contains(root.toString())) return m.getMetadata().getId();
+                // P1-2 slice 2: match the jar (or directory) a mod was loaded from. The old test also matched
+                // jar-in-jar roots, whose zipfs root path is "/" and is contained in every location: every GL call
+                // was blamed on the first nested mod (additional_rpg_jewelry), see pack-compat.md 0c-t.
+                Path loc = Path.of(cs.getLocation().toURI()).toAbsolutePath().normalize();
+                for (ModContainer m : FabricLoader.getInstance().getAllMods()) {
+                    net.fabricmc.loader.api.metadata.ModOrigin o = m.getOrigin();
+                    if (o.getKind() != net.fabricmc.loader.api.metadata.ModOrigin.Kind.PATH) continue;
+                    for (Path p : o.getPaths())
+                        if (p.toAbsolutePath().normalize().equals(loc)) return m.getMetadata().getId();
+                }
             } catch (Throwable ignored) {
             }
             return cn.startsWith("net.minecraft.") || cn.startsWith("com.mojang.") ? "minecraft" : cn;

@@ -72,6 +72,7 @@ public final class GlState {
     private static final float[] blendColor = new float[4];
 
     private static int currentProgram, vertexArray;
+    private static long fenceCounter;
     private static int nextVertexArray = 1;
     // pixel store: unpack / pack alignment, row length, skip rows, skip pixels
     private static int unpackAlignment = 4, unpackRowLength, unpackSkipRows, unpackSkipPixels;
@@ -80,16 +81,38 @@ public final class GlState {
     // ================================================================ GL-layout of the bound target (RQ-11)
 
     /**
-     * True when the bound Vulkan framebuffer is an off-screen target. Iroh stores off-screen targets in GL's memory
-     * layout (row 0 = GL's bottom row; positive Vulkan viewport height), so mods sampling them with GL texture
-     * coordinates, reading them back, or blitting sub-rectangles get what GL gives. Only the main scene target is
-     * stored top-down (negative viewport height) because it is copied 1:1 to the swapchain; see RQ-11 / RQ-16.
+     * True when the bound Vulkan framebuffer stores GL's row order (row 0 = GL's bottom row; positive Vulkan viewport
+     * height). Since RQ-16 that is EVERY render target, the main scene target included: mods that sample a target with
+     * GL texture coordinates, read it back, copy or blit sub-rectangles get what GL gives, and gl_FragCoord.y counts
+     * from the bottom as in GL. Only the swapchain is top-down; nothing draws into it (the frame ends with one flipped
+     * blit from the scene target, DefaultMainPass.copyToSwapChain).
      */
+    public static boolean glLayoutBound() {
+        Renderer r = Renderer.getInstance();
+        if (r == null) return true;
+        Framebuffer fb = r.getBoundFramebuffer();
+        return !(fb instanceof net.vulkanmod.vulkan.framebuffer.SwapChain);
+    }
+
+    /** Pre-RQ-16 name, kept for callers outside the shim: an off-screen (non-main) target is bound. */
     public static boolean offscreenBound() {
         Renderer r = Renderer.getInstance();
         if (r == null) return false;
         Framebuffer fb = r.getBoundFramebuffer();
         return fb != null && !(fb instanceof SceneTarget) && !(fb instanceof net.vulkanmod.vulkan.framebuffer.SwapChain);
+    }
+
+    /**
+     * Vulkan cull mode for the GL cull state (glCullFace + glFrontFace). GL-layout targets mirror the winding Vulkan
+     * sees (positive viewport height), so GL's back faces are Vulkan's front faces with VK_FRONT_FACE_COUNTER_CLOCKWISE.
+     */
+    public static int vkCullMode() {
+        boolean mirrored = glLayoutBound() ^ (frontFace == 0x0900 /* GL_CW */);
+        return switch (cullFaceMode) {
+            case 0x0404 /* GL_FRONT */ -> mirrored ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
+            case 0x0408 /* GL_FRONT_AND_BACK */ -> VK_CULL_MODE_FRONT_AND_BACK;
+            default /* GL_BACK */ -> mirrored ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+        };
     }
 
     private static int boundHeight() {
@@ -200,16 +223,16 @@ public final class GlState {
     }
 
     /**
-     * GL semantics (factor = slope, units = constant) are tracked; Iroh applies them the way the base's
-     * GlStateManagerM always did ({@code VRenderSystem.polygonOffset(units, factor)}), so raw-GL and GlStateManager
-     * callers get the same depth bias. Whether that swap is right is RQ-17.
+     * glPolygonOffset(factor, units): offset = factor * DZ + r * units. Vulkan's depthBiasSlopeFactor is GL's factor,
+     * depthBiasConstantFactor GL's units (RQ-17: the base passed them swapped, so vanilla's polygonOffset(-1, -10)
+     * for the block-breaking overlay became slope -10, constant -1).
      */
     public static void polygonOffset(float factor, float units) {
         polygonOffsetFactor = factor;
         polygonOffsetUnits = units;
         GlStateManager.POLY_OFFSET.factor = factor;
         GlStateManager.POLY_OFFSET.units = units;
-        VRenderSystem.polygonOffset(units, factor);
+        VRenderSystem.polygonOffset(factor, units); // (slope, constant)
     }
 
     public static void polygonMode(int face, int mode) {
@@ -239,8 +262,8 @@ public final class GlState {
         viewport[1] = y;
         viewport[2] = w;
         viewport[3] = h;
-        if (offscreenBound()) Renderer.setViewport(x, y + h, w, -h); // GL layout: positive Vulkan height
-        else Renderer.setViewport(x, y, w, h);                       // main target: flipped (top-down)
+        if (glLayoutBound()) Renderer.setViewport(x, y + h, w, -h); // GL layout: positive Vulkan height (RQ-16)
+        else Renderer.setViewport(x, y, w, h);                      // swapchain: top-down
     }
 
     /** Iroh's own GL-layout viewport (Renderer.setInvertedViewport: post passes, FBO begin): tracked, not re-derived. */
@@ -266,7 +289,7 @@ public final class GlState {
     public static void applyScissor() {
         int x = scissorBox[0], y = scissorBox[1], w = scissorBox[2], h = scissorBox[3];
         if (w <= 0 || h <= 0) return;
-        if (offscreenBound()) Renderer.setScissor(x, boundHeight() - (y + h), w, h);
+        if (glLayoutBound()) Renderer.setScissor(x, boundHeight() - (y + h), w, h);
         else Renderer.setScissor(x, y, w, h);
     }
 
@@ -274,10 +297,16 @@ public final class GlState {
     public static void reapplyViewportAndScissor() {
         if (viewport[2] > 0 && viewport[3] > 0) {
             int x = viewport[0], y = viewport[1], w = viewport[2], h = viewport[3];
-            if (offscreenBound()) Renderer.setViewport(x, y + h, w, -h);
+            if (glLayoutBound()) Renderer.setViewport(x, y + h, w, -h);
             else Renderer.setViewport(x, y, w, h);
         }
         if (scissorEnabled) applyScissor();
+    }
+
+    /** After Renderer.flushCmds began a new command buffer (resetDynamicState zeroed depth bias and line width). */
+    public static void reapplyDynamicState() {
+        if (polygonOffsetFill) Renderer.setDepthBias(polygonOffsetUnits, polygonOffsetFactor); // (constant, slope)
+        VRenderSystem.setLineWidth(lineWidth);
     }
 
     public static void activeTexture(int unitEnum) {
@@ -317,6 +346,14 @@ public final class GlState {
 
     public static void clearStencil(int s) {
         clearStencil = s;
+    }
+
+    public static int currentProgram() {
+        return currentProgram;
+    }
+
+    public static int currentVertexArray() {
+        return vertexArray;
     }
 
     public static void useProgram(int id) {
@@ -408,6 +445,8 @@ public final class GlState {
             // --- objects
             case 0x8CA6 -> { out[0] = VkGlFramebuffer.getBoundDrawId(); return 1; }  // GL_(DRAW_)FRAMEBUFFER_BINDING
             case 0x8CAA -> { out[0] = VkGlFramebuffer.getBoundReadId(); return 1; }  // GL_READ_FRAMEBUFFER_BINDING
+            case 0x0C01, 0x8825 -> { out[0] = VkGlFramebuffer.getDrawBuffer(); return 1; } // GL_DRAW_BUFFER(0)
+            case 0x0C02 -> { out[0] = VkGlFramebuffer.getReadBuffer(); return 1; }        // GL_READ_BUFFER
             case 0x8CA7 -> { out[0] = VkGlRenderbuffer.getBoundId(); return 1; }     // GL_RENDERBUFFER_BINDING
             case 0x85B5 -> { out[0] = vertexArray; return 1; }                        // GL_VERTEX_ARRAY_BINDING
             case 0x8B8D -> { out[0] = currentProgram; return 1; }                     // GL_CURRENT_PROGRAM
@@ -697,6 +736,17 @@ public final class GlState {
             return 0;
         });
 
+        // ---- copies and readbacks from the READ framebuffer (P1-2 slice 2)
+        on("glCopyTexSubImage2D", "V:IIIIIIII", a -> {
+            CopyTex.copyTexSubImage2D(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), i(a, 6), i(a, 7));
+            return 0;
+        });
+        on("glCopyTexImage2D", "V:IIIIIIII", a -> {
+            CopyTex.copyTexImage2D(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), i(a, 6), i(a, 7));
+            return 0;
+        });
+        on("glReadPixels", "V:IIIIIIP", a -> { readPixels(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), p(a, 6)); return 0; });
+
         // ---- buffers (pixel pack / unpack have storage; others are tracked bindings)
         on("glGenBuffers", "V:IP", a -> {
             int n = i(a, 0);
@@ -751,6 +801,18 @@ public final class GlState {
             return 0;
         });
         on("glCheckFramebufferStatus", "I:I", a -> VkGlFramebuffer.glCheckFramebufferStatus(i(a, 0)));
+        on("glFramebufferTexture", "V:IIII", a -> {
+            VkGlFramebuffer.framebufferTexture2D(i(a, 0), i(a, 1), GL_TEXTURE_2D, i(a, 2), i(a, 3));
+            return 0;
+        });
+        on("glDrawBuffer", "V:I", a -> { VkGlFramebuffer.drawBuffer(i(a, 0)); return 0; });
+        on("glDrawBuffers", "V:IP", a -> {
+            int n = i(a, 0);
+            if (n > 1) GlShim.unhandled("glDrawBuffers(n > 1: one colour attachment under Iroh)");
+            if (n >= 1) VkGlFramebuffer.drawBuffer(memGetInt(p(a, 1)));
+            return 0;
+        });
+        on("glReadBuffer", "V:I", a -> { VkGlFramebuffer.readBuffer(i(a, 0)); return 0; });
         on("glBlitFramebuffer", "V:IIIIIIIIII", a -> {
             VkGlFramebuffer.glBlitFramebuffer(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), i(a, 6), i(a, 7), i(a, 8), i(a, 9));
             return 0;
@@ -782,7 +844,57 @@ public final class GlState {
             return 0;
         });
         on("glBindVertexArray", "V:I", a -> { vertexArray = i(a, 0); return 0; });
-        on("glDeleteVertexArrays", "V:IP", a -> 0);
+        on("glDeleteVertexArrays", "V:IP", a -> {
+            int n = i(a, 0);
+            long p = p(a, 1);
+            for (int k = 0; k < n; k++) GlPrograms.deleteVertexArray(memGetInt(p + 4L * k));
+            return 0;
+        });
+
+        // ---- sync objects (P1-2 slice 2, item 4). Every emulated GL command that produces host-visible data
+        // (glReadPixels, glGetTexImage, buffer storage) completes before it returns (FrameSync), so a fence is
+        // signalled when it is created; GPU work stays ordered by Iroh's own submission order.
+        on("glFenceSync", "P:II", a -> 0x5EC00000L + (++fenceCounter));
+        on("glIsSync", "Z:P", a -> p(a, 0) != NULL ? 1 : 0);
+        on("glDeleteSync", "V:P", a -> 0);
+        on("glWaitSync", "V:PIJ", a -> 0);
+        on("glClientWaitSync", "I:PIJ", a -> 0x911A); // GL_ALREADY_SIGNALED
+        on("glGetSynciv", "V:PIIPP", a -> {
+            int pname = i(a, 1), bufSize = i(a, 2);
+            long length = p(a, 3), values = p(a, 4);
+            int v = switch (pname) {
+                case 0x9112 -> 0x9116;  // OBJECT_TYPE -> SYNC_FENCE
+                case 0x9113 -> 0x9117;  // SYNC_CONDITION -> SYNC_GPU_COMMANDS_COMPLETE
+                case 0x9114 -> 0x9119;  // SYNC_STATUS -> SIGNALED
+                default -> 0;           // SYNC_FLAGS
+            };
+            if (values != NULL && bufSize > 0) memPutInt(values, v);
+            if (length != NULL) memPutInt(length, 1);
+            return 0;
+        });
+
+        // ---- GLSL programs through raw GL, vertex arrays, draws (P1-2 slice 2, item 2)
+        GlPrograms.register();
+    }
+
+    /** glReadPixels: rectangle of the READ framebuffer (GL row order, RQ-16) with pack state and pack buffers. */
+    public static void readPixels(int x, int y, int w, int h, int format, int type, long pixels) {
+        net.vulkanmod.vulkan.texture.VulkanImage img = VkGlFramebuffer.readImage(format == 0x1902 /* DEPTH_COMPONENT */);
+        if (img == null || w <= 0 || h <= 0) return;
+        PixelTransfer.Dst layout = VkGlTexture.dstLayout(img.format);
+        if (layout == null) {
+            GlShim.unhandled("glReadPixels(vk format " + img.format + ")");
+            return;
+        }
+        int x0 = Math.max(0, x), y0 = Math.max(0, y);
+        int x1 = Math.min(img.width, x + w), y1 = Math.min(img.height, y + h);
+        if (x1 <= x0 || y1 <= y0) return;
+        if (x0 != x || y0 != y || x1 - x0 != w || y1 - y0 != h) {
+            // partly outside the buffer: GL leaves those client pixels undefined; read the inside part in place
+            GlShim.note("glReadPixels(clipped)", "");
+        }
+        long offset = (long) (y0 - y) * VkGlTexture.packStride(w, format, type) + (long) (x0 - x) * PixelTransfer.bytesPerPixel(format, type);
+        VkGlTexture.readInto(img, 0, x0, y0, x1 - x0, y1 - y0, format, type, pixels + offset, layout, "glReadPixels");
     }
 
     private static void texParameter(int target, int pname, int param) {

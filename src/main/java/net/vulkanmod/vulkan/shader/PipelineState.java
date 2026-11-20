@@ -39,12 +39,12 @@ public class PipelineState {
     }
 
     public static int getAssemblyRasterState() {
-        // Iroh (RQ-11): off-screen targets are drawn in GL row order (positive viewport height), which mirrors the
-        // winding Vulkan sees; culling FRONT there removes the same triangles GL's back-face cull removes.
+        // Iroh (RQ-11, RQ-16): every target is drawn in GL row order (positive viewport height), which mirrors the
+        // winding Vulkan sees; GlState.vkCullMode maps glCullFace / glFrontFace accordingly.
         int state = AssemblyRasterState.encode(VRenderSystem.cull, VRenderSystem.topology, VRenderSystem.polygonMode);
-        if (VRenderSystem.cull && dev.elemore.iroh.glshim.GlState.offscreenBound())
+        if (VRenderSystem.cull)
             state = (state & ~(AssemblyRasterState.CULL_MODE_MASK << AssemblyRasterState.CULL_MODE_OFFSET))
-                    | (VK_CULL_MODE_FRONT_BIT << AssemblyRasterState.CULL_MODE_OFFSET);
+                    | (dev.elemore.iroh.glshim.GlState.vkCullMode() << AssemblyRasterState.CULL_MODE_OFFSET);
         return state;
     }
 

@@ -38,6 +38,8 @@ public abstract class ImageUtil {
     }
 
     public static void downloadTexture(VulkanImage image, long ptr) {
+        // Iroh (td-4a9be3): a one-shot buffer executes now; pending upload / frame commands on this image first.
+        dev.elemore.iroh.glshim.FrameSync.beforeHostRead(image);
         try (MemoryStack stack = stackPush()) {
             int prevLayout = image.getCurrentLayout();
             CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();
@@ -68,6 +70,8 @@ public abstract class ImageUtil {
     public static void copyImageToBuffer(VulkanImage image, Buffer buffer, int mipLevel,
                                          int width, int height, int xOffset, int yOffset,
                                          int bufferOffset, int bufferRowLength, int bufferImageHeight) {
+        // Iroh (td-4a9be3): a one-shot buffer executes now; pending upload / frame commands on this image first.
+        dev.elemore.iroh.glshim.FrameSync.beforeHostRead(image);
         try (MemoryStack stack = stackPush()) {
             int prevLayout = image.getCurrentLayout();
             CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();
@@ -246,6 +250,8 @@ public abstract class ImageUtil {
     }
 
     public static void generateMipmaps(VulkanImage image) {
+        // Iroh (td-4a9be3): a one-shot buffer executes now; pending upload / frame commands on this image first.
+        dev.elemore.iroh.glshim.FrameSync.beforeHostRead(image);
         try (MemoryStack stack = stackPush()) {
 
             CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();

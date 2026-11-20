@@ -51,6 +51,41 @@ public class VulkanImage {
 
     private int currentLayout;
 
+    // ---------------------------------------------------------------- Iroh (td-4a9be3): which command buffer owns the layout
+    // The upload command buffer (ImageUploadHelper) is submitted BEFORE the frame command buffer, but both are recorded
+    // during the same frame, and currentLayout is one variable. Recording order != execution order, so:
+    //  - uploadOwned: the last layout change was recorded in the not yet submitted upload buffer. Later transitions of
+    //    this image that must also precede the frame (readOnlyLayout) go there too, and the upload buffer ends with the
+    //    image back in SHADER_READ_ONLY (ImageUploadHelper.submitCommands), the layout every frame draw expects.
+    //  - frameUse == frameSerial: the frame command buffer already used the image this frame (sampled, attachment,
+    //    transition). An upload or transition after that must be recorded in the frame buffer (outside a render pass)
+    //    so it executes after those uses, as in GL.
+    private boolean uploadOwned;
+    private long frameUse = -1;
+    private static long frameSerial;
+
+    /** Renderer: a new frame command buffer was begun (frame start, or resumed after flushCmds). */
+    public static void nextFrameSerial() {
+        frameSerial++;
+    }
+
+    public boolean usedThisFrame() {
+        return this.frameUse == frameSerial;
+    }
+
+    public void markFrameUse() {
+        this.frameUse = frameSerial;
+    }
+
+    public boolean isUploadOwned() {
+        return this.uploadOwned;
+    }
+
+    /** ImageUploadHelper, after the upload buffer was submitted: its transitions are history now. */
+    public void clearUploadOwned() {
+        this.uploadOwned = false;
+    }
+
     // Used for already allocated images e.g. swap chain images
     public VulkanImage(String name, long id, int format, int mipLevels, int width, int height, int formatSize, int usage, long imageView) {
         this.id = id;
@@ -211,7 +246,19 @@ public class VulkanImage {
     }
 
     public void uploadSubTextureAsync(int mipLevel, int width, int height, int xOffset, int yOffset, int unpackSkipRows, int unpackSkipPixels, int unpackRowLength, long srcPtr) {
-        long uploadSize = (long) (unpackRowLength * height - unpackSkipPixels) * this.formatSize;
+        // Iroh: GL semantics, row length 0 = width (the base copied 0 bytes then and uploaded staging garbage:
+        // Xaero's striped map tiles, td-834bea). Size = exactly the rows the copy reads.
+        if (unpackRowLength <= 0)
+            unpackRowLength = width;
+        long uploadSize = ((long) unpackRowLength * (height - 1) + width) * this.formatSize;
+
+        // Iroh (td-4a9be3): the frame already used this image: upload in the frame buffer so earlier draws keep the
+        // old contents and the layout history stays in one buffer.
+        if (Renderer.isRecording() && usedThisFrame()) {
+            srcPtr += ((long) unpackRowLength * unpackSkipRows + unpackSkipPixels) * this.formatSize;
+            uploadInFrame(mipLevel, width, height, xOffset, yOffset, unpackRowLength, srcPtr, uploadSize);
+            return;
+        }
 
         StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
 
@@ -244,38 +291,115 @@ public class VulkanImage {
         transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     }
 
-    public void readOnlyLayout() {
-        if (this.currentLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    /**
+     * Iroh (td-4a9be3): upload recorded in the frame command buffer, outside any render pass, from a private staging
+     * buffer freed after this frame's fence (the per-frame staging buffer is reset before the frame executes).
+     */
+    private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
+        StagingBuffer staging = new StagingBuffer(Math.max(uploadSize, 16));
+        staging.copyBuffer((int) uploadSize, srcPtr);
+        long bufferId = staging.getId();
+        int srcOffset = (int) staging.getOffset();
+        staging.scheduleFree();
+
+        if (!outsideRenderPass(() -> {
+            try (MemoryStack stack = stackPush()) {
+                VkCommandBuffer cb = Renderer.getCommandBuffer();
+                transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                ImageUtil.copyBufferToImageCmd(stack, cb, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
+                                               srcOffset, rowLength, height);
+                if ((this.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
+                    transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+        })) {
+            // the image is an attachment of the bound pass: record in the frame buffer anyway is impossible inside
+            // the pass; fall back to the upload buffer (contents visible to the whole frame)
+            try (MemoryStack stack = stackPush()) {
+                VkCommandBuffer cb = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
+                transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                ImageUtil.copyBufferToImageCmd(stack, cb, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
+                                               srcOffset, rowLength, height);
+            }
+        }
+    }
+
+    /**
+     * Iroh: runs {@code record} on the frame command buffer outside any render pass: ends the bound pass, records,
+     * then resumes the pass that was bound (main target: LOAD pass; off-screen: beginRendering + GL binding) and
+     * re-applies GL viewport and scissor. Returns false (nothing recorded) when this image is an attachment of the
+     * bound pass (a GL feedback loop that cannot be made valid). Without a bound pass it just records.
+     */
+    public boolean outsideRenderPass(Runnable record) {
+        Renderer renderer = Renderer.getInstance();
+        RenderPass boundPass = renderer.getBoundRenderPass();
+        if (boundPass == null) {
+            record.run();
+            return true;
+        }
+        Framebuffer boundFb = renderer.getBoundFramebuffer();
+        if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {
+            logFeedbackOnce();
+            return false;
+        }
+        endPassRunResume(record);
+        return true;
+    }
+
+    /** Ends the bound render pass (if any), runs {@code record} on the frame command buffer, resumes the pass. */
+    public static void endPassRunResume(Runnable record) {
+        Renderer renderer = Renderer.getInstance();
+        RenderPass boundPass = renderer.getBoundRenderPass();
+        if (boundPass == null) {
+            record.run();
             return;
+        }
+        Framebuffer boundFb = renderer.getBoundFramebuffer();
+        VkGlFramebuffer glFb = VkGlFramebuffer.getBoundFramebuffer();
+        renderer.endRenderPass();
+        record.run();
+        if (glFb == null && boundFb instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
+            renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
+        } else if (boundFb != null) {
+            renderer.beginRendering(boundPass, boundFb);        // off-screen passes load (VkGlFramebuffer)
+            VkGlFramebuffer.restoreBinding(glFb);
+        }
+        // Framebuffer.beginRenderPass reset viewport and scissor to full size
+        dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+    }
+
+    public void readOnlyLayout() {
+        if (this.currentLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            markFrameUse();
+            return;
+        }
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
+            if (this.uploadOwned) {
+                // td-4a9be3: the pending layout change is in the upload buffer, which executes before the frame:
+                // the transition belongs there too, and the frame then sees SHADER_READ_ONLY from its start.
+                readOnlyLayout(stack, ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle());
+                markFrameUse();
+                return;
+            }
+
             Renderer renderer = Renderer.getInstance();
             RenderPass boundPass = renderer.getBoundRenderPass();
             if (boundPass != null) {
-                if (isAttachmentLayout(this.currentLayout)) {
-                    // Iroh (RQ-10): this image was rendered to earlier in this frame (a render target left in an
-                    // attachment layout, e.g. the main scene colour sampled while an off-screen pass is bound).
-                    // The upload command buffer runs BEFORE the frame's commands, so recording the transition there
-                    // executes it before the rendering it must follow. Record it in the frame command buffer
-                    // between render passes instead, then resume the pass that was bound.
-                    Framebuffer boundFb = renderer.getBoundFramebuffer();
-                    if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {
+                if (isAttachmentLayout(this.currentLayout) || usedThisFrame()) {
+                    // Iroh (RQ-10, td-4a9be3): this image was rendered to / used earlier in this frame (a render
+                    // target left in an attachment layout, e.g. the main scene colour sampled while an off-screen
+                    // pass is bound, or a texture copied into in the frame). The upload command buffer runs BEFORE
+                    // the frame's commands, so recording the transition there executes it before the work it must
+                    // follow. Record it in the frame command buffer between render passes, then resume the pass.
+                    if (!outsideRenderPass(() -> {
+                        try (MemoryStack s = stackPush()) {
+                            readOnlyLayout(s, Renderer.getCommandBuffer());
+                        }
+                    })) {
                         // sampling an attachment of the bound pass (GL feedback loop): cannot be made valid, keep the old path
-                        logFeedbackOnce();
                         readOnlyLayout(stack, ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle());
-                        return;
                     }
-                    VkGlFramebuffer glFb = VkGlFramebuffer.getBoundFramebuffer();
-                    renderer.endRenderPass();
-                    readOnlyLayout(stack, Renderer.getCommandBuffer());
-                    if (glFb == null && boundFb instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
-                        renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
-                    } else if (boundFb != null) {
-                        renderer.beginRendering(boundPass, boundFb);        // off-screen passes load (VkGlFramebuffer)
-                        VkGlFramebuffer.restoreBinding(glFb);
-                    }
-                    // Framebuffer.beginRenderPass reset viewport and scissor to full size
-                    dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+                    markFrameUse();
                     return;
                 }
                 CommandPool.CommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer();
@@ -286,6 +410,7 @@ public class VulkanImage {
             else {
                 readOnlyLayout(stack, Renderer.getCommandBuffer());
             }
+            markFrameUse();
         }
     }
 
@@ -429,6 +554,20 @@ public class VulkanImage {
                 barrier);
 
         image.currentLayout = newLayout;
+        noteRecordedIn(image, commandBuffer);
+    }
+
+    /** Iroh (td-4a9be3): remember which buffer holds the image's latest layout change (see uploadOwned). */
+    private static void noteRecordedIn(VulkanImage image, VkCommandBuffer commandBuffer) {
+        CommandPool.CommandBuffer upload = ImageUploadHelper.INSTANCE.getCommandBuffer();
+        long cb = commandBuffer.address();
+        if (upload != null && upload.getHandle().address() == cb) {
+            image.uploadOwned = true;
+            ImageUploadHelper.INSTANCE.track(image);
+        } else if (Renderer.isRecording() && Renderer.getCommandBuffer() != null && Renderer.getCommandBuffer().address() == cb) {
+            image.uploadOwned = false;
+            image.frameUse = frameSerial;
+        }
     }
 
     private static boolean hasStencilComponent(int format) {
