@@ -166,6 +166,21 @@ public class VkGlFramebuffer {
         return GL30.GL_FRAMEBUFFER_COMPLETE;
     }
 
+    /**
+     * Iroh (P1-2 slice 2): the image GL would read from (glReadPixels, glCopyTexSubImage2D): the READ framebuffer's
+     * colour (or depth) attachment, or the main scene target for framebuffer 0. Null when there is none.
+     */
+    public static VulkanImage readImage(boolean depth) {
+        VkGlFramebuffer read = readFramebuffer;
+        if (read != null)
+            return depth ? read.depthAttachment : read.colorAttachment;
+        Renderer r = Renderer.getInstance();
+        SceneTarget scene = r != null && r.getMainPass() != null ? r.getMainPass().getSceneTarget() : null;
+        if (scene == null)
+            return null;
+        return depth ? scene.getDepthAttachment() : scene.getColorAttachment();
+    }
+
     /** GL_DRAW_FRAMEBUFFER_BINDING (0 = the main target). */
     public static int getBoundDrawId() {
         return boundFramebuffer != null ? boundFramebuffer.id : 0;

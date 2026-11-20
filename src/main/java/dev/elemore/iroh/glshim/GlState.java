@@ -703,6 +703,17 @@ public final class GlState {
             return 0;
         });
 
+        // ---- copies and readbacks from the READ framebuffer (P1-2 slice 2)
+        on("glCopyTexSubImage2D", "V:IIIIIIII", a -> {
+            CopyTex.copyTexSubImage2D(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), i(a, 6), i(a, 7));
+            return 0;
+        });
+        on("glCopyTexImage2D", "V:IIIIIIII", a -> {
+            CopyTex.copyTexImage2D(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), i(a, 6), i(a, 7));
+            return 0;
+        });
+        on("glReadPixels", "V:IIIIIIP", a -> { readPixels(i(a, 0), i(a, 1), i(a, 2), i(a, 3), i(a, 4), i(a, 5), p(a, 6)); return 0; });
+
         // ---- buffers (pixel pack / unpack have storage; others are tracked bindings)
         on("glGenBuffers", "V:IP", a -> {
             int n = i(a, 0);
@@ -789,6 +800,26 @@ public final class GlState {
         });
         on("glBindVertexArray", "V:I", a -> { vertexArray = i(a, 0); return 0; });
         on("glDeleteVertexArrays", "V:IP", a -> 0);
+    }
+
+    /** glReadPixels: rectangle of the READ framebuffer (GL row order, RQ-16) with pack state and pack buffers. */
+    public static void readPixels(int x, int y, int w, int h, int format, int type, long pixels) {
+        net.vulkanmod.vulkan.texture.VulkanImage img = VkGlFramebuffer.readImage(format == 0x1902 /* DEPTH_COMPONENT */);
+        if (img == null || w <= 0 || h <= 0) return;
+        PixelTransfer.Dst layout = VkGlTexture.dstLayout(img.format);
+        if (layout == null) {
+            GlShim.unhandled("glReadPixels(vk format " + img.format + ")");
+            return;
+        }
+        int x0 = Math.max(0, x), y0 = Math.max(0, y);
+        int x1 = Math.min(img.width, x + w), y1 = Math.min(img.height, y + h);
+        if (x1 <= x0 || y1 <= y0) return;
+        if (x0 != x || y0 != y || x1 - x0 != w || y1 - y0 != h) {
+            // partly outside the buffer: GL leaves those client pixels undefined; read the inside part in place
+            GlShim.note("glReadPixels(clipped)", "");
+        }
+        long offset = (long) (y0 - y) * VkGlTexture.packStride(w, format, type) + (long) (x0 - x) * PixelTransfer.bytesPerPixel(format, type);
+        VkGlTexture.readInto(img, 0, x0, y0, x1 - x0, y1 - y0, format, type, pixels + offset, layout, "glReadPixels");
     }
 
     private static void texParameter(int target, int pname, int param) {

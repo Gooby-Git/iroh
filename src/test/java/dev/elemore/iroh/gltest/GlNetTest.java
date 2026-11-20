@@ -125,6 +125,13 @@ public final class GlNetTest {
         // unknown pname answers 0
         check(where + ": unknown pname -> 0", GL11C.glGetInteger(0x7FFF0) == 0);
 
+        // slice 2: copies / readbacks are handled (no target here: answered without touching Vulkan)
+        GL11C.glCopyTexSubImage2D(0x0DE1, 0, 0, 0, 0, 0, 16, 16);
+        ByteBuffer px = BufferUtils.createByteBuffer(16);
+        GL11C.glReadPixels(0, 0, 2, 2, 0x1908, 0x1401, px);
+        check(where + ": glCopyTexSubImage2D / glReadPixels not in the unhandled list",
+                GlShim.unhandledCounts().keySet().stream().noneMatch(k -> k.startsWith("glCopyTexSubImage2D <-") || k.startsWith("glReadPixels <-")));
+
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);
