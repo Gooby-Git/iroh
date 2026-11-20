@@ -222,16 +222,16 @@ public final class GlState {
     }
 
     /**
-     * GL semantics (factor = slope, units = constant) are tracked; Iroh applies them the way the base's
-     * GlStateManagerM always did ({@code VRenderSystem.polygonOffset(units, factor)}), so raw-GL and GlStateManager
-     * callers get the same depth bias. Whether that swap is right is RQ-17.
+     * glPolygonOffset(factor, units): offset = factor * DZ + r * units. Vulkan's depthBiasSlopeFactor is GL's factor,
+     * depthBiasConstantFactor GL's units (RQ-17: the base passed them swapped, so vanilla's polygonOffset(-1, -10)
+     * for the block-breaking overlay became slope -10, constant -1).
      */
     public static void polygonOffset(float factor, float units) {
         polygonOffsetFactor = factor;
         polygonOffsetUnits = units;
         GlStateManager.POLY_OFFSET.factor = factor;
         GlStateManager.POLY_OFFSET.units = units;
-        VRenderSystem.polygonOffset(units, factor);
+        VRenderSystem.polygonOffset(factor, units); // (slope, constant)
     }
 
     public static void polygonMode(int face, int mode) {
@@ -304,7 +304,7 @@ public final class GlState {
 
     /** After Renderer.flushCmds began a new command buffer (resetDynamicState zeroed depth bias and line width). */
     public static void reapplyDynamicState() {
-        if (polygonOffsetFill) Renderer.setDepthBias(polygonOffsetFactor, polygonOffsetUnits); // as polygonOffset() applies it (RQ-17)
+        if (polygonOffsetFill) Renderer.setDepthBias(polygonOffsetUnits, polygonOffsetFactor); // (constant, slope)
         VRenderSystem.setLineWidth(lineWidth);
     }
 
