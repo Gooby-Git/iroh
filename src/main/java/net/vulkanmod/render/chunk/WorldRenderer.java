@@ -413,6 +413,12 @@ public class WorldRenderer {
         }
     }
 
+    /** A chunk turned render-ready (ChunkStatusMap): rerun the graph only if the last update deferred rebuilds. */
+    public void chunkBecameRenderReady() {
+        if (this.sectionGraph != null && this.sectionGraph.hasDeferredRebuilds())
+            this.graphNeedsUpdate = true;
+    }
+
     public void scheduleGraphUpdate() {
         this.graphNeedsUpdate = true;
     }

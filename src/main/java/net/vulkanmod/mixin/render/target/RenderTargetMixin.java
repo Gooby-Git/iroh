@@ -17,7 +17,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin(RenderTarget.class)
+@Mixin(value = RenderTarget.class, priority = 1500)
 public abstract class RenderTargetMixin {
 
     @Shadow public int viewWidth;
