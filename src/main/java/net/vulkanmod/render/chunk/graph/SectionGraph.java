@@ -281,7 +281,7 @@ public class SectionGraph {
                 if (!section.isChunkRenderReady())
                     continue;
                 section.waitingForChunk = false;
-                this.waiting.unpark(chunkKey(section));
+                this.waiting.unpark(section.parkedKey);
                 retry = true;
             }
 
@@ -310,8 +310,15 @@ public class SectionGraph {
                 section.setNotDirty();
             } else {
                 // Chunk (or a neighbour chunk) not render-ready: stay dirty and wait for that chunk's status to change.
-                section.waitingForChunk = true;
-                this.waiting.park(chunkKey(section));
+                if (this.waiting.park(chunkKey(section), section::isChunkRenderReady)) {
+                    section.waitingForChunk = true;
+                    section.parkedKey = chunkKey(section);
+                } else {
+                    // ready between the refusal and now: its wake-up already fired, so ask for the retry ourselves
+                    WorldRenderer wr = WorldRenderer.getInstance();
+                    if (wr != null)
+                        wr.scheduleGraphUpdate();
+                }
                 if (STATS)
                     this.droppedStats.putIfAbsent(section, section.getCompiledSection());
             }
@@ -331,25 +338,29 @@ public class SectionGraph {
         if (now - this.statsLastLog <= 3000 || (this.waiting.refused == 0 && this.waiting.idleEvents == 0))
             return;
         this.statsLastLog = now;
-        int compiledAfter = 0, neverCompiled = 0, stale = 0, waitingNow = 0, waitingChunkReady = 0;
+        int compiledAfter = 0, neverCompiled = 0, stale = 0, waitingNow = 0, waitingChunkReady = 0, waitingReadyHidden = 0;
         for (var e : this.droppedStats.entrySet()) {
             RenderSection s = e.getKey();
             boolean wasUncompiled = e.getValue() == CompiledSection.UNCOMPILED;
             boolean changed = s.getCompiledSection() != e.getValue();
             if (s.waitingForChunk) {
                 waitingNow++;
-                // Must stay 0 after the next graph update: a parked section whose chunk is ready would be a missed wake-up.
-                if (s.isChunkRenderReady()) waitingChunkReady++;
+                // Parked, chunk ready and in this update's visible set: must be 0 (the update just retried every such section).
+                // Parked sections outside the frustum or occluded are retried when the walk reaches them, so they are not counted.
+                if (s.isChunkRenderReady()) {
+                    waitingReadyHidden++;
+                    if (s.lastVisibleFrame == this.lastFrame) waitingChunkReady++;
+                }
             }
             if (changed) compiledAfter++;
             else if (wasUncompiled) neverCompiled++;
             else stale++;
         }
         Initializer.LOGGER.info("[iroh-rebuild-stats] legacy={} refusedWaiting={} retried={} retriedAccepted={} compiledAfterRetry={} "
-                        + "neverCompiled={} staleKeptOldMesh={} waitingNow={} waitingButChunkReady={} wakeups={} idleReadyEvents={} "
+                        + "neverCompiled={} staleKeptOldMesh={} waitingNow={} waitingButChunkReady={} waitingReadyNotVisible={} lateReady={} wakeups={} idleReadyEvents={} "
                         + "distinctSections={} dropEvents={} dirtyNow={}",
                 LEGACY_DROP, this.waiting.refused, this.waiting.retried, this.waiting.retriedAccepted, compiledAfter,
-                neverCompiled, stale, waitingNow, waitingChunkReady, this.waiting.wakeups, this.waiting.idleEvents,
+                neverCompiled, stale, waitingNow, waitingChunkReady, waitingReadyHidden, this.waiting.lateReady, this.waiting.wakeups, this.waiting.idleEvents,
                 this.droppedStats.size(), this.waiting.refused, countDirty());
     }
 

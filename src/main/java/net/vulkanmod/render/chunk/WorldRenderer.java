@@ -505,6 +505,12 @@ public class WorldRenderer {
             this.graphNeedsUpdate = true;
     }
 
+    /** The refused-rebuild bookkeeping of the current section graph, or null before the first allChanged. */
+    public static dev.elemore.iroh.chunk.RebuildWaiting rebuildWaiting() {
+        WorldRenderer wr = INSTANCE;
+        return wr != null && wr.sectionGraph != null ? wr.sectionGraph.waiting() : null;
+    }
+
     public void scheduleGraphUpdate() {
         this.graphNeedsUpdate = true;
     }

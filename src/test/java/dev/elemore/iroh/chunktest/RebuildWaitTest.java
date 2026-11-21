@@ -50,11 +50,16 @@ public final class RebuildWaitTest {
             }
         }
 
+        java.util.Random race; // when set, arrivals are injected between the refusal and the park (other thread)
+        int[] raceChunks;
+        boolean naivePark; // mutation: park without the late readiness check (the rc3 behaviour)
+
         /** SectionGraph.update: only when needed, then scheduleRebuilds over every dirty reachable section. */
         void graphUpdate() {
             if (!graphNeeded) return;
             graphNeeded = false;
             graphUpdates++;
+            List<Sec> refused = new ArrayList<>();
             for (Sec s : secs) {
                 if (!s.dirty) continue;
                 if (s.waiting) {
@@ -67,10 +72,31 @@ public final class RebuildWaitTest {
                     s.compiled = true; s.dirty = false;
                     if (w.retried > w.retriedAccepted) w.retriedAccepted++;
                 } else {
-                    s.waiting = true;
-                    w.park(key(s.cx, s.cz));
+                    refused.add(s);
                 }
             }
+            for (Sec s : refused) {
+                if (race != null && race.nextInt(3) == 0) { // the status thread delivers a chunk right now
+                    // deliver one missing chunk of this section's 3x3 (the arrival that completes it, if only one is missing)
+                    List<int[]> missing = new ArrayList<>();
+                    for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++) {
+                        int nx = s.cx + dx, nz = s.cz + dz;
+                        if (nx >= 0 && nx < 5 && nz >= 0 && nz < 5 && !loaded.contains(key(nx, nz))) missing.add(new int[]{nx, nz});
+                    }
+                    if (!missing.isEmpty()) { int[] c = missing.get(race.nextInt(missing.size())); load(c[0], c[1]); }
+                }
+                long k = key(s.cx, s.cz);
+                if (naivePark) { w.park(k); s.waiting = true; }
+                else if (w.park(k, () -> ready.contains(k))) s.waiting = true;
+                else graphNeeded = true; // SectionGraph asks WorldRenderer for another update
+            }
+        }
+
+        /** ChunkStatusMap.resetChunkStatus: the chunk goes away, neighbours that lose a neighbour stop being ready. */
+        void unload(int x, int z) {
+            loaded.remove(key(x, z));
+            for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++)
+                if (!readyNow(x + dx, z + dz)) ready.remove(key(x + dx, z + dz));
         }
     }
 
@@ -79,6 +105,7 @@ public final class RebuildWaitTest {
         arrivalOrder();
         graphUpdateStorm();
         wakeBounded();
+        randomOrders();
         System.out.println(FAILS.isEmpty() ? "# rebuildwait PASS " + checks + "/" + checks
                 : "# rebuildwait FAIL " + FAILS.size() + " of " + checks + ": " + FAILS);
         if (!FAILS.isEmpty())
@@ -150,10 +177,68 @@ public final class RebuildWaitTest {
         w.park(k);
         check("two sections parked in one chunk", w.parkedSections() == 2 && w.parkedChunks() == 1);
         check("first ready event wakes", w.chunkReady(k));
-        check("second event for the same chunk does not wake again", !w.chunkReady(k));
+        check("the entry stays while sections are parked (a chunk that flaps wakes them again)", w.chunkReady(k));
         w.unpark(k);
+        check("one still parked, still wakes", w.chunkReady(k));
         w.unpark(k);
-        check("unpark after the wake is harmless", !w.hasParked() && w.retried == 2);
+        check("nothing parked: ready event is idle", !w.chunkReady(k));
+        w.park(k);
+        w.forget(k);
+        check("a relocated section is forgotten without a retry", !w.hasParked() && w.retried == 2);
+        
+    }
+
+    /**
+     * Property test (rc3v td-27b474): thousands of random arrival / unload / graph-update interleavings over a 5x5 chunk
+     * grid, with other-thread arrivals injected between a refusal and its park. Invariant once the wake-up queue drains: no
+     * section is parked while its chunk is ready, every ready section is compiled, and attempts stay bounded.
+     */
+    private static void randomOrders() {
+        check("mutation (park without the late check) is caught: " + randomRuns(true) + " violating runs", randomRuns(true) > 0);
+        int bad = randomRuns(false);
+        check("random orders: no section parked while its chunk is ready (" + bad + " violating runs of 4000, race injected)", bad == 0);
+    }
+
+    private static int randomRuns(boolean naive) {
+        java.util.Random rnd = new java.util.Random(0x1badf00dL);
+        int runs = 4000, badParked = 0, badCompiled = 0, badBound = 0, lateSeen = 0;
+        int[] all = new int[25];
+        for (int i = 0; i < 25; i++) all[i] = i;
+        for (int run = 0; run < runs; run++) {
+            Model m = new Model();
+            m.race = rnd.nextBoolean() ? rnd : null;
+            m.naivePark = naive;
+            m.raceChunks = all;
+            for (int x = 0; x < 5; x++) for (int z = 0; z < 5; z++) m.secs.add(new Sec(x, z));
+            int steps = 40 + rnd.nextInt(60);
+            int events = 0;
+            for (int i = 0; i < steps; i++) {
+                int c = rnd.nextInt(25);
+                switch (rnd.nextInt(5)) {
+                    case 0, 1 -> { if (!m.loaded.contains(Model.key(c / 5, c % 5))) { m.load(c / 5, c % 5); events++; } }
+                    case 2 -> { if (rnd.nextInt(4) == 0) { m.unload(c / 5, c % 5); for (Sec s : m.secs) if (s.cx == c / 5 && s.cz == c % 5) { s.dirty = true; s.compiled = false; } m.graphNeeded = true; } }
+                    case 3 -> { m.graphNeeded |= rnd.nextBoolean(); m.graphUpdate(); } // camera moved or not
+                    default -> m.graphUpdate();
+                }
+            }
+            // drain: the wake-up queue is the graphNeeded flag; every update may request one more only via a late ready
+            int guard = 0;
+            while (m.graphNeeded && guard++ < 50) m.graphUpdate();
+            if (guard >= 50) badBound++;
+            for (Sec s : m.secs) {
+                boolean rdy = m.ready.contains(Model.key(s.cx, s.cz));
+                if (s.waiting && rdy) badParked++;
+                if (rdy && s.dirty) badCompiled++;
+            }
+            if (m.attempts > m.secs.size() * (3 + events)) badBound++;
+            lateSeen += m.w.lateReady > 0 ? 1 : 0;
+        }
+        if (!naive) {
+            check("random orders: every ready section compiled (" + badCompiled + ")", badCompiled == 0);
+            check("random orders: drains and attempts bounded (" + badBound + ")", badBound == 0);
+            check("random orders: the late-ready path was exercised (" + lateSeen + " runs)", lateSeen > 5);
+        }
+        return badParked;
     }
 
     private static void check(String name, boolean ok) {

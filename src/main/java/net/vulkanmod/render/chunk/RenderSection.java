@@ -41,6 +41,8 @@ public class RenderSection {
     private boolean dirty = true;
     /** Refused because its chunk was not render-ready; parked in SectionGraph's RebuildWaiting until that chunk is ready (td-27b474). */
     public boolean waitingForChunk;
+    /** Chunk key the section was parked under (valid while waitingForChunk). */
+    public long parkedKey;
     private boolean playerChanged;
     private boolean completelyEmpty = true;
     private boolean containsBlockEntities = false;
@@ -400,6 +402,12 @@ public class RenderSection {
     }
 
     private void reset() {
+        if (this.waitingForChunk) { // relocated by the section grid: the parked entry belongs to the old chunk
+            this.waitingForChunk = false;
+            var w = WorldRenderer.rebuildWaiting();
+            if (w != null)
+                w.forget(this.parkedKey);
+        }
         this.cancelTasks();
         this.compileStatus.compiledSection = CompiledSection.UNCOMPILED;
         this.dirty = true;

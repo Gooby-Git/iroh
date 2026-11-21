@@ -25,6 +25,8 @@ public final class RebuildWaiting {
     public volatile long retriedAccepted;
     /** Chunk-ready events that found parked sections and asked for a graph update. */
     public volatile long wakeups;
+    /** Refusals that found their chunk ready by the time they were parked (the lost-wake-up race, closed). */
+    public volatile long lateReady;
     /** Chunk-ready events nobody was waiting for (no graph update requested). */
     public volatile long idleEvents;
 
@@ -32,7 +34,24 @@ public final class RebuildWaiting {
         this.parked.defaultReturnValue(0);
     }
 
-    /** A section of {@code chunkKey} was refused and is now parked. */
+    /**
+     * A section of {@code chunkKey} was refused. Parks it unless the chunk turned ready since the refusal: the readiness
+     * check runs under the same lock as {@link #chunkReady}, so a ready event is either seen here (not parked, returns
+     * false: the caller must request a graph update, the section stays dirty and is simply tried again) or arrives
+     * after this call and finds the section parked and wakes it. A section can therefore never be parked behind an event
+     * that already fired (rc3v: waitingButChunkReady stuck above 0).
+     */
+    public synchronized boolean park(long chunkKey, java.util.function.BooleanSupplier chunkIsReady) {
+        if (chunkIsReady.getAsBoolean()) {
+            this.lateReady++;
+            return false;
+        }
+        this.parked.addTo(chunkKey, 1);
+        this.refused++;
+        return true;
+    }
+
+    /** Park without the late check (tests of the counters only). */
     public synchronized void park(long chunkKey) {
         this.parked.addTo(chunkKey, 1);
         this.refused++;
@@ -51,17 +70,26 @@ public final class RebuildWaiting {
     /**
      * {@code chunkKey} just turned render-ready. Returns true when sections were waiting for it, i.e. the caller must
      * schedule one graph update; false means nothing to do. Never loops: one event, at most one update request. The chunk's
-     * entry is dropped (a retry that is refused again parks again; a section that is never reached keeps its flag and retries
-     * when the graph reaches it).
+     * entry stays while sections are parked under it (see the comment in the method).
      */
     public synchronized boolean chunkReady(long chunkKey) {
-        if (this.parked.remove(chunkKey) > 0) {
-            // the key is dropped now; each parked section re-checks readiness itself when the graph reaches it and parks again if needed
+        if (this.parked.containsKey(chunkKey)) {
+            // The key stays until every section parked under it has been retried (unpark) or relocated away (forget): the chunk
+            // may flap (ready, unloaded, ready again) before the graph reaches the section, and that second event must wake it too.
             this.wakeups++;
             return true;
         }
         this.idleEvents++;
         return false;
+    }
+
+    /** A parked section was relocated by the section grid (RenderSection.reset): drop it without counting a retry. */
+    public synchronized void forget(long chunkKey) {
+        int n = this.parked.get(chunkKey);
+        if (n <= 1)
+            this.parked.remove(chunkKey);
+        else
+            this.parked.put(chunkKey, n - 1);
     }
 
     public synchronized boolean hasParked() {
