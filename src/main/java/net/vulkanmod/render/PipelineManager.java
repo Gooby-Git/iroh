@@ -39,7 +39,7 @@ public abstract class PipelineManager {
     }
 
     private static void createBasicPipelines() {
-        terrainShaderEarlyZ = createPipeline("terrain_earlyZ", terrainVertexFormat);
+        terrainShaderEarlyZ = createPipeline("terrain_early_z" /* lower-case: ResourceLocation rejects "Z" (boot ERROR "Invalid path in mod resource-pack iroh") */, terrainVertexFormat);
         terrainShader = createPipeline("terrain", terrainVertexFormat);
         fastBlitPipeline = createPipeline("blit", CustomVertexFormat.NONE);
         cloudsPipeline = createPipeline("clouds", DefaultVertexFormat.POSITION_COLOR);
