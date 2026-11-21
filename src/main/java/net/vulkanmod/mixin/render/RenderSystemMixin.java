@@ -40,6 +40,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void initRenderer(int debugVerbosity, boolean debugSync) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.initRenderer");
         VRenderSystem.initRenderer();
 
         renderThread.setPriority(Thread.NORM_PRIORITY + 2);
@@ -56,6 +57,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static int maxSupportedTextureSize() {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.maxSupportedTextureSize");
         return VRenderSystem.maxSupportedTextureSize();
     }
 
@@ -64,6 +66,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void setShaderLights(Vector3f dir0, Vector3f dir1) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.setShaderLights");
         shaderLightDirections[0] = dir0;
         shaderLightDirections[1] = dir1;
 
@@ -81,6 +84,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     private static void _setShaderColor(float r, float g, float b, float a) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem._setShaderColor");
         shaderColor[0] = r;
         shaderColor[1] = g;
         shaderColor[2] = b;
@@ -94,6 +98,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void setShaderFogColor(float f, float g, float h, float i) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.setShaderFogColor");
         shaderFogColor[0] = f;
         shaderFogColor[1] = g;
         shaderFogColor[2] = h;
@@ -107,6 +112,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void setProjectionMatrix(Matrix4f projectionMatrix, VertexSorting vertexSorting) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.setProjectionMatrix");
         Matrix4f matrix4f = new Matrix4f(projectionMatrix);
         if (!isOnRenderThread()) {
             recordRenderCall(() -> {
@@ -131,6 +137,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void setTextureMatrix(Matrix4f matrix4f) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.setTextureMatrix");
         Matrix4f matrix4f2 = new Matrix4f(matrix4f);
         if (!RenderSystem.isOnRenderThread()) {
             RenderSystem.recordRenderCall(() -> {
@@ -148,6 +155,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void resetTextureMatrix() {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.resetTextureMatrix");
         if (!RenderSystem.isOnRenderThread()) {
             RenderSystem.recordRenderCall(() -> textureMatrix.identity());
         } else {
@@ -161,6 +169,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     public static void applyModelViewMatrix() {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem.applyModelViewMatrix");
         Matrix4f matrix4f = new Matrix4f(modelViewStack);
         if (!isOnRenderThread()) {
             recordRenderCall(() -> {
@@ -183,6 +192,7 @@ public abstract class RenderSystemMixin {
      */
     @Overwrite(remap = false)
     private static void _restoreProjectionMatrix() {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("RenderSystem._restoreProjectionMatrix");
         projectionMatrix = savedProjectionMatrix;
         vertexSorting = savedVertexSorting;
 

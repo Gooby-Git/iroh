@@ -52,6 +52,8 @@ public final class ApiTest {
 
         shadeHookContract();
 
+        ApiV3Checks.run(ApiTest::check);
+
         System.out.println("# api " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         if (fail != 0)
             System.exit(1);
@@ -119,7 +121,7 @@ public final class ApiTest {
         check("shade hook: a quad the hook ignores is not touched", !r2 && g.posCalls == 0);
     }
 
-    private static void check(String what, boolean ok) {
+    static void check(String what, boolean ok) {
         if (ok) pass++;
         else fail++;
         System.out.println((ok ? "ok   " : "FAIL ") + what);

@@ -67,6 +67,7 @@ public class VertexBufferM {
      */
     @Overwrite
     public void drawWithShader(Matrix4f viewMatrix, Matrix4f projectionMatrix, ShaderInstance shader) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("VertexBuffer.drawWithShader");
         vbo.drawWithShader(viewMatrix, projectionMatrix, shader);
     }
 
@@ -75,6 +76,7 @@ public class VertexBufferM {
      */
     @Overwrite
     public void draw() {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("VertexBuffer.draw");
         vbo.draw();
     }
 
@@ -83,6 +85,7 @@ public class VertexBufferM {
      */
     @Overwrite
     public void close() {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("VertexBuffer.close");
         vbo.close();
     }
 }

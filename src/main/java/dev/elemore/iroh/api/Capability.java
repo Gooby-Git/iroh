@@ -16,5 +16,29 @@ public enum Capability {
     /** A shadow pass exists and {@link IrohApi#isRenderingShadowPass} may become true. Phase 3. */
     SHADOW_PASS,
     /** Registered {@link HeldLightProvider}s change the picture. PACK / RT paths only. */
-    HELD_LIGHT
+    HELD_LIGHT,
+
+    // ---- api 3 (P1-13a)
+    /** {@link IrohFrame#addHook} stages are dispatched. */
+    FRAME_HOOKS,
+    /** {@link IrohSky} cloud suppression / cloud and weather overrides are consulted. */
+    SKY_HOOKS,
+    /** {@link IrohDraw} immediate geometry with declared pipelines. */
+    IMMEDIATE_DRAW,
+    /** {@link IrohShaders#compile} (GLSL 450 / SPIR-V). */
+    OWNER_SHADERS,
+    /** {@link IrohTextures#createDynamic}. */
+    DYNAMIC_TEXTURES,
+    /** {@link IrohTargets}. Not before Phase 2/9. */
+    RENDER_TARGETS,
+    /** {@link IrohBuffers}. Not before Phase 2/9. */
+    GPU_BUFFERS,
+    /** Sparse (partially resident) buffers. Not before Phase 9. */
+    SPARSE_BUFFERS,
+    /** Buffer device addresses. Not before Phase 9. */
+    DEVICE_ADDRESS,
+    /** {@link IrohCompute}. Not before Phase 2/9. */
+    COMPUTE,
+    /** {@link IrohDraw#multiDrawIndirectCount}. Not before Phase 9. */
+    MULTI_DRAW_INDIRECT_COUNT
 }

@@ -526,8 +526,10 @@ public class VkGlTexture {
         samplerFlags |= magFilter == GL11.GL_LINEAR ? SamplerManager.LINEAR_FILTERING_BIT : 0;
 
         samplerFlags |= switch (minFilter) {
-            case GL11.GL_LINEAR_MIPMAP_LINEAR -> SamplerManager.USE_MIPMAPS_BIT | SamplerManager.MIPMAP_LINEAR_FILTERING_BIT;
-            case GL11.GL_NEAREST_MIPMAP_NEAREST -> SamplerManager.USE_MIPMAPS_BIT;
+            // Iroh (td-48591b): all four GL mipmap min filters; the base dropped mipmaps for NEAREST_MIPMAP_LINEAR (what
+            // vanilla's atlases use when set through glTexParameter) and LINEAR_MIPMAP_NEAREST.
+            case GL11.GL_LINEAR_MIPMAP_LINEAR, GL11.GL_NEAREST_MIPMAP_LINEAR -> SamplerManager.USE_MIPMAPS_BIT | SamplerManager.MIPMAP_LINEAR_FILTERING_BIT;
+            case GL11.GL_NEAREST_MIPMAP_NEAREST, GL11.GL_LINEAR_MIPMAP_NEAREST -> SamplerManager.USE_MIPMAPS_BIT;
             default -> 0;
         };
 

@@ -2,126 +2,249 @@ package dev.elemore.iroh.compattest;
 
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.FieldVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.zip.ZipFile;
 
 /**
- * rc3r2: the members our own mods' IrohBridge classes look up by MethodHandles / LambdaMetafactory (elemore-core
- * com.elemore.client.IrohBridge, Polaris com.polaris.client.IrohBridge), checked against the BUILT (intermediary-mapped)
- * Iroh jar by exact name + descriptor + public (static for IrohApi, abstract for the interfaces). A rename or signature
- * change in dev.elemore.iroh.api fails here instead of silently switching a hook off in game.
- * The bridge classes are read from the jars in build/p16b at test time (elemore-core-*.jar, polaris-*.jar): every
- * "dev.elemore.iroh.api.*" class name they hold must exist, and every string they hold that names an api member must be
- * in the list below (so the list cannot drift from the bridges). {@code ./gradlew bridgeLinkTest [-Piroh=jar]
+ * Our own mods reach Iroh only through MethodHandles / LambdaMetafactory in their IrohBridge classes (no Iroh class in any
+ * constant pool), so a rename in dev.elemore.iroh.api would silently switch a hook off in game. This test checks the
+ * bridges against the BUILT (intermediary-mapped) Iroh jar, discovering what they look up instead of keeping a list:
+ * <ul>
+ * <li>every string constant of every {@code IrohBridge*} class in each bridge jar is classified: an api class name
+ * ("dev.elemore.iroh.api.X") must exist; an identifier must resolve to a public method of, or an enum constant of, one of
+ * the api classes that bridge names, unless it is one of the bridge jar's own method names (its own findStatic targets)
+ * or a mod id passed to FabricLoader.isModLoaded; anything else is a FAIL (a lookup that does not resolve);</li>
+ * <li>enum constants read by name: string constants passed straight into an IrohBridge static method from any class of the
+ * same jar (e.g. {@code IrohBridge.hook("AFTER_HUD", ...)}, {@code createDynamic(id, w, h, "NEAREST", "CLAMP")}) must
+ * be constants of an api enum the bridge names;</li>
+ * <li>api interfaces built with LambdaMetafactory (@FunctionalInterface in the api) have exactly one abstract method,
+ * and its name is the one the bridge passes;</li>
+ * <li>a few pinned descriptors (signatures the bridges' MethodTypes encode, which bytecode only shows as Class
+ * constants) must still exist exactly.</li>
+ * </ul>
+ * Bridge jars: newest {@code <mod>-*.jar} per mod holding an IrohBridge class, from the folder given ({@code -Pbridges=dir}),
+ * default ~/Projects/iroh-wt-resync/build/p113b, else build/p16b. {@code ./gradlew bridgeLinkTest [-Piroh=jar]
  * [-Pbridges=dir]}; last line "# bridgelink PASS n/n".
  */
 public final class BridgeLinkTest {
-    private static final String API = "dev/elemore/iroh/api/IrohApi";
+    private static final String API_PKG = "dev/elemore/iroh/api/";
+    private static final Path DEFAULT_BRIDGES = Path.of(System.getProperty("user.home"), "Projects/iroh-wt-resync/build/p113b");
 
     static Path findIroh() throws Exception {
-        try (var s = java.nio.file.Files.list(Path.of("build/libs"))) {
+        try (var s = Files.list(Path.of("build/libs"))) {
             return s.filter(p -> p.getFileName().toString().matches("iroh-.*\\.jar") && !p.toString().contains("sources"))
                     .findFirst().orElseThrow(() -> new IllegalStateException("build the Iroh jar first (./build.sh)"));
         }
     }
+
     private static final String BG = "Lnet/minecraft/class_1922;", BP = "Lnet/minecraft/class_2338;", DIR = "Lnet/minecraft/class_2350;",
             BS = "Lnet/minecraft/class_2680;", PL = "Lnet/minecraft/class_1657;", HAND = "Lnet/minecraft/class_1268;", STACK = "Lnet/minecraft/class_1799;",
-            MQV = "Lnet/fabricmc/fabric/api/renderer/v1/mesh/MutableQuadView;";
+            MQV = "Lnet/fabricmc/fabric/api/renderer/v1/mesh/MutableQuadView;", RL = "Lnet/minecraft/class_2960;", A = "Ldev/elemore/iroh/api/",
+            REG = A + "IrohFrame$Registration;", CTX = A + "FrameContext;";
 
-    // {owner, name, descriptor, user}
-    private static final String[][] EXPECT = {
-            {API, "isBoxVisible", "(DDDDDD)Z", "elemore ClavisLockCullMixin"},
-            {API, "isShaderPackInUse", "()Z", "elemore ShaderGuard"},
-            {API, "currentPackName", "()Ljava/lang/String;", "elemore ShaderGuard"},
-            {API, "isRenderingShadowPass", "()Z", "elemore ShadowPass"},
-            {API, "cullLeafFace", "(" + BG + BP + DIR + "Ljava/util/function/Predicate;)Z", "elemore leaf veto"},
-            {API, "renderPath", "()Ldev/elemore/iroh/api/RenderPath;", "elemore ShaderGuard"},
-            {API, "capabilities", "()Ljava/util/Set;", "elemore ShaderGuard"},
-            {API, "registerFaceCullVeto", "(Ldev/elemore/iroh/api/FaceCullVeto;)V", "elemore leaf veto"},
-            {API, "registerHeldLightProvider", "(Ldev/elemore/iroh/api/HeldLightProvider;)V", "elemore trinket lantern"},
-            {API, "isChunkMeshView", "(" + BG + ")Z", "polaris MeshGate"},
-            {API, "registerShadeHook", "(Ldev/elemore/iroh/api/ShadeHook;)V", "polaris slope lighting"},
-            {"dev/elemore/iroh/api/FaceCullVeto", "hideFace", "(" + BS + BG + BP + DIR + ")Z", "elemore LambdaMetafactory"},
-            {"dev/elemore/iroh/api/HeldLightProvider", "lightSource", "(" + PL + HAND + STACK + ")" + STACK, "elemore LambdaMetafactory"},
-            {"dev/elemore/iroh/api/ShadeHook", "beforeShade", "(" + BS + BP + MQV + ")Z", "polaris LambdaMetafactory"},
+    /** Pinned signatures, checked only when the bridges use that member name (signature drift guard). {class, name, desc}. */
+    private static final String[][] PINNED = {
+            {"IrohApi", "isBoxVisible", "(DDDDDD)Z"}, {"IrohApi", "isShaderPackInUse", "()Z"},
+            {"IrohApi", "currentPackName", "()Ljava/lang/String;"}, {"IrohApi", "isRenderingShadowPass", "()Z"},
+            {"IrohApi", "cullLeafFace", "(" + BG + BP + DIR + "Ljava/util/function/Predicate;)Z"},
+            {"IrohApi", "renderPath", "()" + A + "RenderPath;"}, {"IrohApi", "capabilities", "()Ljava/util/Set;"},
+            {"IrohApi", "registerFaceCullVeto", "(" + A + "FaceCullVeto;)V"},
+            {"IrohApi", "registerHeldLightProvider", "(" + A + "HeldLightProvider;)V"},
+            {"IrohApi", "isChunkMeshView", "(" + BG + ")Z"}, {"IrohApi", "registerShadeHook", "(" + A + "ShadeHook;)V"},
+            {"FaceCullVeto", "hideFace", "(" + BS + BG + BP + DIR + ")Z"},
+            {"HeldLightProvider", "lightSource", "(" + PL + HAND + STACK + ")" + STACK},
+            {"ShadeHook", "beforeShade", "(" + BS + BP + MQV + ")Z"},
+            {"IrohSky", "setCloudsSuppressed", "(Ljava/util/function/Predicate;)" + REG},
+            {"IrohSky", "overrideClouds", "(I" + A + "CloudOverride;)" + REG},
+            {"IrohFrame", "addHook", "(" + A + "FrameStage;" + A + "FrameHook;)" + REG},
+            {"IrohTextures", "createDynamic", "(" + RL + "II" + A + "IrohTextures$Filter;" + A + "IrohTextures$Wrap;)" + A + "DynamicTextureHandle;"},
+            {"DynamicTextureHandle", "hasConsumers", "()Z"}, {"DynamicTextureHandle", "update", "(IIIILjava/nio/ByteBuffer;)V"},
+            {"FrameHook", "run", "(" + CTX + ")V"}, {"CloudOverride", "draw", "(" + CTX + ")Z"},
+            {"FrameContext", "partialTick", "()F"}, {"FrameContext", "cameraPos", "()Lorg/joml/Vector3dc;"},
+            {"FrameContext", "viewMatrix", "()Lorg/joml/Matrix4fc;"}, {"FrameContext", "projectionMatrix", "()Lorg/joml/Matrix4fc;"},
     };
+
+    /** One api class as read from the Iroh jar. */
+    static final class ApiClass {
+        int access;
+        boolean functional;
+        final Map<String, Integer> methods = new HashMap<>(); // name+desc -> access
+        final Set<String> publicNames = new HashSet<>(), enumConstants = new HashSet<>(), abstractNames = new HashSet<>();
+    }
+
+    private static int pass, fail;
+
+    private static void check(String what, boolean ok) {
+        System.out.println((ok ? "ok   " : "FAIL ") + what);
+        if (ok) pass++; else fail++;
+    }
 
     public static void main(String[] args) throws Exception {
         Path iroh = args.length > 0 && !args[0].isEmpty() ? Path.of(args[0]) : findIroh();
-        Path bridges = Path.of(args.length > 1 && !args[1].isEmpty() ? args[1] : "build/p16b");
-        Map<String, Integer> members = new HashMap<>();
-        java.util.Set<String> apiClasses = new java.util.HashSet<>(), apiMemberNames = new java.util.HashSet<>();
+        Path bridges = args.length > 1 && !args[1].isEmpty() ? Path.of(args[1])
+                : Files.isDirectory(DEFAULT_BRIDGES) ? DEFAULT_BRIDGES : Path.of("build/p16b");
+        System.out.println("# iroh " + iroh + ", bridges " + bridges);
+        Map<String, ApiClass> api = readApi(iroh);
+
+        // newest jar per mod that holds an IrohBridge
+        Map<String, Path> jars = new TreeMap<>();
+        try (var files = Files.list(bridges)) {
+            for (Path j : files.filter(f -> f.toString().endsWith(".jar")).sorted().toList()) {
+                String mod = j.getFileName().toString().replaceFirst("-\\d.*$", "");
+                Path old = jars.get(mod);
+                if (hasBridge(j) && (old == null || Files.getLastModifiedTime(j).compareTo(Files.getLastModifiedTime(old)) > 0))
+                    jars.put(mod, j);
+            }
+        }
+        check("bridge jars found in " + bridges + ": " + jars.values().stream().map(p -> p.getFileName().toString()).toList(), !jars.isEmpty());
+
+        Set<String> usedNames = new HashSet<>();
+        for (Path jar : jars.values()) scanJar(jar, api, usedNames);
+
+        for (String[] p : PINNED) {
+            if (!usedNames.contains(p[0] + "." + p[1])) continue;
+            ApiClass c = api.get(API_PKG + p[0]);
+            Integer acc = c == null ? null : c.methods.get(p[1] + p[2]);
+            check("pinned signature " + p[0] + "." + p[1] + p[2], acc != null && (acc & Opcodes.ACC_PUBLIC) != 0);
+        }
+        System.out.println("# bridgelink " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
+        if (fail != 0) System.exit(1);
+    }
+
+    private static boolean hasBridge(Path jar) throws Exception {
+        try (ZipFile z = new ZipFile(jar.toFile())) {
+            return Collections.list(z.entries()).stream().anyMatch(e -> e.getName().matches(".*/IrohBridge(\\$.*)?\\.class"));
+        }
+    }
+
+    static Map<String, ApiClass> readApi(Path iroh) throws Exception {
+        Map<String, ApiClass> api = new HashMap<>();
         try (ZipFile z = new ZipFile(iroh.toFile())) {
-            for (var e : java.util.Collections.list(z.entries())) {
+            for (var e : Collections.list(z.entries())) {
                 String n = e.getName();
-                if (!n.startsWith("dev/elemore/iroh/api/") || !n.endsWith(".class")) continue;
-                String cls = n.substring(0, n.length() - 6);
-                apiClasses.add(cls);
+                if (!n.startsWith(API_PKG) || !n.endsWith(".class")) continue;
+                ApiClass c = new ApiClass();
+                api.put(n.substring(0, n.length() - 6), c);
                 try (InputStream in = z.getInputStream(e)) {
                     new ClassReader(in).accept(new ClassVisitor(Opcodes.ASM9) {
+                        @Override public void visit(int v, int acc, String name, String sig, String sup, String[] itf) { c.access = acc; }
+                        @Override public org.objectweb.asm.AnnotationVisitor visitAnnotation(String d, boolean vis) {
+                            if (d.equals("Ljava/lang/FunctionalInterface;")) c.functional = true;
+                            return null;
+                        }
                         @Override public MethodVisitor visitMethod(int acc, String mn, String d, String s, String[] x) {
-                            members.put(cls + "." + mn + d, acc);
-                            if ((acc & Opcodes.ACC_PUBLIC) != 0 && !mn.startsWith("<")) apiMemberNames.add(mn);
+                            c.methods.put(mn + d, acc);
+                            if ((acc & Opcodes.ACC_PUBLIC) != 0 && !mn.startsWith("<")) c.publicNames.add(mn);
+                            if ((acc & Opcodes.ACC_ABSTRACT) != 0) c.abstractNames.add(mn);
+                            return null;
+                        }
+                        @Override public FieldVisitor visitField(int acc, String fn, String d, String s, Object v) {
+                            if ((acc & Opcodes.ACC_ENUM) != 0) c.enumConstants.add(fn);
                             return null;
                         }
                     }, ClassReader.SKIP_CODE);
                 }
             }
         }
-        // strings the bridges hold
-        java.util.Set<String> bridgeStrings = new java.util.TreeSet<>();
-        int bridgeClasses = 0;
-        try (var files = java.nio.file.Files.list(bridges)) {
-            for (Path jar : files.filter(f -> f.getFileName().toString().matches("(elemore-core|polaris)-.*\\.jar")).toList()) {
-                try (ZipFile z = new ZipFile(jar.toFile())) {
-                    for (var e : java.util.Collections.list(z.entries())) {
-                        if (!e.getName().matches(".*/IrohBridge.*\\.class")) continue;
-                        bridgeClasses++;
-                        try (InputStream in = z.getInputStream(e)) {
-                            new ClassReader(in).accept(new ClassVisitor(Opcodes.ASM9) {
-                                @Override public MethodVisitor visitMethod(int a, String n, String d, String sg, String[] x) {
-                                    return new MethodVisitor(Opcodes.ASM9) {
-                                        @Override public void visitLdcInsn(Object v) { if (v instanceof String str) bridgeStrings.add(str); }
-                                    };
-                                }
-                            }, 0);
+        return api;
+    }
+
+    private static void scanJar(Path jar, Map<String, ApiClass> api, Set<String> usedNames) throws Exception {
+        String jn = jar.getFileName().toString();
+        Set<String> bridgeStrings = new TreeSet<>(), ownMethods = new HashSet<>(), modIds = new HashSet<>();
+        Set<String> enumArgs = new TreeSet<>();
+        Set<String> bridgeOwners = new HashSet<>();
+        try (ZipFile z = new ZipFile(jar.toFile())) {
+            List<java.util.zip.ZipEntry> classes = Collections.list(z.entries()).stream().filter(e -> e.getName().endsWith(".class")).map(e -> (java.util.zip.ZipEntry) e).toList();
+            for (var e : classes)
+                if (e.getName().matches(".*/IrohBridge(\\$.*)?\\.class"))
+                    bridgeOwners.add(e.getName().substring(0, e.getName().length() - 6));
+            for (var e : classes) {
+                String owner = e.getName().substring(0, e.getName().length() - 6);
+                boolean bridge = bridgeOwners.contains(owner);
+                try (InputStream in = z.getInputStream(e)) {
+                    ClassReader cr = new ClassReader(in);
+                    if (bridge) {
+                        // every String constant in the pool (CONSTANT_String = tag 8)
+                        char[] buf = new char[cr.getMaxStringLength()];
+                        for (int i = 1; i < cr.getItemCount(); i++) {
+                            int off = cr.getItem(i);
+                            if (off > 0 && cr.b[off - 1] == 8) bridgeStrings.add(cr.readUTF8(off, buf));
                         }
                     }
+                    cr.accept(new ClassVisitor(Opcodes.ASM9) {
+                        @Override public MethodVisitor visitMethod(int a, String mn, String d, String sg, String[] x) {
+                            ownMethods.add(mn);
+                            return new MethodVisitor(Opcodes.ASM9) {
+                                final List<String> pendingLdc = new ArrayList<>();
+                                @Override public void visitLdcInsn(Object v) { if (v instanceof String s) pendingLdc.add(s); }
+                                @Override public void visitMethodInsn(int op, String o, String n, String desc, boolean itf) {
+                                    if (n.equals("isModLoaded") && !pendingLdc.isEmpty()) modIds.add(pendingLdc.get(pendingLdc.size() - 1));
+                                    if (op == Opcodes.INVOKESTATIC && bridgeOwners.contains(o) && !bridge)
+                                        for (String s : pendingLdc) if (s.matches("[A-Z][A-Z0-9_]*")) enumArgs.add(s);
+                                    pendingLdc.clear();
+                                }
+                            };
+                        }
+                    }, 0);
                 }
             }
         }
-        java.util.Set<String> listed = new java.util.HashSet<>();
-        for (String[] e : EXPECT) listed.add(e[1]);
-        int pre = 0, preFail = 0;
-        if (bridgeClasses == 0) { System.out.println("FAIL no IrohBridge classes in " + bridges + "/(elemore-core|polaris)-*.jar"); preFail++; }
-        for (String str : bridgeStrings) {
-            if (str.startsWith("dev.elemore.iroh.api.")) {
-                boolean ok = apiClasses.contains(str.replace('.', '/'));
-                System.out.println((ok ? "ok   " : "FAIL ") + "bridge names class " + str);
-                if (ok) pre++; else preFail++;
-            } else if (apiMemberNames.contains(str) && !listed.contains(str)) {
-                System.out.println("FAIL bridge looks up " + str + ", which this test does not list with a descriptor");
-                preFail++;
+        // api classes this jar's bridge names
+        Set<String> named = new TreeSet<>();
+        for (String s : bridgeStrings) {
+            if (!s.startsWith("dev.elemore.iroh.api.")) continue;
+            if (s.equals("dev.elemore.iroh.api.")) continue; // prefix for a concatenated name
+            String internal = s.replace('.', '/');
+            boolean ok = api.containsKey(internal);
+            check(jn + ": class " + s, ok);
+            if (ok) named.add(internal);
+        }
+        // identifiers: must resolve
+        for (String s : bridgeStrings) {
+            if (s.startsWith("dev.elemore.iroh.api.") || !s.matches("[A-Za-z_][A-Za-z0-9_]*")) continue;
+            List<String> where = new ArrayList<>();
+            for (String c : named) {
+                ApiClass ac = api.get(c);
+                if (ac.publicNames.contains(s) || ac.enumConstants.contains(s)) {
+                    String simple = c.substring(API_PKG.length());
+                    where.add(simple);
+                    usedNames.add(simple + "." + s);
+                }
             }
+            if (where.isEmpty() && s.matches("[A-Z][A-Z0-9_]*"))
+                // an enum constant compared by name on a value the bridge got back (e.g. capabilities() -> "SHADER_PACKS")
+                for (var en : api.entrySet())
+                    if (en.getValue().enumConstants.contains(s)) {
+                        String simple = en.getKey().substring(API_PKG.length());
+                        where.add(simple + " (by name)");
+                        usedNames.add(simple + "." + s);
+                    }
+            if (!where.isEmpty()) check(jn + ": member " + s + " in " + where, true);
+            else if (modIds.contains(s)) System.out.println("     " + jn + ": mod id " + s);
+            else if (ownMethods.contains(s)) System.out.println("     " + jn + ": own method " + s);
+            else check(jn + ": name " + s + " resolves to no member of the api classes the bridge names " + named, false);
         }
-        for (String name : listed)
-            if (!bridgeStrings.contains(name)) { System.out.println("FAIL listed " + name + " is not used by any bridge (stale list)"); preFail++; }
-        int pass = pre, fail = preFail;
-        for (String[] e : EXPECT) {
-            Integer acc = members.get(e[0] + "." + e[1] + e[2]);
-            boolean api = e[0].equals(API);
-            boolean ok = acc != null && (acc & Opcodes.ACC_PUBLIC) != 0
-                    && (api ? (acc & Opcodes.ACC_STATIC) != 0 : (acc & Opcodes.ACC_ABSTRACT) != 0);
-            System.out.println((ok ? "ok   " : "FAIL ") + e[0].substring(e[0].lastIndexOf('/') + 1) + "." + e[1] + e[2] + "  (" + e[3] + ")");
-            if (ok) pass++; else fail++;
+        // enum constants passed by name from callers
+        for (String s : enumArgs) {
+            List<String> where = new ArrayList<>();
+            for (String c : named) if (api.get(c).enumConstants.contains(s)) where.add(c.substring(API_PKG.length()));
+            check(jn + ": enum constant " + s + " passed to IrohBridge, in " + where, !where.isEmpty());
         }
-        System.out.println("# bridgelink " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
-        if (fail != 0) System.exit(1);
+        // functional interfaces: single abstract method, and that name is the one the bridge uses
+        for (String c : named) {
+            ApiClass ac = api.get(c);
+            if ((ac.access & Opcodes.ACC_INTERFACE) == 0 || !ac.functional) continue;
+            String only = ac.abstractNames.size() == 1 ? ac.abstractNames.iterator().next() : null;
+            check(jn + ": " + c.substring(API_PKG.length()) + " is a single-abstract-method interface (" + ac.abstractNames
+                    + ") and the bridge passes its name", only != null && bridgeStrings.contains(only));
+        }
     }
 }

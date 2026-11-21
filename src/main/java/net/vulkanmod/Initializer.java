@@ -41,6 +41,8 @@ public class Initializer implements ClientModInitializer {
 			LOGGER.info("config: {}", line);
 
 		RendererAccess.INSTANCE.registerRenderer(VulkanModRenderer.INSTANCE);
+		// Iroh P1-13a: world frame stages for dev.elemore.iroh.api.IrohFrame
+		dev.elemore.iroh.apiimpl.WorldStages.register();
 	}
 
 	public static String getVersion() {

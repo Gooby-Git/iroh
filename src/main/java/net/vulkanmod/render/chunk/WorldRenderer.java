@@ -372,11 +372,18 @@ public class WorldRenderer {
                 com.mojang.blaze3d.systems.RenderSystem.getShaderFogShape(), fc.getFloat(0), fc.getFloat(4), fc.getFloat(8), fc.getFloat(12));
     }
 
+    private static final boolean DEBUG_TERRAIN_NO_CULL = Boolean.getBoolean("iroh.debug.terrainNoCull");
+
     public void renderSectionLayer(RenderType renderType, double camX, double camY, double camZ, Matrix4f modelView, Matrix4f projection) {
         if (Renderer.recordingCommandBuffer("renderSectionLayer") == null) // rc3r2 (td-7937f0): no frame recording
             return;
         TerrainRenderType terrainRenderType = TerrainRenderType.get(renderType);
         renderType.setupRenderState();
+        // td-242adb experiment: -Diroh.debug.terrainNoCull=true draws terrain without GPU back-face culling (pair it with
+        // iroh.json "backFaceCulling": false for the per-facing CPU buckets). If the powder-snow column then looks like the
+        // OpenGL reference, OpenGL is showing the column's own faces from inside.
+        if (DEBUG_TERRAIN_NO_CULL)
+            net.vulkanmod.vulkan.VRenderSystem.disableCull();
         if (FOG_TRACE)
             traceFog(renderType, camX, camY, camZ);
 
