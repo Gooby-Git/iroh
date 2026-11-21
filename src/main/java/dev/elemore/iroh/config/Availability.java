@@ -15,6 +15,15 @@ public final class Availability {
     public static volatile boolean UPSCALER_IMPLEMENTED = false;
     public static volatile boolean RAY_TRACING_IMPLEMENTED = false;
     public static volatile boolean FRAME_GENERATION_IMPLEMENTED = false;
+    /**
+     * Fabulous graphics (td-75c969, P1-10): vanilla's transparency post chain on Iroh's off-screen targets. On unless
+     * {@code -Diroh.fabulous=false}. Vanilla itself drops back to Fancy (with its warning screen) if the chain fails to load.
+     */
+    public static final boolean FABULOUS_IMPLEMENTED = !"false".equals(System.getProperty("iroh.fabulous"));
+
+    public static Component fabulous() {
+        return FABULOUS_IMPLEMENTED ? null : Component.translatable("iroh.reason.fabulous");
+    }
 
     public static Component shaderPacks() {
         return SHADER_PACKS_IMPLEMENTED ? null : Component.translatable("iroh.reason.notYet");

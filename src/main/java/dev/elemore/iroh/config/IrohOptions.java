@@ -411,7 +411,7 @@ public final class IrohOptions {
                 () -> mc().options.graphicsMode().get(), v -> { mc().options.graphicsMode().set(v); refreshLeaves(false); });
         GRAPHICS.name("options.graphics").choices(GraphicsStatus.FAST, GraphicsStatus.FANCY, GraphicsStatus.FABULOUS)
                 .label(v -> Component.translatable(v.getKey()))
-                .choiceUnavailable(v -> v == GraphicsStatus.FABULOUS ? Component.translatable("iroh.reason.fabulous") : null);
+                .choiceUnavailable(v -> v == GraphicsStatus.FABULOUS ? Availability.fabulous() : null);
         PARTICLES = vanilla("particles", Category.QUALITY, net.minecraft.client.ParticleStatus.class, net.minecraft.client.ParticleStatus.ALL,
                 () -> mc().options.particles().get(), v -> mc().options.particles().set(v));
         PARTICLES.name("options.particles").choices(net.minecraft.client.ParticleStatus.MINIMAL, net.minecraft.client.ParticleStatus.DECREASED, net.minecraft.client.ParticleStatus.ALL)

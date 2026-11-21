@@ -30,10 +30,10 @@ public class MinecraftMixin {
     private void forceGraphicsMode(GameConfig gameConfig, CallbackInfo ci) {
         var graphicsModeOption = this.options.graphicsMode();
 
-        if (graphicsModeOption.get() == GraphicsStatus.FABULOUS) {
-            // td-75c969: not an error. Fabulous needs the transparency chain, which Iroh does not have yet; the option
-            // screen shows it greyed with the reason. Logged once, at INFO.
-            Initializer.LOGGER.info("Fabulous graphics is not available in Iroh yet (needs the transparency chain); using Fancy");
+        if (graphicsModeOption.get() == GraphicsStatus.FABULOUS && !dev.elemore.iroh.config.Availability.FABULOUS_IMPLEMENTED) {
+            // td-75c969: Fabulous runs vanilla's own transparency chain on Iroh's targets since P1-10; this branch is
+            // only the kill switch -Diroh.fabulous=false (option greyed with the reason, Fancy used). Logged once.
+            Initializer.LOGGER.info("Fabulous graphics is switched off (-Diroh.fabulous=false); using Fancy");
             graphicsModeOption.set(GraphicsStatus.FANCY);
         }
         dev.elemore.iroh.config.IrohOptions.onGameStart();

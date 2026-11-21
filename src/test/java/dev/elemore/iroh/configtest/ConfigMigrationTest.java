@@ -41,8 +41,15 @@ public class ConfigMigrationTest {
         JsonObject j = JsonParser.parseString(text).getAsJsonObject();
         check(j.get("leavesQuality").getAsString().equals("FANCY"), "leaves_quality FANCY -> leavesQuality FANCY");
         check(!j.get("enableVignette").getAsBoolean(), "enable_vignette false -> enableVignette false");
-        check(j.get("builderThreads").getAsInt() == Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)), "chunk_builder_threads 4 -> builderThreads 4");
-        check(j.get("chunkBuildDeferMode").getAsString().equals("ONE_FRAME"), "chunk_build_defer_mode ONE_FRAME");
+        // P1-10: expectations read from the source file (the instance was re-synced 2026-11-20: threads 4 -> 2,
+        // defer ONE_FRAME -> ALWAYS); the rule under test is the mapping, not the owner's current values.
+        JsonObject perf = JsonParser.parseString(Files.readString(src.resolve("sodium-options.json"))).getAsJsonObject()
+                .getAsJsonObject("performance");
+        int srcThreads = perf.get("chunk_builder_threads").getAsInt();
+        String srcDefer = perf.get("chunk_build_defer_mode").getAsString();
+        check(j.get("builderThreads").getAsInt() == Math.min(srcThreads, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)),
+                "chunk_builder_threads " + srcThreads + " -> builderThreads");
+        check(j.get("chunkBuildDeferMode").getAsString().equals(srcDefer), "chunk_build_defer_mode " + srcDefer);
         check(j.get("showFps").getAsBoolean(), "show_fps true -> showFps");
         check(j.get("fogDistanceChunks").getAsInt() == -1, "atmospheric distance_chunks -1 -> fogDistanceChunks -1");
         check(j.get("shaderPack").getAsString().equals("Navidson") && j.get("shadersEnabled").getAsBoolean(), "iris shaderPack Navidson, enabled");
