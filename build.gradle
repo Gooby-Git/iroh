@@ -93,6 +93,13 @@ java {
 	targetCompatibility = JavaVersion.VERSION_21
 }
 
+// P1-11: a jar hash identifies a commit. No file timestamps, fixed entry order, for every archive task
+// (jar, sourcesJar, and Loom's remapJar / remapSourcesJar which copy those settings from the source archive).
+tasks.withType(AbstractArchiveTask).configureEach {
+	preserveFileTimestamps = false
+	reproducibleFileOrder = true
+}
+
 jar {
 	from("LICENSE") {
 		rename { "${it}_${project.base.archivesName.get()}"}
