@@ -59,6 +59,8 @@ public final class PackDump {
         m.put("family", ProgramSet.family(u.program).name());
         m.put("compute", u.compute);
         m.put("enabled", u.enabled);
+        if (u.offReason != null)
+            m.put("offReason", u.offReason);
         Map<String, Object> files = new LinkedHashMap<>();
         u.paths.forEach((s, p) -> files.put(s.key, p));
         m.put("files", files);

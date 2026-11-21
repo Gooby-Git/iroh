@@ -43,6 +43,8 @@ public final class PackProperties implements Json.Dumpable {
     public final Map<String, String> flags = new TreeMap<>();
     public final Map<String, String> flatKeys = new TreeMap<>();
     public final List<String> notes = new ArrayList<>();
+    /** every customTexture / texture key written anywhere in the file, live or not: name -> "file:line" (diagnostics) */
+    public final Map<String, String> texturesAnyBranch = new LinkedHashMap<>();
 
     public static PackProperties read(PackSource pack, Map<String, String> standard, OptionModel options) {
         PackProperties pp = new PackProperties();
@@ -50,6 +52,12 @@ public final class PackProperties implements Json.Dumpable {
         if (text == null) {
             pp.notes.add("no shaders.properties");
             return pp;
+        }
+        String[] raw = text.split("\n");
+        for (int i = 0; i < raw.length; i++) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("^\\s*(customTexture|texture)\\.([\\w.]+)\\s*[=:]").matcher(raw[i]);
+            if (m.find())
+                pp.texturesAnyBranch.putIfAbsent(m.group(1).equals("texture") ? "texture." + m.group(2) : m.group(2), "shaders.properties:" + (i + 1));
         }
         Map<String, String> all = new LinkedHashMap<>(standard);
         all.putAll(options.macroValues());
@@ -234,6 +242,7 @@ public final class PackProperties implements Json.Dumpable {
         m.put("flip", flip);
         m.put("textures", textures);
         m.put("customTextures", customTextures);
+        m.put("texturesAnyBranch", texturesAnyBranch);
         m.put("images", images);
         m.put("bufferObjects", bufferObjects);
         m.put("features", Json.obj("required", featuresRequired, "optional", featuresOptional,
