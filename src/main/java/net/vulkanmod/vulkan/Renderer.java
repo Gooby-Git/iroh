@@ -222,7 +222,46 @@ public class Renderer {
         UploadManager.INSTANCE.submitUploads();
     }
 
+    // Iroh (rc5, td-1cb256): under -ea, the render thread's LWJGL MemoryStack must be back where it was at beginFrame
+    // when endFrame returns (a missing pop grows it each frame until "Out of stack space").
+    private static final boolean STACK_CHECK;
+    static {
+        boolean ea = false;
+        assert ea = true;
+        STACK_CHECK = ea;
+    }
+    private long frameStackPointer = -1;
+    private static boolean stackLeakLogged;
+
+    private void checkStackBalance(String where) {
+        long p = MemoryStack.stackGet().getPointer();
+        if (where == null) {
+            frameStackPointer = p;
+            return;
+        }
+        if (frameStackPointer >= 0 && p != frameStackPointer && !stackLeakLogged) {
+            stackLeakLogged = true;
+            Initializer.LOGGER.error("Iroh: the render thread's MemoryStack moved by {} bytes between beginFrame and {} (a stackPush without pop, "
+                    + "or a calloc on a caller's stack in a loop). Run with -Dorg.lwjgl.util.DebugStack=true to get the call site.",
+                    frameStackPointer - p, where, new Throwable("checked here"));
+            assert false : "MemoryStack leak on the render thread";
+        }
+    }
+
+    private boolean inBeginFrame;
+
     public void beginFrame() {
+        boolean outer = !inBeginFrame;
+        if (STACK_CHECK && outer) checkStackBalance(null);
+        inBeginFrame = true;
+        try {
+            beginFrame0();
+        } finally {
+            if (outer) inBeginFrame = false;
+        }
+    }
+
+    private void beginFrame0() {
         dev.elemore.iroh.diag.RenderWatchdog.heartbeat(); // rc3r2 (td-3bc9d5): stall diagnostics
         Profiler p = Profiler.getMainProfiler();
         p.pop();
@@ -343,6 +382,7 @@ public class Renderer {
 
         // Iroh (P1-13a): AFTER_PRESENT (no command buffer is recording; CPU-side work only)
         dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.AFTER_PRESENT);
+        if (STACK_CHECK) checkStackBalance("endFrame");
 
         p.pop();
         p.push("Post_rendering");
