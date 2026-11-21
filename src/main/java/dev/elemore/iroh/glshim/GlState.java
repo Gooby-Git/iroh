@@ -107,12 +107,16 @@ public final class GlState {
      * sees (positive viewport height), so GL's back faces are Vulkan's front faces with VK_FRONT_FACE_COUNTER_CLOCKWISE.
      */
     public static int vkCullMode() {
-        boolean mirrored = glLayoutBound() ^ (frontFace == 0x0900 /* GL_CW */);
-        return switch (cullFaceMode) {
-            case 0x0404 /* GL_FRONT */ -> mirrored ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
-            case 0x0408 /* GL_FRONT_AND_BACK */ -> VK_CULL_MODE_FRONT_AND_BACK;
-            default /* GL_BACK */ -> mirrored ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
-        };
+        return Orientation.vkCullMode(boundTarget(), cullFaceMode, frontFace);
+    }
+
+    /** The kind of target bound now (Orientation's conventions). No bound framebuffer = a pass is being begun: GL layout. */
+    public static Orientation.Target boundTarget() {
+        Renderer r = Renderer.getInstance();
+        Framebuffer fb = r != null ? r.getBoundFramebuffer() : null;
+        if (fb instanceof net.vulkanmod.vulkan.framebuffer.SwapChain) return Orientation.Target.SWAPCHAIN;
+        if (fb instanceof SceneTarget) return Orientation.Target.SCENE;
+        return Orientation.Target.OFFSCREEN;
     }
 
     private static int boundHeight() {
@@ -262,8 +266,8 @@ public final class GlState {
         viewport[1] = y;
         viewport[2] = w;
         viewport[3] = h;
-        if (glLayoutBound()) Renderer.setViewport(x, y + h, w, -h); // GL layout: positive Vulkan height (RQ-16)
-        else Renderer.setViewport(x, y, w, h);                      // swapchain: top-down
+        float[] v = Orientation.vkViewport(boundTarget(), x, y, w, h, boundHeight()); // conventions: Orientation
+        Renderer.setVkViewport(v[0], v[1], v[2], v[3]);
     }
 
     /** Iroh's own GL-layout viewport (Renderer.setInvertedViewport: post passes, FBO begin): tracked, not re-derived. */
@@ -289,16 +293,16 @@ public final class GlState {
     public static void applyScissor() {
         int x = scissorBox[0], y = scissorBox[1], w = scissorBox[2], h = scissorBox[3];
         if (w <= 0 || h <= 0) return;
-        if (glLayoutBound()) Renderer.setScissor(x, boundHeight() - (y + h), w, h);
-        else Renderer.setScissor(x, y, w, h);
+        int[] sc = Orientation.vkScissor(boundTarget(), x, y, w, h, boundHeight());
+        Renderer.setVkScissor(sc[0], sc[1], sc[2], sc[3]);
     }
 
     /** After a render pass was re-begun (Framebuffer.beginRenderPass resets both to full size). */
     public static void reapplyViewportAndScissor() {
         if (viewport[2] > 0 && viewport[3] > 0) {
             int x = viewport[0], y = viewport[1], w = viewport[2], h = viewport[3];
-            if (glLayoutBound()) Renderer.setViewport(x, y + h, w, -h);
-            else Renderer.setViewport(x, y, w, h);
+            float[] v = Orientation.vkViewport(boundTarget(), x, y, w, h, boundHeight());
+            Renderer.setVkViewport(v[0], v[1], v[2], v[3]);
         }
         if (scissorEnabled) applyScissor();
     }

@@ -698,10 +698,41 @@ public class Renderer {
     }
 
     public static void setInvertedViewport(int x, int y, int width, int height) {
-        // Iroh (RQ-11): GL row order on purpose (post passes, off-screen FBO begin). Applied directly: going through
-        // GlStateManager._viewport would now pick the layout from the bound target and flip it a second time.
-        setViewport(x, y + height, width, -height);
+        // Iroh (RQ-11, rc2): GL row order on purpose (post passes, off-screen FBO begin), conventions in
+        // dev.elemore.iroh.glshim.Orientation. Applied directly: going through GlStateManager._viewport picks the
+        // layout from the bound target, which is not bound yet here.
+        float[] v = dev.elemore.iroh.glshim.Orientation.vkViewport(dev.elemore.iroh.glshim.Orientation.Target.OFFSCREEN,
+                x, y, width, height, 0);
+        setVkViewport(v[0], v[1], v[2], v[3]);
         dev.elemore.iroh.glshim.GlState.recordViewport(x, y, width, height);
+    }
+
+    /** Iroh (rc2): a Vulkan viewport exactly as given (sign included); callers get the values from Orientation. */
+    public static void setVkViewport(float x, float y, float width, float height) {
+        if (!INSTANCE.recordingCmds)
+            return;
+        try (MemoryStack stack = stackPush()) {
+            VkViewport.Buffer viewport = VkViewport.malloc(1, stack);
+            viewport.x(x);
+            viewport.y(y);
+            viewport.width(width);
+            viewport.height(height);
+            viewport.minDepth(0.0f);
+            viewport.maxDepth(1.0f);
+            vkCmdSetViewport(INSTANCE.currentCmdBuffer, 0, viewport);
+        }
+    }
+
+    /** Iroh (rc2): a Vulkan scissor exactly as given (from Orientation.vkScissor). */
+    public static void setVkScissor(int x, int y, int width, int height) {
+        if (INSTANCE.boundFramebuffer == null || !INSTANCE.recordingCmds)
+            return;
+        try (MemoryStack stack = stackPush()) {
+            VkRect2D.Buffer scissor = VkRect2D.malloc(1, stack);
+            scissor.offset().set(x, y);
+            scissor.extent().set(width, height);
+            vkCmdSetScissor(INSTANCE.currentCmdBuffer, 0, scissor);
+        }
     }
 
     public static void resetViewport() {

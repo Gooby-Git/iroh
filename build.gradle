@@ -174,6 +174,16 @@ tasks.register('irohConfigTest', JavaExec) {
 	if (project.hasProperty('config')) args project.property('config')
 }
 
+// rc2 (td-42f410, td-eb1e26): PipelineState bit-packing round trip + GL->Vulkan orientation truth table, headless.
+// ./gradlew orientationTest ; last line "# orientation PASS n/n".
+tasks.register('orientationTest', JavaExec) {
+	group = 'verification'
+	description = 'PipelineState packing round trip and the GL -> Vulkan viewport / cull / scissor truth table'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.gltest.OrientationTest'
+}
+
 // GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).
 // ./gradlew glNetTest ; last line "# glnet PASS n/n". A JVM abort means the net failed.
 tasks.register('glNetTest', JavaExec) {
