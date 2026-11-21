@@ -309,7 +309,12 @@ public final class PassGraph {
             if (opaque == null)
                 f.issues.add(new Issue(Severity.INFO, "shadow", "shadow program present but no caster class resolved"));
         } else if (shadow == null && d.raster(dir, "shadow") != null) {
-            f.issues.add(new Issue(Severity.INFO, "shadow", "shadow program switched off: no shadow pass"));
+            PackData.Unit su = d.raster(dir, "shadow");
+            if (su.enabled && !su.passed)
+                f.issues.add(new Issue(Severity.ERROR, "shadow", "did not compile (" + su.json.get("failStage").getAsString() + ": "
+                        + su.json.get("failMessage").getAsString() + "): no shadow pass, which changes the image"));
+            else
+                f.issues.add(new Issue(Severity.INFO, "shadow", "shadow program switched off: no shadow pass"));
         }
         for (String p : family(dir, "shadowcomp"))
             fullscreen(dir, f, shadowChain, p, "shadowcomp");
@@ -582,7 +587,11 @@ public final class PassGraph {
         }
         PackData.Unit u = served(dir, prog);
         if (u == null) {
-            if (d.raster(dir, prog) != null)
+            PackData.Unit ru = d.raster(dir, prog);
+            if (ru != null && ru.enabled && !ru.passed)
+                f.issues.add(new Issue(Severity.ERROR, prog, "did not compile (" + ru.json.get("failStage").getAsString() + ": "
+                        + ru.json.get("failMessage").getAsString() + "): pass missing, parity of later passes shifts"));
+            else if (ru != null)
                 f.issues.add(new Issue(Severity.INFO, prog, "switched off (" + offReason(dir, prog) + "): pass skipped, parity of later passes follows"));
             return;
         }
