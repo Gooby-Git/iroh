@@ -268,6 +268,16 @@ tasks.register('memoryBudgetTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc10: per-facing bucket predicate never drops a front face. ./gradlew facingMaskTest
+tasks.register('facingMaskTest', JavaExec) {
+	group = 'verification'
+	description = 'Per-facing bucket visibility predicate: no front face dropped (camera inside blocks, on planes)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.chunktest.FacingMaskTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
