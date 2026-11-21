@@ -10,7 +10,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FormattedCharSequence;
 import dev.elemore.iroh.config.IrohOptions;
-import dev.elemore.iroh.config.TooltipPlacer;
+import dev.elemore.iroh.config.OptionScreenLayout;
 import net.vulkanmod.Initializer;
 import org.lwjgl.glfw.GLFW;
 import net.vulkanmod.config.gui.widget.VAbstractWidget;
@@ -31,6 +31,8 @@ public class VOptionScreen extends Screen {
     private final List<OptionPage> optionPages;
 
     private int currentListIdx = 0;
+
+    private OptionScreenLayout.Layout layout;
 
     private VButtonWidget aboutButton;
 
@@ -62,16 +64,15 @@ public class VOptionScreen extends Screen {
     protected void init() {
         this.addPages();
 
-        int top = 40;
-        int bottom = 60;
         int itemHeight = 20;
 
-        int leftMargin = 100;
-//        int listWidth = (int) (this.width * 0.65f);
-        int listWidth = Math.min((int) (this.width * 0.65f), 420);
-        int listHeight = this.height - top - bottom;
+        int doneW = this.font.width(CommonComponents.GUI_DONE) + 20;
+        int applyW = this.font.width(Component.translatable("iroh.buttons.apply")) + 20;
+        int applyX = this.width - 20 - doneW - 5 - applyW;
+        this.layout = OptionScreenLayout.compute(this.width, this.height, applyX);
+        var list = this.layout.list();
 
-        this.buildLists(leftMargin, top, listWidth, listHeight, itemHeight);
+        this.buildLists(list.x0(), list.y0(), list.width(), list.height(), itemHeight);
 
         buildPage();
 
@@ -218,7 +219,7 @@ public class VOptionScreen extends Screen {
         guiGraphics.drawString(this.font, Component.literal("Iroh"), 12 + size + 6, 8 + (size - 8) / 2, 0xFFFFFFFF, true);
 
         if (IrohOptions.restartPending()) {
-            guiGraphics.drawString(this.font, Component.translatable("iroh.screen.restartPending"), 100, this.height - 22, 0xFFFFD060, true);
+            guiGraphics.drawString(this.font, Component.translatable("iroh.screen.restartPending"), 100, 14, 0xFFFFD060, true);
         }
 
         VOptionList currentList = this.optionPages.get(this.currentListIdx).getOptionList();
@@ -240,7 +241,7 @@ public class VOptionScreen extends Screen {
         int width = GuiRenderer.getMaxTextWidth(this.font, list);
         int height = list.size() * 10;
         float intensity = 0.05f;
-        int color = ColorUtil.ARGB.pack(intensity, intensity, intensity, 0.6f);
+        int color = ColorUtil.ARGB.pack(intensity, intensity, intensity, 0.92f);
         GuiRenderer.fill(x - padding, y - padding, x + width + padding, y + height + padding, color);
 
 //        intensity = 0.4f;
@@ -255,7 +256,7 @@ public class VOptionScreen extends Screen {
         }
     }
 
-    /** Tooltip of the hovered row (or the keyboard-selected one), placed by {@link TooltipPlacer} (td-7a78ea). */
+    /** Description panel (td-7a78ea): the tooltip of the hovered or keyboard-selected row, in the area the layout reserves for it. */
     private void renderHoveredTooltip(VOptionList list, int mouseX, int mouseY) {
         VAbstractWidget widget = list.getHoveredWidget(mouseX, mouseY);
         if (widget == null)
@@ -266,36 +267,19 @@ public class VOptionScreen extends Screen {
         if (tooltip == null)
             return;
 
-        TooltipPlacer.Rect listRect = rect(list.getX(), list.getY(), list.getWidth(), list.getHeight());
-        TooltipPlacer.Rect row = rect(widget.getX(), widget.getY(), widget.getWidth(), widget.getHeight());
-        // the row may be partly scrolled out of the list: only the visible part is "the row being hovered"
-        row = new TooltipPlacer.Rect(Math.max(row.x0(), listRect.x0()), Math.max(row.y0(), listRect.y0()),
-                Math.min(row.x1(), listRect.x1()), Math.min(row.y1(), listRect.y1()));
-
-        List<TooltipPlacer.Rect> bar = new ArrayList<>();
-        for (VButtonWidget b : new VButtonWidget[]{this.applyButton, this.doneButton, this.aboutButton})
-            bar.add(rect(b.getX(), b.getY(), b.getWidth(), b.getHeight()));
-        if (IrohOptions.restartPending())
-            bar.add(rect(100, this.height - 22, this.font.width(Component.translatable("iroh.screen.restartPending")), 10));
-        List<TooltipPlacer.Rect> chrome = new ArrayList<>();
-        for (VButtonWidget b : this.pageButtons)
-            chrome.add(rect(b.getX(), b.getY(), b.getWidth(), b.getHeight()));
-
         final Component text = tooltip;
-        TooltipPlacer.Placement p = TooltipPlacer.place(this.width, this.height, listRect, row, bar, chrome, maxWidth -> {
-            List<FormattedCharSequence> lines = this.font.split(text, maxWidth);
-            return new TooltipPlacer.Wrapped(GuiRenderer.getMaxTextWidth(this.font, lines), lines.size());
+        List<FormattedCharSequence> lines = this.font.split(text, this.layout.innerWidth());
+        OptionScreenLayout.Box box = OptionScreenLayout.box(this.layout, maxWidth -> {
+            List<FormattedCharSequence> l = this.font.split(text, maxWidth);
+            return new OptionScreenLayout.Wrapped(GuiRenderer.getMaxTextWidth(this.font, l), l.size());
         });
-        List<FormattedCharSequence> lines = this.font.split(tooltip, p.wrapWidth());
-        if (p.truncated(lines.size())) { // taller than the room around the row on a small screen: cut, never overlap
-            lines = new ArrayList<>(lines.subList(0, Math.max(1, p.maxLines()) - 1));
+        if (box.truncated()) { // longer than the panel: cut, never spill into the rows
+            lines = new ArrayList<>(lines.subList(0, Math.max(1, box.lines()) - 1));
             lines.add(Component.literal("...").getVisualOrderText());
+        } else if (lines.size() > box.lines()) {
+            lines = lines.subList(0, box.lines());
         }
-        this.renderTooltip(lines, p.box().x0() + TooltipPlacer.PAD, p.box().y0() + TooltipPlacer.PAD);
-    }
-
-    private static TooltipPlacer.Rect rect(int x, int y, int w, int h) {
-        return new TooltipPlacer.Rect(x, y, x + w, y + h);
+        this.renderTooltip(lines, box.rect().x0() + OptionScreenLayout.PAD, box.rect().y0() + OptionScreenLayout.PAD);
     }
 
     private void updateState() {
