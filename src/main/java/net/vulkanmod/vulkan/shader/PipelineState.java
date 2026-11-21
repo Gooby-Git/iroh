@@ -43,8 +43,7 @@ public class PipelineState {
         // winding Vulkan sees; GlState.vkCullMode maps glCullFace / glFrontFace accordingly.
         int state = AssemblyRasterState.encode(VRenderSystem.cull, VRenderSystem.topology, VRenderSystem.polygonMode);
         if (VRenderSystem.cull)
-            state = (state & ~(AssemblyRasterState.CULL_MODE_MASK << AssemblyRasterState.CULL_MODE_OFFSET))
-                    | (dev.elemore.iroh.glshim.GlState.vkCullMode() << AssemblyRasterState.CULL_MODE_OFFSET);
+            state = AssemblyRasterState.withCullMode(state, dev.elemore.iroh.glshim.GlState.vkCullMode());
         return state;
     }
 
@@ -227,6 +226,7 @@ public class PipelineState {
         public static final int DST_A_OFFSET = 15;
         public static final int FUN_OFFSET = 20;
 
+        /** Iroh (rc2): factors 5 bits (VkBlendFactor 0..18), op 4 bits (VkBlendOp 0..4) at 20..23, enable at 24. */
         public static final int ENABLE_BIT = 1 << 24;
 
         public static final int OP_MASK = 0xF;
@@ -294,8 +294,10 @@ public class PipelineState {
             return fun << FUN_OFFSET;
         }
 
+        public static final int FUN_MASK = (1 << FUN_BITS) - 1;
+
         public static int decodeFun(int state) {
-            return state >>> FUN_OFFSET;
+            return (state >>> FUN_OFFSET) & FUN_MASK;
         }
 
         public static int glToVulkan(int f) {
@@ -310,22 +312,38 @@ public class PipelineState {
 
     }
 
+    /**
+     * Iroh (rc2, td-42f410): bits 0-2 polygon mode, 3-6 topology, 7-8 cull mode. Every mask is derived from its width,
+     * and encode() masks each input, so one field can never leak into the next. The base declared TOPOLOGY_MASK with
+     * 5 bits for a 4-bit field: the low bit of the cull mode (VK_CULL_MODE_FRONT_BIT, FRONT_AND_BACK) became topology
+     * bit 4 (TRIANGLE_LIST 3 -> 19), an invalid topology on every culled pipeline once RQ-16 made FRONT the normal
+     * cull value. Round trip over every value: ./gradlew pipelineStateTest.
+     */
     public abstract static class AssemblyRasterState {
-        public static final int POLYGON_MODE_MASK = 7;
+        public static final int POLYGON_MODE_OFFSET = 0;
+        public static final int POLYGON_MODE_BITS = 3;
+        public static final int POLYGON_MODE_MASK = (1 << POLYGON_MODE_BITS) - 1;
 
-        public static final int TOPOLOGY_OFFSET = 3;
+        public static final int TOPOLOGY_OFFSET = POLYGON_MODE_OFFSET + POLYGON_MODE_BITS;
         public static final int TOPOLOGY_BITS = 4;
-        public static final int TOPOLOGY_MASK = 0b11111;
+        public static final int TOPOLOGY_MASK = (1 << TOPOLOGY_BITS) - 1;
 
         public static final int CULL_MODE_OFFSET = TOPOLOGY_OFFSET + TOPOLOGY_BITS;
         public static final int CULL_MODE_BITS = 2;
-        public static final int CULL_MODE_MASK = 0b11;
+        public static final int CULL_MODE_MASK = (1 << CULL_MODE_BITS) - 1;
 
         public static int encode(boolean cull, int topology, int polygonMode) {
-            int state = (polygonMode | (topology << TOPOLOGY_OFFSET));
-            state |= ((cull ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE) << CULL_MODE_OFFSET);
+            return encode(cull ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE, topology, polygonMode);
+        }
 
-            return state;
+        public static int encode(int cullMode, int topology, int polygonMode) {
+            return ((polygonMode & POLYGON_MODE_MASK) << POLYGON_MODE_OFFSET)
+                   | ((topology & TOPOLOGY_MASK) << TOPOLOGY_OFFSET)
+                   | ((cullMode & CULL_MODE_MASK) << CULL_MODE_OFFSET);
+        }
+
+        public static int withCullMode(int state, int cullMode) {
+            return (state & ~(CULL_MODE_MASK << CULL_MODE_OFFSET)) | ((cullMode & CULL_MODE_MASK) << CULL_MODE_OFFSET);
         }
 
         public static int decodeTopology(int state) {
@@ -333,7 +351,7 @@ public class PipelineState {
         }
 
         public static int decodePolygonMode(int state) {
-            return state & POLYGON_MODE_MASK;
+            return (state >>> POLYGON_MODE_OFFSET) & POLYGON_MODE_MASK;
         }
 
         public static int decodeCullMode(int state) {
@@ -373,8 +391,10 @@ public class PipelineState {
             return fun << DEPTH_FUN_OFFSET;
         }
 
+        public static final int DEPTH_FUN_MASK = (1 << DEPTH_FUN_BITS) - 1;
+
         public static int decodeDepthFun(int state) {
-            return state >>> DEPTH_FUN_OFFSET;
+            return (state >>> DEPTH_FUN_OFFSET) & DEPTH_FUN_MASK;
         }
 
         private static int glToVulkan(int value) {
