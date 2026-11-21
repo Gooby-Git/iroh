@@ -4,7 +4,7 @@ package dev.elemore.iroh.memory;
  * Iroh (rc8, DECISIONS "SYSTEM SAFETY" rule 9): Iroh's own device-memory cap and the policy around it. Pure Java: the
  * Vulkan side ({@link MemoryGuard}) feeds samples, so the state machine is tested headless (memoryBudgetTest).
  * <p>
- * Cap = configured {@code maxDeviceMemoryMiB}, or by default min(60% of the largest device-local heap, 8 GiB); further
+ * Cap = configured {@code maxDeviceMemoryMiB}, or by default min(50% of the largest device-local heap, 6 GiB); further
  * bounded by what the driver says this process may still use: Iroh's usage + (heap budget - process heap usage) - a
  * 1.5 GiB reserve for the desktop. States: OK; WARN from 85% of the cap (one WARN line, trim trimmable memory);
  * CAPPED at the cap (non-essential allocations refused, essential ones still tried); OUT_OF_MEMORY after a driver
@@ -33,9 +33,13 @@ public final class MemoryBudget {
         recompute();
     }
 
-    /** The automatic cap for a heap of {@code heapBytes}. */
+    /**
+     * The automatic cap for a heap of {@code heapBytes}: min(50% of VRAM, 6 GiB). rc9: the card is shared with the
+     * compositor, browser, Steam and (in testing) a second compositor; at the rc8 default (60%, 8 GiB) an external
+     * watchdog killed the game at 7.7 GiB of Iroh memory plus the rest of the desktop before the cap was reached.
+     */
     public static long autoCap(long heapBytes) {
-        return Math.min((long) (heapBytes * 0.60), 8 * GiB);
+        return Math.min(heapBytes / 2, 6 * GiB);
     }
 
     /**

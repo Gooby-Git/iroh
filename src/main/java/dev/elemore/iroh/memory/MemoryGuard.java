@@ -20,6 +20,9 @@ import static org.lwjgl.vulkan.VK10.*;
 public final class MemoryGuard {
     private static final Logger LOGGER = LogManager.getLogger("Iroh");
     public static final MemoryBudget BUDGET = new MemoryBudget(0);
+    /** rc9 (td-598433): runaway growth rules (memory rate, per-owner image rate). */
+    public static final GrowthMonitor GROWTH = new GrowthMonitor();
+    private static boolean growthEscalated;
     private static long lastSample;
     private static volatile boolean leaveWorld;
 
@@ -47,6 +50,24 @@ public final class MemoryGuard {
         if (now - lastSample < 1_000_000_000L) return;
         lastSample = now;
         sampleNow();
+        // rc9: rate rules
+        var events = GROWTH.sample(now, BUDGET.irohUsage(), net.vulkanmod.vulkan.memory.MemoryManager.ownerCounts());
+        if (events.spikeBytes() > 0) {
+            growthEscalated = true;
+            LOGGER.error("Iroh: graphics memory grew by {} MiB within 30 s; {} | {}", events.spikeBytes() / MemoryBudget.MiB,
+                    BUDGET.summary(), net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
+            trim();
+        }
+        for (var e : events.newlyFlagged().entrySet()) {
+            growthEscalated = true;
+            LOGGER.error("Iroh: '{}' created {} more live images within 60 s (runaway); new texture names from it get no image from now on. {}",
+                    e.getKey(), e.getValue(), net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
+        }
+        // growth kept going after the rules fired: close the world at 90% of the cap instead of reaching the driver limit
+        if (growthEscalated && BUDGET.cap() > 0 && BUDGET.irohUsage() >= (long) (BUDGET.cap() * 0.90)) {
+            growthEscalated = false;
+            outOfMemory("runaway growth reached 90% of Iroh's cap");
+        }
         if (BUDGET.takeWarn()) {
             LOGGER.warn("Iroh: graphics memory at {} of Iroh's cap; trimming. {} | {}", BUDGET.state() == MemoryBudget.State.CAPPED ? "100%" : "85%",
                     BUDGET.summary(), net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
@@ -76,6 +97,17 @@ public final class MemoryGuard {
                     iroh += b.get(i).statistics().blockBytes();
             BUDGET.sample(largestSize, b.get(largest).budget(), b.get(largest).usage(), iroh);
         }
+    }
+
+    /** rc9: a NEW image for {@code owner} is refused while that owner is flagged for runaway growth. */
+    public static boolean refuseNewImage(String owner) {
+        return GROWTH.isFlagged(owner);
+    }
+
+    /** rc9: a world started rendering (growth rules start their warm-up). */
+    public static void worldStarted() {
+        GROWTH.worldStarted(System.nanoTime());
+        growthEscalated = false;
     }
 
     /** Non-essential allocation check (optional caches, dynamic textures nobody samples, extra targets). */
@@ -141,6 +173,8 @@ public final class MemoryGuard {
         if (BUDGET.state() == MemoryBudget.State.OUT_OF_MEMORY)
             LOGGER.info("Iroh: world closed after the out-of-memory; graphics memory checks resume");
         BUDGET.reset();
+        GROWTH.worldEnded();
+        growthEscalated = false;
         lastSample = 0;
     }
 

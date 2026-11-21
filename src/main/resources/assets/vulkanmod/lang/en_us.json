@@ -141,5 +141,5 @@
   "iroh.about.cap.float8.tooltip": "Optional GPU feature for later Iroh versions. Detected only, nothing is enabled. (%s)",
   "iroh.options.maxDeviceMemory": "Graphics memory cap",
   "iroh.options.maxDeviceMemory.auto": "Auto",
-  "iroh.options.maxDeviceMemory.tooltip": "Most graphics memory Iroh will use. Auto = 60% of your video memory, at most 8 GiB, and always leaving 1.5 GiB for the desktop. Near the cap Iroh frees caches and skips optional textures; if the driver still runs out, Iroh closes the world instead of risking your system."
+  "iroh.options.maxDeviceMemory.tooltip": "Most graphics memory Iroh will use. Auto = half of your video memory, at most 6 GiB, and always leaving 1.5 GiB for the desktop. Near the cap Iroh frees caches and skips optional textures; if the driver still runs out, Iroh closes the world instead of risking your system."
 }

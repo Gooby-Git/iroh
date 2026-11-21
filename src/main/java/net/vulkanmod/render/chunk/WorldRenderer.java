@@ -341,6 +341,7 @@ public class WorldRenderer {
         this.level = level;
         ChunkStatusMap.createInstance(renderDistance);
         if (level != null) {
+            dev.elemore.iroh.memory.MemoryGuard.worldStarted(); // rc9: growth rules warm up from here
             this.allChanged();
         } else {
             if (this.sectionGrid != null) {
