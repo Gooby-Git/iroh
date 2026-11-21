@@ -24,9 +24,9 @@ import java.util.function.Predicate;
 public final class IrohApi {
     /**
      * Version of this API. Inlined into callers at compile time, so use {@link #apiVersion()} to ask the running Iroh.
-     * 1 = P1-6b (2026-11-20).
+     * 1 = P1-6b (2026-11-20). 2 = P1-10: {@link #registerShadeHook}.
      */
-    public static final int API_VERSION = 1;
+    public static final int API_VERSION = 2;
 
     private static final Set<Capability> CAPABILITIES = Collections.unmodifiableSet(
             EnumSet.of(Capability.SECTION_VISIBILITY, Capability.FACE_CULL_VETO, Capability.LEAF_CULLING));
@@ -159,6 +159,15 @@ public final class IrohApi {
      */
     public static boolean isChunkMeshView(BlockGetter view) {
         return view instanceof net.vulkanmod.render.chunk.build.RenderRegion;
+    }
+
+    /**
+     * Adds a shade hook (see {@link ShadeHook}): lets a mod move a quad's vertices for the light calculation only, in the
+     * terrain mesher (Polaris lights its sloped quads at the block face this way). Takes effect for sections meshed
+     * from now on, triggers no rebuild; same instance twice is a no-op. Any thread. Since API 2.
+     */
+    public static void registerShadeHook(ShadeHook hook) {
+        dev.elemore.iroh.apiimpl.ShadeHooks.register(hook);
     }
 
     // ------------------------------------------------------------------------------------------------- held light

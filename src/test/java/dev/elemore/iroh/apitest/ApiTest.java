@@ -50,6 +50,8 @@ public final class ApiTest {
         check("partly covered, rand 0.1 <= 0.2: hidden", LeafRule.hide(2, i -> i == 1, 0.1f, 0.2f));
         check("partly covered, rand 0.3 > 0.2: kept", !LeafRule.hide(2, i -> i == 1, 0.3f, 0.2f));
 
+        shadeHookContract();
+
         System.out.println("# api " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         if (fail != 0)
             System.exit(1);
@@ -66,6 +68,55 @@ public final class ApiTest {
         if (!firstMissing && !all && rand <= rejection)
             all = true;
         return all;
+    }
+
+    /** A MutableQuadView stand-in with real positions; counts pos() calls. Everything else returns defaults. */
+    private static final class FakeQuad {
+        final float[][] p = {{0, 1, 0}, {0, 0.75f, 1}, {1, 0.75f, 1}, {1, 1, 0}};
+        int posCalls;
+        final net.fabricmc.fabric.api.renderer.v1.mesh.MutableQuadView view = (net.fabricmc.fabric.api.renderer.v1.mesh.MutableQuadView)
+                java.lang.reflect.Proxy.newProxyInstance(ApiTest.class.getClassLoader(),
+                        new Class<?>[]{net.fabricmc.fabric.api.renderer.v1.mesh.MutableQuadView.class}, (proxy, m, a) -> {
+                            switch (m.getName()) {
+                                case "x": return p[(int) a[0]][0];
+                                case "y": return p[(int) a[0]][1];
+                                case "z": return p[(int) a[0]][2];
+                                case "pos":
+                                    if (a.length == 4) {
+                                        posCalls++;
+                                        int i = (int) a[0];
+                                        p[i][0] = (float) a[1]; p[i][1] = (float) a[2]; p[i][2] = (float) a[3];
+                                        return proxy;
+                                    }
+                                    break;
+                                default:
+                            }
+                            Class<?> r = m.getReturnType();
+                            return r == boolean.class ? false : r == int.class ? 0 : r == float.class ? 0f : null;
+                        });
+    }
+
+    private static void shadeHookContract() {
+        float[] saved = new float[12];
+        // a Polaris-like hook: lift vertices that sagged below the plane y=1 (within 0.5) onto it
+        dev.elemore.iroh.api.ShadeHook lift = (state, pos, q) -> {
+            boolean moved = false;
+            for (int i = 0; i < 4; i++) {
+                float y = q.y(i);
+                if (y < 1f - 1.0e-4f && y >= 1f - 0.5f - 1.0e-3f) { q.pos(i, q.x(i), 1f, q.z(i)); moved = true; }
+            }
+            return moved;
+        };
+        FakeQuad f = new FakeQuad();
+        boolean restore = dev.elemore.iroh.apiimpl.ShadeHooks.before(new dev.elemore.iroh.api.ShadeHook[]{lift}, null, null, f.view, saved);
+        boolean liftedForLight = f.p[1][1] == 1f && f.p[2][1] == 1f && f.p[0][1] == 1f;
+        if (restore) dev.elemore.iroh.apiimpl.ShadeHooks.restore(f.view, saved);
+        check("shade hook: lighting sees the lifted quad", restore && liftedForLight);
+        check("shade hook: geometry restored after lighting", f.p[1][1] == 0.75f && f.p[2][1] == 0.75f && f.p[0][1] == 1f && f.p[3][1] == 1f);
+        FakeQuad g = new FakeQuad();
+        g.p[1][1] = 1f; g.p[2][1] = 1f; // flat quad: nothing to lift
+        boolean r2 = dev.elemore.iroh.apiimpl.ShadeHooks.before(new dev.elemore.iroh.api.ShadeHook[]{lift}, null, null, g.view, saved);
+        check("shade hook: a quad the hook ignores is not touched", !r2 && g.posCalls == 0);
     }
 
     private static void check(String what, boolean ok) {

@@ -51,6 +51,7 @@ public class BuilderResources {
         this.blockRenderer.prepareForWorld(region, true);
         // Iroh (P1-6b): face-cull vetoes + leaf culling, read once per mesh task (null = none, zero per-face cost)
         this.blockRenderer.setFaceCullHooks(dev.elemore.iroh.apiimpl.FaceCullHooks.snapshot());
+        this.blockRenderer.setShadeHooks(dev.elemore.iroh.apiimpl.ShadeHooks.snapshot()); // Iroh P1-10
 
         this.lightDataCache.reset(region, renderSection.xOffset(), renderSection.yOffset(), renderSection.zOffset());
     }
