@@ -272,6 +272,7 @@ public class MemoryManager {
         images.putIfAbsent(image.getId(), image);
 
         deviceMemory += image.size;
+        ownerCount(image.owner, 1);
     }
 
     public static void MapAndCopy(long allocation, Consumer<PointerBuffer> consumer) {
@@ -316,6 +317,18 @@ public class MemoryManager {
 
         VulkanImage image = images.remove(imageId);
         deviceMemory -= image.size;
+        ownerCount(image.owner, -1);
+    }
+
+    // rc9: live images per owner (creator + calling mod), for the growth monitor and the unload breakdown
+    private static final java.util.HashMap<String, Integer> OWNER_COUNTS = new java.util.HashMap<>();
+
+    private static synchronized void ownerCount(String owner, int d) {
+        OWNER_COUNTS.merge(owner == null ? "?" : owner, d, Integer::sum);
+    }
+
+    public static synchronized java.util.Map<String, Integer> ownerCounts() {
+        return new java.util.HashMap<>(OWNER_COUNTS);
     }
 
     // perf/uploads: deferred frees gated by the upload EPOCH they were scheduled in. Upload command buffers are no longer

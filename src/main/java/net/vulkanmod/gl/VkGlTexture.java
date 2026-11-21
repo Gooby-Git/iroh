@@ -125,12 +125,26 @@ public class VkGlTexture {
         return map.containsKey(id);
     }
 
+    /** rc9: the storage part of glTexImage2D (re-specification) for the offline registry test. */
+    public static void specifyStorageForTest(int id, int level, int internalFormat, int width, int height) {
+        VkGlTexture t = map.get(id);
+        t.updateParams(level, width, height, internalFormat, 0);
+        t.allocateIfNeeded();
+    }
+
+    public static void setMaxLevelForTest(int id, int level) {
+        map.get(id).setMaxLevel(level);
+        map.get(id).allocateIfNeeded();
+    }
+
     public static void texImage2D(int target, int level, int internalFormat, int width, int height, int border, int format, int type, long pixels) {
         if (checkParams(level, width, height) || boundTexture == null)
             return;
 
         boundTexture.updateParams(level, width, height, internalFormat, type);
         boundTexture.allocateIfNeeded();
+        if (boundTexture.vulkanImage == null)
+            return; // rc9: refused (runaway owner)
 
         VTextureSelector.bindTexture(activeTexture, boundTexture.vulkanImage);
 
@@ -143,6 +157,8 @@ public class VkGlTexture {
 
         boundTexture.updateParams(level, width, height, internalFormat, type);
         boundTexture.allocateIfNeeded();
+        if (boundTexture.vulkanImage == null)
+            return; // rc9: refused (runaway owner)
 
         VTextureSelector.bindTexture(activeTexture, boundTexture.vulkanImage);
 
@@ -534,28 +550,57 @@ public class VkGlTexture {
         }
     }
 
+    private static boolean loggedRefused;
+
     void allocateImage(int width, int height, int vkFormat) {
+        // rc9 (td-598433): name and owner carry the GL id and the calling mod, so a leak names its source
+        boolean depth = VulkanImage.isDepthFormat(vkFormat);
+        String mod = dev.elemore.iroh.diag.EmuStats.callerMod();
+        String owner = "GlTexture " + (depth ? "depth" : "color") + " by " + mod;
+        // rc9: an owner flagged for runaway image growth gets no image for a NEW texture id (reuse or refuse)
+        if (this.vulkanImage == null && dev.elemore.iroh.memory.MemoryGuard.refuseNewImage(owner)) {
+            if (!loggedRefused) {
+                loggedRefused = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: refusing new images for {} (runaway growth); texture {} stays empty (logged once)", owner, this.id);
+            }
+            return;
+        }
         if (this.vulkanImage != null)
             this.vulkanImage.free();
 
-        if (VulkanImage.isDepthFormat(vkFormat)) {
-            this.vulkanImage = VulkanImage.createDepthImage(
+        String name = "GlTexture " + this.id + (depth ? " depth " : " ") + width + "x" + height + " by " + mod;
+        if (FACTORY != null) { // offline registry test
+            this.vulkanImage = FACTORY.create(name, owner, depth, width, height, vkFormat, maxLevel + 1);
+        } else if (depth) {
+            this.vulkanImage = VulkanImage.createDepthImage(name, owner,
                     vkFormat, width, height,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     false, true);
         }
         else {
             this.vulkanImage = new VulkanImage.Builder(width, height)
-                    .setName(String.format("GlTexture %d", this.id))
+                    .setName(name)
+                    .setOwner(owner)
                     .setMipLevels(maxLevel + 1)
                     .setFormat(vkFormat)
                     .addUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
                     .createVulkanImage();
         }
+        this.imageGeneration++;
     }
 
+    /** rc9: test seam: when set, allocateImage gets its images here instead of the device. */
+    public interface ImageFactory {
+        VulkanImage create(String name, String owner, boolean depth, int width, int height, int vkFormat, int mipLevels);
+    }
+
+    public static ImageFactory FACTORY;
+
+    /** rc9: bumped whenever this texture's storage (VulkanImage) is replaced; framebuffers re-resolve attachments by it. */
+    int imageGeneration;
+
     void updateSampler() {
-        if (vulkanImage == null)
+        if (vulkanImage == null || vulkanImage.getId() == 0L) // rc9: no device image (offline registry test)
             return;
 
         byte samplerFlags;

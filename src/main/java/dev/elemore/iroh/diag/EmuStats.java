@@ -51,6 +51,11 @@ public final class EmuStats {
     }
 
     /** "mod" or "minecraft via mod" for the first frame outside Iroh, blaze3d and the JDK. */
+    /** rc9: public form for image owners (VulkanImage.Builder, VkGlTexture). */
+    public static String callerMod() {
+        return caller();
+    }
+
     static String caller() {
         return WALKER.walk(s -> {
             String direct = null, via = null;

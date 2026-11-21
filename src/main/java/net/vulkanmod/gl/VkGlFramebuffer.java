@@ -88,9 +88,7 @@ public class VkGlFramebuffer {
 
         switch (target) {
             case GL30.GL_DRAW_FRAMEBUFFER, GL30.GL_FRAMEBUFFER -> {
-                if (glFramebuffer.framebuffer != null) {
-                    beginRendering(glFramebuffer);
-                }
+                beginRendering(glFramebuffer); // rc9: re-resolves attachments; no-op without a colour attachment
 
                 boundFramebuffer = glFramebuffer;
             }
@@ -145,9 +143,9 @@ public class VkGlFramebuffer {
         }
         if (texture == 0) {
             // detach
-            if (attachment == GL30.GL_COLOR_ATTACHMENT0) fb.colorAttachment = null;
-            else fb.depthAttachment = null;
-            if (fb.framebuffer != null) fb.cleanUp(false);
+            if (attachment == GL30.GL_COLOR_ATTACHMENT0) { fb.colorAttachment = null; fb.colorName = 0; }
+            else { fb.depthAttachment = null; fb.depthName = 0; }
+            if (fb.framebuffer != null) { fb.cleanUp(false); fb.framebuffer = null; } // rc9: never bind a cleaned framebuffer
             if (fb.colorAttachment != null) fb.createAndBind();
             return;
         }
@@ -215,6 +213,8 @@ public class VkGlFramebuffer {
         // colour copy) and the rects.
         VkGlFramebuffer draw = boundFramebuffer;
         VkGlFramebuffer read = readFramebuffer;
+        if (draw != null) draw.refreshAttachments(); // rc9: never blit to/from a replaced (freed) image
+        if (read != null) read.refreshAttachments();
         SceneTarget scene = Renderer.getInstance().getMainPass().getSceneTarget();
         if (scene == null)
             return;
@@ -299,7 +299,42 @@ public class VkGlFramebuffer {
     }
 
     boolean beginRendering() {
+        refreshAttachments();
+        if (this.framebuffer == null)
+            return false;
         return Renderer.getInstance().beginRendering(this.renderPass, this.framebuffer);
+    }
+
+    // rc9 (td-7799fa): GL attaches the texture OBJECT; re-specifying its storage (glTexImage2D, renderbufferStorage)
+    // must not leave the framebuffer pointing at the old, freed image. Attachments are re-resolved by GL name at bind.
+    private int colorName, depthName;
+    private boolean colorIsRenderbuffer, depthIsRenderbuffer;
+
+    private static VulkanImage resolve(int name, boolean renderbuffer, VulkanImage current) {
+        if (name == 0)
+            return current;
+        if (renderbuffer) {
+            VkGlRenderbuffer rb = VkGlRenderbuffer.getRenderbuffer(name);
+            return rb != null ? rb.getVulkanImage() : null;
+        }
+        VkGlTexture t = VkGlTexture.getTexture(name);
+        return t != null ? t.getVulkanImage() : null;
+    }
+
+    /** Re-resolves attachments by GL name; rebuilds the Vulkan framebuffer when an attached image was replaced. */
+    void refreshAttachments() {
+        VulkanImage c = resolve(this.colorName, this.colorIsRenderbuffer, this.colorAttachment);
+        VulkanImage d = resolve(this.depthName, this.depthIsRenderbuffer, this.depthAttachment);
+        if (c != this.colorAttachment || d != this.depthAttachment) {
+            this.colorAttachment = c;
+            this.depthAttachment = d;
+            if (c == null && this.framebuffer != null) {
+                this.cleanUp(false);
+                this.framebuffer = null;
+            } else {
+                createAndBind();
+            }
+        }
     }
 
     void setAttachmentTexture(int attachment, int texture) {
@@ -314,8 +349,8 @@ public class VkGlFramebuffer {
             return;
 
         switch (attachment) {
-            case (GL30.GL_COLOR_ATTACHMENT0) -> this.setColorAttachment(glTexture.getVulkanImage());
-            case (GL30.GL_DEPTH_ATTACHMENT) -> this.setDepthAttachment(glTexture.getVulkanImage());
+            case (GL30.GL_COLOR_ATTACHMENT0) -> { this.colorName = texture; this.colorIsRenderbuffer = false; this.setColorAttachment(glTexture.getVulkanImage()); }
+            case (GL30.GL_DEPTH_ATTACHMENT) -> { this.depthName = texture; this.depthIsRenderbuffer = false; this.setDepthAttachment(glTexture.getVulkanImage()); }
 
             default -> throw new IllegalStateException("Unexpected value: " + attachment);
         }
@@ -331,8 +366,8 @@ public class VkGlFramebuffer {
             return;
 
         switch (attachment) {
-            case (GL30.GL_COLOR_ATTACHMENT0) -> this.setColorAttachment(renderbuffer.getVulkanImage());
-            case (GL30.GL_DEPTH_ATTACHMENT) -> this.setDepthAttachment(renderbuffer.getVulkanImage());
+            case (GL30.GL_COLOR_ATTACHMENT0) -> { this.colorName = texture; this.colorIsRenderbuffer = true; this.setColorAttachment(renderbuffer.getVulkanImage()); }
+            case (GL30.GL_DEPTH_ATTACHMENT) -> { this.depthName = texture; this.depthIsRenderbuffer = true; this.setDepthAttachment(renderbuffer.getVulkanImage()); }
 
             default -> throw new IllegalStateException("Unexpected value: " + attachment);
         }
