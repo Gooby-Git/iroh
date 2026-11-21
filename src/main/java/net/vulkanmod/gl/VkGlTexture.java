@@ -194,7 +194,34 @@ public class VkGlTexture {
 
     /** Iroh: one upload with the current unpack state; {@code avail} = bytes readable from {@code base} (PBO bound). */
     void upload(int level, int xOffset, int yOffset, int width, int height, int format, int type, long base, long avail) {
+        uploadClient(level, xOffset, yOffset, width, height, format, type, base, avail,
+                unpackRowLength, unpackAlignment, unpackSkipRows, unpackSkipPixels);
+    }
+
+    private static boolean loggedBadRegion;
+
+    /**
+     * Iroh (rc6, td-fcd844): one upload from client memory with EXPLICIT unpack state (NativeImage passes its own, like
+     * vanilla's _upload, instead of whatever another mod left in the GL unpack state). {@code avail} = bytes readable from
+     * {@code base}. Source span and destination region are checked before any copy; a bad one is logged once and skipped.
+     */
+    public void uploadClient(int level, int xOffset, int yOffset, int width, int height, int format, int type, long base, long avail,
+                             int rowLength, int alignment, int skipRows, int skipPixels) {
         VulkanImage image = this.vulkanImage;
+        if (image == null || width <= 0 || height <= 0)
+            return;
+        int lw = Math.max(1, image.width >> level), lh = Math.max(1, image.height >> level);
+        if (level < 0 || level >= image.mipLevels || xOffset < 0 || yOffset < 0 || xOffset + width > lw || yOffset + height > lh
+                || skipRows < 0 || skipPixels < 0 || (rowLength > 0 && skipPixels + width > rowLength)) {
+            if (!loggedBadRegion) {
+                loggedBadRegion = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: texture upload skipped: {} level {} region {},{} {}x{} (level size {}x{}, mips {}), "
+                                + "unpack rowLength {} skip {},{} (logged once)", image.name, level, xOffset, yOffset, width, height, lw, lh,
+                        image.mipLevels, rowLength, skipPixels, skipRows, new Throwable("uploaded from"));
+            }
+            return;
+        }
+        int unpackRowLength = rowLength, unpackAlignment = alignment, unpackSkipRows = skipRows, unpackSkipPixels = skipPixels;
         PixelTransfer.Dst dst = dstLayout(image.format);
         if (dst == null || dst == PixelTransfer.Dst.D32F) {
             dev.elemore.iroh.glshim.GlShim.unhandled("glTexSubImage2D(into vk format " + image.format + ")");
@@ -209,9 +236,14 @@ public class VkGlTexture {
             return;
         }
         long skip = PixelTransfer.skipOffset(width, unpackRowLength, unpackAlignment, unpackSkipRows, unpackSkipPixels, format, type);
-        long need = skip + stride * (height - 1) + (long) width * bpp;
-        if (need > avail) {
+        long need = PixelTransfer.sourceNeed(width, height, unpackRowLength, unpackAlignment, unpackSkipRows, unpackSkipPixels, format, type);
+        if (need < 0 || need > avail || base == 0L) {
             dev.elemore.iroh.glshim.GlShim.unhandled("glTexSubImage2D(reads past the unpack buffer)");
+            if (!loggedBadRegion) {
+                loggedBadRegion = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: texture upload skipped: {} would read {} bytes from a {}-byte source (format 0x{}, {}x{}, rowLength {}, skip {},{}; logged once)",
+                        image.name, need, avail, Integer.toHexString(format), width, height, rowLength, skipPixels, skipRows, new Throwable("uploaded from"));
+            }
             return;
         }
         long src = base + skip;

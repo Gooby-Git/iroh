@@ -245,12 +245,28 @@ public class VulkanImage {
                                    MemoryUtil.memAddress(buffer));
     }
 
+    private static boolean loggedBadUpload;
+
     public void uploadSubTextureAsync(int mipLevel, int width, int height, int xOffset, int yOffset, int unpackSkipRows, int unpackSkipPixels, int unpackRowLength, long srcPtr) {
         // Iroh: GL semantics, row length 0 = width (the base copied 0 bytes then and uploaded staging garbage:
         // Xaero's striped map tiles, td-834bea). Size = exactly the rows the copy reads.
         if (unpackRowLength <= 0)
             unpackRowLength = width;
+        // Iroh (rc6, td-fcd844): destination checked before any copy (the source span is the caller's to check: it knows
+        // the allocation; VkGlTexture.uploadClient and the NativeImage path do).
+        int lw = Math.max(1, this.width >> mipLevel), lh = Math.max(1, this.height >> mipLevel);
+        if (srcPtr == 0L || width <= 0 || height <= 0 || mipLevel < 0 || mipLevel >= this.mipLevels || xOffset < 0 || yOffset < 0
+                || xOffset + width > lw || yOffset + height > lh || unpackSkipPixels + width > unpackRowLength || this.id == 0L) {
+            if (!loggedBadUpload) {
+                loggedBadUpload = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: texture upload skipped: {} level {} region {},{} {}x{} (level {}x{}, mips {}), rowLength {} skip {},{}, src 0x{} (logged once)",
+                        this.name, mipLevel, xOffset, yOffset, width, height, lw, lh, this.mipLevels, unpackRowLength, unpackSkipPixels,
+                        unpackSkipRows, Long.toHexString(srcPtr), new Throwable("uploaded from"));
+            }
+            return;
+        }
         long uploadSize = ((long) unpackRowLength * (height - 1) + width) * this.formatSize;
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.upload(this, uploadSize);
 
         // Iroh (td-4a9be3): the frame already used this image: upload in the frame buffer so earlier draws keep the
         // old contents and the layout history stays in one buffer.
@@ -260,32 +276,15 @@ public class VulkanImage {
             return;
         }
 
-        StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
-
-        // Use a temporary staging buffer if the upload size is greater than
-        // the default staging buffer
-        if (uploadSize > stagingBuffer.getBufferSize()) {
-            stagingBuffer = new StagingBuffer(uploadSize);
-            stagingBuffer.scheduleFree();
-        }
-
+        // rc6: staging that fits without a flush (shared buffer or spill block); the copy into it is synchronous, so the
+        // caller's memory is never read after this returns, and no staging offset is held across a flush.
+        ImageUploadHelper helper = ImageUploadHelper.INSTANCE;
+        StagingBuffer stagingBuffer = helper.stagingFor(uploadSize, this.formatSize);
         srcPtr += ((long) unpackRowLength * unpackSkipRows + unpackSkipPixels) * this.formatSize;
-
         stagingBuffer.align(this.formatSize);
         stagingBuffer.copyBuffer((int) uploadSize, srcPtr);
-
-        long bufferId = stagingBuffer.getId();
-
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.asyncUploads++;
-        VkCommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
-        try (MemoryStack stack = stackPush()) {
-            transferDstLayout(stack, commandBuffer);
-
-            final int srcOffset = (int) (stagingBuffer.getOffset());
-
-            ImageUtil.copyBufferToImageCmd(stack, commandBuffer, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
-                                           srcOffset, unpackRowLength, height);
-        }
+        helper.queueCopy(this, stagingBuffer.getId(), stagingBuffer.getOffset(), mipLevel, width, height, xOffset, yOffset, unpackRowLength);
     }
 
     private void transferDstLayout(MemoryStack stack, VkCommandBuffer commandBuffer) {
@@ -298,6 +297,7 @@ public class VulkanImage {
      */
     private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameUploads++;
+        ImageUploadHelper.INSTANCE.flushPendingCopies(); // rc6: keep upload-buffer order for this image
         StagingBuffer staging = new StagingBuffer(Math.max(uploadSize, 16));
         staging.copyBuffer((int) uploadSize, srcPtr);
         long bufferId = staging.getId();

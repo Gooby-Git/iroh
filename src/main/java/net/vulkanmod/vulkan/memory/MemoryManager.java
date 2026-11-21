@@ -112,7 +112,24 @@ public class MemoryManager {
      */
     /** rc5: "buffers N (device MB), images M" for the world-unload log line (growth across rejoins = a real leak). */
     public static String liveSummary() {
-        return "buffers " + buffers.size() + ", images " + images.size() + ", device " + (deviceMemory >> 20) + " MB, host " + (nativeMemory >> 20) + " MB";
+        int pendingB = 0, pendingI = 0;
+        if (INSTANCE != null)
+            for (int i = 0; i < Frames; i++) {
+                pendingB += INSTANCE.freeableBuffers[i].size();
+                pendingI += INSTANCE.freeableImages[i].size();
+            }
+        // rc6: per-owner breakdown (buffer class / image name with digits folded), top 8 each
+        java.util.Map<String, Integer> b = new java.util.HashMap<>(), im = new java.util.HashMap<>();
+        for (Buffer x : buffers.values()) b.merge(x.getClass().getSimpleName(), 1, Integer::sum);
+        for (VulkanImage x : images.values()) im.merge(x.name == null ? "?" : x.name.replaceAll("[0-9]+", "#"), 1, Integer::sum);
+        return "buffers " + buffers.size() + " (" + pendingB + " already scheduled for free), images " + images.size() + " (" + pendingI
+                + " scheduled), device " + (deviceMemory >> 20) + " MB, host " + (nativeMemory >> 20) + " MB; buffers by class " + top(b)
+                + "; images by name " + top(im);
+    }
+
+    private static String top(java.util.Map<String, Integer> m) {
+        return m.entrySet().stream().sorted((x, y) -> y.getValue() - x.getValue()).limit(8)
+                .map(e -> e.getKey() + "=" + e.getValue()).collect(java.util.stream.Collectors.joining(", ", "[", "]"));
     }
 
     public void freeLeftovers() {
