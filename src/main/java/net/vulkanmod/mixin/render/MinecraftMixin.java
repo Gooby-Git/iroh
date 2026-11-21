@@ -31,9 +31,12 @@ public class MinecraftMixin {
         var graphicsModeOption = this.options.graphicsMode();
 
         if (graphicsModeOption.get() == GraphicsStatus.FABULOUS) {
-            Initializer.LOGGER.error("Fabulous graphics mode not supported, forcing Fancy");
+            // td-75c969: not an error. Fabulous needs the transparency chain, which Iroh does not have yet; the option
+            // screen shows it greyed with the reason. Logged once, at INFO.
+            Initializer.LOGGER.info("Fabulous graphics is not available in Iroh yet (needs the transparency chain); using Fancy");
             graphicsModeOption.set(GraphicsStatus.FANCY);
         }
+        dev.elemore.iroh.config.IrohOptions.onGameStart();
     }
 
     @Redirect(method = "runTick", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/TimerQuery;getInstance()Ljava/util/Optional;"))

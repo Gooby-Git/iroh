@@ -19,7 +19,10 @@ public abstract class Option<T> {
 
     protected Function<T, Component> translator;
 
-    protected boolean active;
+    protected boolean active = true;
+    /** Non-null result greys the option out and is shown as the reason. */
+    protected Supplier<Component> unavailable;
+    protected Supplier<Component> tooltipSupplier;
     protected Runnable onChange;
 
     public Option(Component name, Consumer<T> setter, Supplier<T> getter, Function<T, Component> translator) {
@@ -95,6 +98,10 @@ public abstract class Option<T> {
         return this.newValue;
     }
 
+    public Function<T, Component> getTranslatorOrNull() {
+        return this.translator;
+    }
+
     public Component getDisplayedValue() {
         return this.translator.apply(this.newValue);
     }
@@ -105,6 +112,26 @@ public abstract class Option<T> {
     }
 
     public Component getTooltip() {
-        return this.tooltip;
+        return this.tooltipSupplier != null ? this.tooltipSupplier.get() : this.tooltip;
+    }
+
+    /** Tooltip computed each frame (availability reasons and reload notes change at run time). */
+    public Option<T> setTooltipSupplier(Supplier<Component> supplier) {
+        this.tooltipSupplier = supplier;
+        return this;
+    }
+
+    public Option<T> setUnavailable(Supplier<Component> reason) {
+        this.unavailable = reason;
+        return this;
+    }
+
+    /** True unless an availability predicate currently gives a reason. */
+    public boolean isAvailable() {
+        return this.active && (this.unavailable == null || this.unavailable.get() == null);
+    }
+
+    public Component getUnavailableReason() {
+        return this.unavailable == null ? null : this.unavailable.get();
     }
 }

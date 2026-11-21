@@ -33,6 +33,9 @@ public abstract class OptionWidget<O extends Option<?>> extends VAbstractWidget
 
     protected boolean controlHovered;
 
+    /** Set by the keyboard / controller selection of the option list. */
+    public boolean keySelected;
+
     O option;
 
     public OptionWidget(int x, int y, int width, int height, Component name) {
@@ -56,6 +59,7 @@ public abstract class OptionWidget<O extends Option<?>> extends VAbstractWidget
             return;
         }
 
+        this.active = this.option.isAvailable();
         this.updateDisplayedValue();
 
         this.controlHovered = mouseX >= this.controlX && mouseY >= this.y && mouseX < this.controlX + this.controlWidth && mouseY < this.y + this.height;
@@ -83,6 +87,13 @@ public abstract class OptionWidget<O extends Option<?>> extends VAbstractWidget
         GuiRenderer.fill(this.x - xPadding, this.y - yPadding, this.x + this.width + xPadding, this.y + this.height + yPadding, color);
 
         this.renderHovering(0, 0);
+
+        if (this.keySelected) {
+            GuiRenderer.renderBorder(this.x, this.y, this.x + this.width, this.y + this.height, 1,
+                    ColorUtil.ARGB.pack(0.3f, 0.0f, 0.0f, 0.8f));
+            GuiRenderer.fill(this.x, this.y, this.x + this.width, this.y + this.height,
+                    ColorUtil.ARGB.pack(0.3f, 0.0f, 0.0f, 0.2f));
+        }
 
         color = this.active ? 0xFFFFFF : 0xA0A0A0;
 //        j = 0xB0f0d0a0;
@@ -116,6 +127,15 @@ public abstract class OptionWidget<O extends Option<?>> extends VAbstractWidget
     public abstract void onRelease(double mouseX, double mouseY);
 
     protected abstract void onDrag(double mouseX, double mouseY, double deltaX, double deltaY);
+
+    /** Keyboard / controller adjustment: -1 = previous or lower, +1 = next or higher. */
+    public void keyAdjust(int direction) {
+    }
+
+    /** Keyboard Enter / Space: default is one step forward. */
+    public void keyActivate() {
+        if (this.active) this.keyAdjust(1);
+    }
 
     protected boolean isValidClickButton(int button) {
         return button == 0;

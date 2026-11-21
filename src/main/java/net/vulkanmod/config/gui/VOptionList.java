@@ -40,6 +40,52 @@ public class VOptionList extends GuiElement {
         this.addEntry(new Entry(widget, this.itemMargin));
     }
 
+    // ---- keyboard / controller selection (the base list was mouse only) ----
+    private int selected = -1;
+
+    public OptionWidget<?> selectedWidget() {
+        if (selected < 0 || selected >= children.size()) return null;
+        return children.get(selected).widget instanceof OptionWidget<?> w ? w : null;
+    }
+
+    /** Moves the selection to the next row that has a widget, in the given direction; wraps at the ends. */
+    public void moveSelection(int dir) {
+        int n = children.size();
+        if (n == 0) return;
+        int start = selected;
+        int i = selected;
+        for (int tries = 0; tries < n; tries++) {
+            i = ((i + dir) % n + n) % n;
+            if (start < 0 && dir < 0 && tries == 0) i = n - 1;
+            if (children.get(i).widget instanceof OptionWidget<?>) {
+                select(i);
+                return;
+            }
+        }
+    }
+
+    private void select(int i) {
+        if (selected >= 0 && selected < children.size() && children.get(selected).widget instanceof OptionWidget<?> old)
+            old.keySelected = false;
+        selected = i;
+        if (children.get(i).widget instanceof OptionWidget<?> w) w.keySelected = true;
+        ensureVisible(i);
+    }
+
+    public void clearSelection() {
+        if (selected >= 0 && selected < children.size() && children.get(selected).widget instanceof OptionWidget<?> old)
+            old.keySelected = false;
+        selected = -1;
+    }
+
+    private void ensureVisible(int idx) {
+        int top = 0;
+        for (int i = 0; i < idx; i++) top += children.get(i).getTotalHeight();
+        int bottom = top + itemHeight;
+        if (top < scrollAmount) setScrollAmount(top);
+        else if (bottom > scrollAmount + height) setScrollAmount(bottom - height);
+    }
+
     public void addAll(OptionBlock[] blocks) {
         for (OptionBlock block : blocks) {
             int x0 = this.x;

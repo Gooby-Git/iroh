@@ -9,6 +9,8 @@
   "client": [
     "window.WindowMixin",
     "render.PackFogM",
+    "render.IrohHudM",
+    "render.IrohLeavesM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",
