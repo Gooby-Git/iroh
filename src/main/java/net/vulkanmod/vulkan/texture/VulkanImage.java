@@ -276,6 +276,7 @@ public class VulkanImage {
 
         long bufferId = stagingBuffer.getId();
 
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.asyncUploads++;
         VkCommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
         try (MemoryStack stack = stackPush()) {
             transferDstLayout(stack, commandBuffer);
@@ -296,6 +297,7 @@ public class VulkanImage {
      * buffer freed after this frame's fence (the per-frame staging buffer is reset before the frame executes).
      */
     private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameUploads++;
         StagingBuffer staging = new StagingBuffer(Math.max(uploadSize, 16));
         staging.copyBuffer((int) uploadSize, srcPtr);
         long bufferId = staging.getId();
@@ -527,7 +529,18 @@ public class VulkanImage {
 
     public static void transitionLayout(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int baseLevel, int oldLayout, int newLayout,
                                         int sourceStage, int srcAccessMask, int destinationStage, int dstAccessMask) {
+        // Iroh (rc5, td-1cb256): own stack frame. Callers record many transitions under one frame (an upload flush of
+        // thousands of images); a per-call calloc without a pop overflowed LWJGL's 64 KB thread stack ->
+        // OutOfMemoryError -> vanilla's emergencySave halted the world.
+        try (MemoryStack frame = stack.push()) {
+            recordBarrier(frame, commandBuffer, image, baseLevel, newLayout, sourceStage, srcAccessMask, destinationStage, dstAccessMask);
+        }
+        image.currentLayout = newLayout;
+        noteRecordedIn(image, commandBuffer);
+    }
 
+    private static void recordBarrier(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int baseLevel, int newLayout,
+                                      int sourceStage, int srcAccessMask, int destinationStage, int dstAccessMask) {
         VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
         barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
         barrier.oldLayout(image.currentLayout);
@@ -552,9 +565,19 @@ public class VulkanImage {
                 null,
                 null,
                 barrier);
+    }
 
-        image.currentLayout = newLayout;
-        noteRecordedIn(image, commandBuffer);
+    /**
+     * Iroh (rc5, td-1cb256): queue this image's TRANSFER_DST -> SHADER_READ_ONLY transition into {@code batch} (recorded by
+     * the batch's flush into {@code commandBuffer}); state is updated now, as the barrier precedes any later command.
+     */
+    public void readOnlyLayoutBatched(ImageBarrierBatch batch, VkCommandBuffer commandBuffer) {
+        if (this.currentLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+            throw new IllegalStateException("batched read-only transition expects TRANSFER_DST, layout " + this.currentLayout);
+        batch.add(this.getId(), this.aspect, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        this.currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        noteRecordedIn(this, commandBuffer);
     }
 
     /** Iroh (td-4a9be3): remember which buffer holds the image's latest layout change (see uploadOwned). */
@@ -582,13 +605,15 @@ public class VulkanImage {
         if (this.id == 0L)
             return;
 
-        MemoryManager.freeImage(this.id, this.allocation);
-
         vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null);
 
         if (this.levelImageViews != null)
             Arrays.stream(this.levelImageViews).forEach(
-                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null));
+                    // Iroh (rc5, td-dcbf58): destroy each level view (the base destroyed mainImageView again for every
+                    // level: a double destroy, and every level view leaked)
+                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), imageView, null));
+
+        MemoryManager.freeImage(this.id, this.allocation); // rc5: views first, then the image
 
         this.id = 0L;
     }

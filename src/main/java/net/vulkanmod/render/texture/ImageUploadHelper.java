@@ -6,7 +6,6 @@ import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.queue.CommandPool;
 import net.vulkanmod.vulkan.queue.Queue;
 import net.vulkanmod.vulkan.texture.VulkanImage;
-import org.lwjgl.system.MemoryStack;
 
 import static org.lwjgl.vulkan.VK10.*;
 
@@ -19,6 +18,10 @@ public class ImageUploadHelper {
 
     /** Iroh (td-4a9be3): images whose latest layout change is recorded in {@link #currentCmdBuffer}. */
     private final ReferenceArrayList<VulkanImage> touched = new ReferenceArrayList<>();
+    /** Iroh (rc5): membership for {@link #touched} (was a linear contains: O(n^2) for a join's thousands of images). */
+    private final it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<VulkanImage> touchedSet = new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>();
+    /** Iroh (rc5, td-1cb256): all read-only transitions of one submit as one barrier call, heap array reused. */
+    private final net.vulkanmod.vulkan.texture.ImageBarrierBatch barriers = new net.vulkanmod.vulkan.texture.ImageBarrierBatch();
 
     public ImageUploadHelper() {
         queue = DeviceManager.getGraphicsQueue();
@@ -26,7 +29,7 @@ public class ImageUploadHelper {
 
     /** Called by VulkanImage when a barrier is recorded into the current upload buffer. */
     public void track(VulkanImage image) {
-        if (!this.touched.contains(image))
+        if (this.touchedSet.add(image))
             this.touched.add(image);
     }
 
@@ -40,23 +43,33 @@ public class ImageUploadHelper {
         // this frame) sample it in that layout. Without this, a texture uploaded after its last draw of the frame
         // (WaterMedia's video frame arriving mid-frame) stayed in TRANSFER_DST at submit: validation
         // "expects SHADER_READ_ONLY_OPTIMAL, current TRANSFER_DST_OPTIMAL".
-        if (!this.touched.isEmpty()) {
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                for (VulkanImage image : this.touched) {
+        try {
+            if (!this.touched.isEmpty()) {
+                var handle = this.currentCmdBuffer.getHandle();
+                for (int i = 0, n = this.touched.size(); i < n; i++) {
+                    VulkanImage image = this.touched.get(i);
                     if (image.isUploadOwned() && image.getId() != 0L
                             && image.getCurrentLayout() == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
                             && (image.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
-                        image.readOnlyLayout(stack, this.currentCmdBuffer.getHandle());
+                        image.readOnlyLayoutBatched(this.barriers, handle);
                     image.clearUploadOwned();
                 }
+                int queued = this.barriers.size();
+                this.barriers.flush(handle, net.vulkanmod.vulkan.texture.ImageBarrierBatch.VULKAN);
+                if (dev.elemore.iroh.diag.UploadStats.ON) { dev.elemore.iroh.diag.UploadStats.submitBarrierCalls += this.barriers.lastCalls(); dev.elemore.iroh.diag.UploadStats.submitBarrierImages += queued; }
             }
+        } finally {
+            // rc5 (td-08dc9f): even if recording the transitions throws, submit what is recorded now and drop the list.
+            // The old path left a half-processed list and an unsubmitted buffer that was submitted frames later, after
+            // textures it references had been destroyed ("command buffer invalid: Texture ... destroyed").
             this.touched.clear();
+            this.touchedSet.clear();
+            CommandPool.CommandBuffer cb = this.currentCmdBuffer;
+            this.currentCmdBuffer = null;
+            queue.submitCommands(cb);
+            if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.submits++;
+            Synchronization.INSTANCE.addCommandBuffer(cb);
         }
-
-        long fence = queue.submitCommands(this.currentCmdBuffer);
-        Synchronization.INSTANCE.addCommandBuffer(this.currentCmdBuffer);
-
-        this.currentCmdBuffer = null;
     }
 
     public CommandPool.CommandBuffer getOrStartCommandBuffer() {

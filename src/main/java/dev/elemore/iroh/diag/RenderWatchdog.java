@@ -70,11 +70,19 @@ public final class RenderWatchdog {
         }
     }
 
+    private static volatile String fatal;
+
+    /** rc5: a fatal render-thread error (e.g. the OutOfMemoryError that makes vanilla halt the world); repeated in stall reports. */
+    public static void noteFatal(String what) {
+        fatal = what;
+    }
+
     private static void report(long stalledS) {
         Thread rt = renderThread;
         StringBuilder sb = new StringBuilder();
         sb.append("Iroh: render thread has not completed a frame for ").append(stalledS).append(" s (state ")
           .append(rt == null ? "?" : rt.getState()).append(")\n");
+        if (fatal != null) sb.append("earlier fatal render-thread error: ").append(fatal).append('\n');
         if (rt != null)
             for (StackTraceElement e : rt.getStackTrace()) sb.append("\tat ").append(e).append('\n');
 

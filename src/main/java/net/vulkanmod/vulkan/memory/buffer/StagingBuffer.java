@@ -70,6 +70,7 @@ public class StagingBuffer extends Buffer {
      * for all of them, then resets it. The only legal way to reset a shared staging buffer.
      */
     public static void flushConsumersAndReset() {
+        if (dev.elemore.iroh.diag.UploadStats.ON) { dev.elemore.iroh.diag.UploadStats.frameFenceWaits++; dev.elemore.iroh.diag.UploadStats.frame(); }
         submitAllConsumers();
         Synchronization.INSTANCE.waitFences();
         net.vulkanmod.vulkan.Vulkan.getStagingBuffer().reset();
@@ -122,6 +123,7 @@ public class StagingBuffer extends Buffer {
     }
 
     private void submitUploads() {
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.stagingOverflows++;
         // Submit and wait all recorded uploads before resetting the buffer.
         // Iroh (R-3): includes IndirectBuffer's pending transfer buffer, which the base left unsubmitted here (its
         // copy would then read bytes the next writer had already overwritten).

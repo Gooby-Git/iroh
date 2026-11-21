@@ -218,6 +218,16 @@ tasks.register('builtinShaderTest', JavaExec) {
 
 // rc3r2: the api members elemore-core's and Polaris' IrohBridge look up exist in the built jar with exact descriptors.
 // Bridge jars: newest per mod in -Pbridges=dir (default ~/Projects/iroh-wt-resync/build/p113b, else build/p16b); lookups discovered from IrohBridge constant pools. ./gradlew bridgeLinkTest [-Piroh=jar] [-Pbridges=dir]; last line "# bridgelink PASS n/n". Needs ./build.sh first.
+// rc5 (td-1cb256): upload-flush layout transitions batched, bounded stack. ./gradlew barrierBatchTest; last line "# barrierbatch PASS n/n".
+tasks.register('barrierBatchTest', JavaExec) {
+	group = 'verification'
+	description = 'Batch 50,000 image transitions through a fake recorder: one call per stage group, MemoryStack unmoved'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.BarrierBatchTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'

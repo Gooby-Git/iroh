@@ -23,19 +23,21 @@ public abstract class ImageUtil {
     public static void copyBufferToImageCmd(MemoryStack stack, VkCommandBuffer commandBuffer, long buffer, long image,
                                             int mipLevel, int width, int height, int xOffset, int yOffset,
                                             int bufferOffset, int bufferRowLenght, int bufferImageHeight) {
-        VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
-        region.bufferOffset(bufferOffset);
-        region.bufferRowLength(bufferRowLenght);
-        region.bufferImageHeight(bufferImageHeight);
-        region.imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
-        region.imageSubresource().mipLevel(mipLevel);
-        region.imageSubresource().baseArrayLayer(0);
-        region.imageSubresource().layerCount(1);
-        region.imageOffset().set(xOffset, yOffset, 0);
-        region.imageExtent(VkExtent3D.calloc(stack).set(width, height, 1));
-
-        net.vulkanmod.vulkan.memory.buffer.StagingBuffer.checkConsumer(commandBuffer, buffer); // Iroh R-3
-        vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+        try (MemoryStack frame = stack.push()) { // Iroh rc5 (td-1cb256): bounded per call
+            VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, frame);
+            region.bufferOffset(bufferOffset);
+            region.bufferRowLength(bufferRowLenght);
+            region.bufferImageHeight(bufferImageHeight);
+            region.imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+            region.imageSubresource().mipLevel(mipLevel);
+            region.imageSubresource().baseArrayLayer(0);
+            region.imageSubresource().layerCount(1);
+            region.imageOffset().set(xOffset, yOffset, 0);
+            region.imageExtent(VkExtent3D.calloc(frame).set(width, height, 1));
+    
+            net.vulkanmod.vulkan.memory.buffer.StagingBuffer.checkConsumer(commandBuffer, buffer); // Iroh R-3
+            vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+        }
     }
 
     public static void downloadTexture(VulkanImage image, long ptr) {
@@ -90,18 +92,20 @@ public abstract class ImageUtil {
     public static void copyImageToBufferCmd(MemoryStack stack, VkCommandBuffer commandBuffer, long buffer, long image,
                                             int mipLevel, int width, int height, int xOffset, int yOffset, int bufferOffset,
                                             int bufferRowLength, int bufferImageHeight) {
-        VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
-        region.bufferOffset(bufferOffset);
-        region.bufferRowLength(bufferRowLength);
-        region.bufferImageHeight(bufferImageHeight);
-        region.imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
-        region.imageSubresource().mipLevel(mipLevel);
-        region.imageSubresource().baseArrayLayer(0);
-        region.imageSubresource().layerCount(1);
-        region.imageOffset().set(xOffset, yOffset, 0);
-        region.imageExtent().set(width, height, 1);
-
-        vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, region);
+        try (MemoryStack frame = stack.push()) { // Iroh rc5 (td-1cb256): bounded per call
+            VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, frame);
+            region.bufferOffset(bufferOffset);
+            region.bufferRowLength(bufferRowLength);
+            region.bufferImageHeight(bufferImageHeight);
+            region.imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+            region.imageSubresource().mipLevel(mipLevel);
+            region.imageSubresource().baseArrayLayer(0);
+            region.imageSubresource().layerCount(1);
+            region.imageOffset().set(xOffset, yOffset, 0);
+            region.imageExtent().set(width, height, 1);
+    
+            vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, region);
+        }
     }
 
     /**

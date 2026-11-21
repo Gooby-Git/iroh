@@ -105,6 +105,37 @@ public class MemoryManager {
 //        images.values().forEach(image -> image.doFree(this));
     }
 
+    /**
+     * Iroh (rc5, td-dcbf58): at shutdown, after the device is idle and the deferred lists are freed, destroy every buffer
+     * and image still registered: objects mods never close (vanilla VertexBuffers cached by mods, GL textures never
+     * deleted; GL drops them with the context, Vulkan reports them as leaked at vkDestroyDevice). Logs the count by owner.
+     */
+    /** rc5: "buffers N (device MB), images M" for the world-unload log line (growth across rejoins = a real leak). */
+    public static String liveSummary() {
+        return "buffers " + buffers.size() + ", images " + images.size() + ", device " + (deviceMemory >> 20) + " MB, host " + (nativeMemory >> 20) + " MB";
+    }
+
+    public void freeLeftovers() {
+        java.util.Map<String, Integer> owners = new java.util.TreeMap<>();
+        int nb = 0, ni = 0;
+        for (Buffer b : new java.util.ArrayList<>(buffers.values())) {
+            owners.merge("buffer " + b.getClass().getSimpleName(), 1, Integer::sum);
+            vmaDestroyBuffer(ALLOCATOR, b.getId(), b.getAllocation());
+            nb++;
+        }
+        buffers.clear();
+        for (VulkanImage img : new java.util.ArrayList<>(images.values())) {
+            String n = img.name == null ? "?" : img.name.replaceAll("[0-9]+", "#");
+            owners.merge("image " + n, 1, Integer::sum);
+            img.doFree();
+            ni++;
+        }
+        images.clear();
+        if (nb + ni > 0)
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: freed {} buffers and {} images still alive at shutdown (never closed by their owners): {}",
+                    nb, ni, owners);
+    }
+
     public void createBuffer(long size, int usage, int properties, LongBuffer pBuffer, PointerBuffer pBufferMemory) {
         try (MemoryStack stack = stackPush()) {
 
