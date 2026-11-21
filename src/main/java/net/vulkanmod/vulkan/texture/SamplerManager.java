@@ -17,7 +17,10 @@ import static org.lwjgl.vulkan.VK12.VK_SAMPLER_REDUCTION_MODE_MAX;
 import static org.lwjgl.vulkan.VK12.VK_SAMPLER_REDUCTION_MODE_MIN;
 
 public abstract class SamplerManager {
-    static final float MIP_BIAS = -0.5f;
+    // Iroh (td-48591b): vanilla GL samples with LOD bias 0; the base's -0.5 sharpened every mipmapped texture by half a
+    // level, which is the extra shimmer measured while strafing (+22% frame-to-frame luma, +34% high-frequency energy).
+    // -Diroh.mipBias=<float> to experiment.
+    static final float MIP_BIAS = Float.parseFloat(System.getProperty("iroh.mipBias", "0"));
 
     static final Short2LongMap SAMPLERS = new Short2LongOpenHashMap();
 
