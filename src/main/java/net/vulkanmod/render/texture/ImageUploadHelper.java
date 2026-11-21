@@ -56,6 +56,11 @@ public class ImageUploadHelper {
         return spill;
     }
 
+    /** rc7: spill block bytes and region array capacity (for -Diroh.memStats). */
+    public String memSummary() {
+        return "spill " + (spill == null ? 0 : spill.getBufferSize() >> 20) + " MB, regions cap " + regions.capacity() + ", touched " + touched.size();
+    }
+
     /** rc6: called after the frame's upload fences were waited (StagingBuffer.flushConsumersAndReset): the spill block is free again. */
     public void resetSpill() {
         if (spill != null)

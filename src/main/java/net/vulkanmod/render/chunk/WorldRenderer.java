@@ -136,6 +136,8 @@ public class WorldRenderer {
         BuildTimeProfiler.runBench(this.graphNeedsUpdate || !this.taskDispatcher.isIdle());
     }
 
+    private int pruneTick;
+
     public void setupRenderer(Camera camera, Frustum frustum, boolean isCapturedFrustum, boolean spectator) {
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Setup_Renderer");
@@ -143,6 +145,10 @@ public class WorldRenderer {
         benchCallback();
 
         this.cameraPos = camera.getPosition();
+        // rc7: prune chunk-status entries far outside the client chunk cache (radius renderDistance + 3) every 600 frames
+        if (++this.pruneTick % 600 == 0 && ChunkStatusMap.INSTANCE != null)
+            ChunkStatusMap.INSTANCE.prune(net.minecraft.core.SectionPos.blockToSectionCoord(this.cameraPos.x),
+                    net.minecraft.core.SectionPos.blockToSectionCoord(this.cameraPos.z), this.renderDistance + 8);
         if (this.minecraft.options.getEffectiveRenderDistance() != this.renderDistance) {
             this.allChanged();
         }
@@ -557,7 +563,7 @@ public class WorldRenderer {
     }
 
     public ChunkAreaManager getChunkAreaManager() {
-        return this.sectionGrid.chunkAreaManager;
+        return this.sectionGrid != null ? this.sectionGrid.chunkAreaManager : null; // rc7: no NPE between worlds
     }
 
     public TaskDispatcher getTaskDispatcher() {

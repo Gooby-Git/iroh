@@ -265,6 +265,7 @@ public class Renderer {
     private void beginFrame0() {
         dev.elemore.iroh.diag.RenderWatchdog.heartbeat(); // rc3r2 (td-3bc9d5): stall diagnostics
         dev.elemore.iroh.diag.LoadWatch.tick(); // rc5 (td-30c049): evidence if a world load hangs
+        if (dev.elemore.iroh.diag.MemStats.ON) dev.elemore.iroh.diag.MemStats.frame(); // rc7
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.push("Frame_fence");

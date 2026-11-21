@@ -43,6 +43,11 @@ public final class ModAttribution {
         return ofClass(className);
     }
 
+    /** rc7: cached class -> mod entries (for -Diroh.memStats). */
+    public static int cacheSize() {
+        return BY_CLASS.size();
+    }
+
     public static String ofClass(String className) {
         return BY_CLASS.computeIfAbsent(className, ModAttribution::lookup);
     }
