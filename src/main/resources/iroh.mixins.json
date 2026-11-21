@@ -62,6 +62,7 @@
     "render.frapi.ItemRendererMixin",
     "render.frapi.ModelBlockRendererM",
     "render.particle.SingleQuadParticleM",
+    "render.particle.ParticleEngineStatsM",
     "render.target.MainTargetMixin",
     "render.target.RenderTargetMixin",
     "render.vertex.BufferBuilderM",
