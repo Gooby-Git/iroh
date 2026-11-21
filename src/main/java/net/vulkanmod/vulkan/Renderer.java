@@ -267,6 +267,7 @@ public class Renderer {
         dev.elemore.iroh.diag.LoadWatch.tick(); // rc5 (td-30c049): evidence if a world load hangs
         dev.elemore.iroh.memory.MemoryGuard.tick(); // rc8: device-memory cap / out-of-memory exit
         if (dev.elemore.iroh.diag.MemStats.ON) dev.elemore.iroh.diag.MemStats.frame(); // rc7
+        if (dev.elemore.iroh.diag.ImageTrace.ON) dev.elemore.iroh.diag.ImageTrace.frame(); // rc13
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.push("Frame_fence");

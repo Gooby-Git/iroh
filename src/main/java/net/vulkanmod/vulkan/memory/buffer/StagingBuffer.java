@@ -79,6 +79,11 @@ public class StagingBuffer extends Buffer {
         return RING;
     }
 
+    /** rc13: offline tests run the epoch machinery (Synchronization + MemoryManager deferred frees) on a device-less ring. */
+    public static void setRingForTest(net.vulkanmod.vulkan.memory.staging.StagingRing ring) {
+        RING = ring;
+    }
+
     /** Creates the ring (device up). Blocks are host-visible, persistently mapped StagingBuffers. */
     public static void initRing() {
         if (RING != null) return;

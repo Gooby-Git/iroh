@@ -258,6 +258,16 @@ tasks.register('glRegistryTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc13: GL name spaces, Satin still-depth guard, image trace, deferred free of never-used images. ./gradlew imageLifetimeTest
+tasks.register('imageLifetimeTest', JavaExec) {
+	group = 'verification'
+	description = 'Image lifetimes: raw-GL vs GlStateManager names, Satin x GPUBooster leak guard, imageTrace, never-used deferred free'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.ImageLifetimeTest'
+	jvmArgs '-ea', '-Diroh.imageTrace=satin', '-Dverbose=' + (project.findProperty('verbose') ?: 'false')
+}
+
 // rc8: device-memory policy state machine. ./gradlew memoryBudgetTest; last line "# memorybudget PASS n/n".
 tasks.register('memoryBudgetTest', JavaExec) {
 	group = 'verification'
