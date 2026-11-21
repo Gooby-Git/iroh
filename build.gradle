@@ -217,7 +217,7 @@ tasks.register('builtinShaderTest', JavaExec) {
 }
 
 // rc3r2: the api members elemore-core's and Polaris' IrohBridge look up exist in the built jar with exact descriptors.
-// Bridge jars read from build/p16b at test time. ./gradlew bridgeLinkTest [-Piroh=jar] [-Pbridges=dir]; last line "# bridgelink PASS n/n". Needs ./build.sh first.
+// Bridge jars: newest per mod in -Pbridges=dir (default ~/Projects/iroh-wt-resync/build/p113b, else build/p16b); lookups discovered from IrohBridge constant pools. ./gradlew bridgeLinkTest [-Piroh=jar] [-Pbridges=dir]; last line "# bridgelink PASS n/n". Needs ./build.sh first.
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
