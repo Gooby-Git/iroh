@@ -170,6 +170,7 @@ public class Renderer {
         // holds the semaphore until that image is re-acquired, so reusing it by frame index re-signals a semaphore
         // the swapchain may still wait on (validation: "being signaled by VkQueue ... may still be in use by VkSwapchainKHR").
         int imageCount = swapChain.getImagesNum();
+        acquiredPending = false; // rc5: fresh, unsignaled semaphores
         imageAvailableSemaphores = new ArrayList<>(framesNum);
         renderFinishedSemaphores = new ArrayList<>(imageCount);
         inFlightFences = new ArrayList<>(framesNum);
@@ -263,6 +264,7 @@ public class Renderer {
 
     private void beginFrame0() {
         dev.elemore.iroh.diag.RenderWatchdog.heartbeat(); // rc3r2 (td-3bc9d5): stall diagnostics
+        dev.elemore.iroh.diag.LoadWatch.tick(); // rc5 (td-30c049): evidence if a world load hangs
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.push("Frame_fence");
@@ -296,6 +298,12 @@ public class Renderer {
 
         vkWaitForFences(device, inFlightFences.get(currentFrame), true, VUtil.UINT64_MAX);
 
+        // Iroh (rc5, td-08dc9f): the previous frame acquired a swapchain image but never submitted (an exception between
+        // acquire and submit, e.g. the td-1cb256 OutOfMemoryError in endFrame). Its acquire semaphore is still signaled;
+        // acquiring with it again is invalid ("semaphore still signaled"). Replace that slot's semaphore.
+        if (acquiredPending)
+            recoverUnsubmittedAcquire();
+
         p.pop();
         p.push("Begin_rendering");
 
@@ -325,6 +333,7 @@ public class Renderer {
             }
 
             imageIndex = pImageIndex.get(0);
+            acquiredPending = true;
 
             this.beginRenderPass(stack);
         }
@@ -388,6 +397,30 @@ public class Renderer {
         p.push("Post_rendering");
     }
 
+    /** Iroh (rc5): a swapchain image was acquired with imageAvailableSemaphores[currentFrame] and not yet submitted. */
+    private boolean acquiredPending;
+    private static boolean loggedAcquireRecovery;
+
+    private void recoverUnsubmittedAcquire() {
+        acquiredPending = false;
+        if (!loggedAcquireRecovery) {
+            loggedAcquireRecovery = true;
+            Initializer.LOGGER.warn("Iroh: the last frame acquired a swapchain image but was never submitted (an error in the frame); "
+                    + "recreating its acquire semaphore (logged once)");
+        }
+        vkDeviceWaitIdle(device);
+        // the frame that did not submit did not advance currentFrame, so its semaphore is this slot's
+        long old = imageAvailableSemaphores.get(currentFrame);
+        try (MemoryStack stack = stackPush()) {
+            VkSemaphoreCreateInfo info = VkSemaphoreCreateInfo.calloc(stack).sType$Default();
+            LongBuffer p = stack.mallocLong(1);
+            if (vkCreateSemaphore(device, info, null, p) == VK_SUCCESS) {
+                vkDestroySemaphore(device, old, null);
+                imageAvailableSemaphores.set(currentFrame, p.get(0));
+            }
+        }
+    }
+
     private void submitFrame() {
         if (swapChainUpdate)
             return;
@@ -410,6 +443,7 @@ public class Renderer {
                 vkResetFences(device, inFlightFences.get(currentFrame));
                 throw new RuntimeException("Failed to submit draw command buffer: %s".formatted(VkResult.decode(vkResult)));
             }
+            acquiredPending = false; // rc5: the submit waits the acquire semaphore
 
             VkPresentInfoKHR presentInfo = VkPresentInfoKHR.calloc(stack);
             presentInfo.sType(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
