@@ -149,6 +149,7 @@ tasks.register('apiTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.apitest.ApiTest'
+	jvmArgs '-ea'
 }
 
 // P1-10 (RQ-14): resource-pack overrides of vanilla core shaders, offline. ./gradlew coreOverrideTest [-Ppack=dir];
