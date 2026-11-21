@@ -190,6 +190,7 @@ public class Vulkan {
 
         try {
             MemoryManager.getInstance().freeAllBuffers();
+            MemoryManager.getInstance().freeLeftovers(); // rc5 (td-dcbf58)
         } catch (Exception e) {
             e.printStackTrace();
         }

@@ -43,25 +43,30 @@ public class ImageUploadHelper {
         // this frame) sample it in that layout. Without this, a texture uploaded after its last draw of the frame
         // (WaterMedia's video frame arriving mid-frame) stayed in TRANSFER_DST at submit: validation
         // "expects SHADER_READ_ONLY_OPTIMAL, current TRANSFER_DST_OPTIMAL".
-        if (!this.touched.isEmpty()) {
-            var handle = this.currentCmdBuffer.getHandle();
-            for (int i = 0, n = this.touched.size(); i < n; i++) {
-                VulkanImage image = this.touched.get(i);
-                if (image.isUploadOwned() && image.getId() != 0L
-                        && image.getCurrentLayout() == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-                        && (image.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
-                    image.readOnlyLayoutBatched(this.barriers, handle);
-                image.clearUploadOwned();
+        try {
+            if (!this.touched.isEmpty()) {
+                var handle = this.currentCmdBuffer.getHandle();
+                for (int i = 0, n = this.touched.size(); i < n; i++) {
+                    VulkanImage image = this.touched.get(i);
+                    if (image.isUploadOwned() && image.getId() != 0L
+                            && image.getCurrentLayout() == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                            && (image.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
+                        image.readOnlyLayoutBatched(this.barriers, handle);
+                    image.clearUploadOwned();
+                }
+                this.barriers.flush(handle, net.vulkanmod.vulkan.texture.ImageBarrierBatch.VULKAN);
             }
-            this.barriers.flush(handle, net.vulkanmod.vulkan.texture.ImageBarrierBatch.VULKAN);
+        } finally {
+            // rc5 (td-08dc9f): even if recording the transitions throws, submit what is recorded now and drop the list.
+            // The old path left a half-processed list and an unsubmitted buffer that was submitted frames later, after
+            // textures it references had been destroyed ("command buffer invalid: Texture ... destroyed").
             this.touched.clear();
             this.touchedSet.clear();
+            CommandPool.CommandBuffer cb = this.currentCmdBuffer;
+            this.currentCmdBuffer = null;
+            queue.submitCommands(cb);
+            Synchronization.INSTANCE.addCommandBuffer(cb);
         }
-
-        long fence = queue.submitCommands(this.currentCmdBuffer);
-        Synchronization.INSTANCE.addCommandBuffer(this.currentCmdBuffer);
-
-        this.currentCmdBuffer = null;
     }
 
     public CommandPool.CommandBuffer getOrStartCommandBuffer() {

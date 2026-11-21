@@ -603,13 +603,15 @@ public class VulkanImage {
         if (this.id == 0L)
             return;
 
-        MemoryManager.freeImage(this.id, this.allocation);
-
         vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null);
 
         if (this.levelImageViews != null)
             Arrays.stream(this.levelImageViews).forEach(
-                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null));
+                    // Iroh (rc5, td-dcbf58): destroy each level view (the base destroyed mainImageView again for every
+                    // level: a double destroy, and every level view leaked)
+                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), imageView, null));
+
+        MemoryManager.freeImage(this.id, this.allocation); // rc5: views first, then the image
 
         this.id = 0L;
     }
