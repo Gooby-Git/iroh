@@ -34,6 +34,8 @@ public class VulkanImage {
     public final String name;
     /** rc9: owner key for the growth monitor: creator + calling mod (digits folded), e.g. "GlTexture depth by vista". */
     public String owner = "?";
+    /** rc13: followed by -Diroh.imageTrace (creation, delete request, deferred free, destroy). */
+    public boolean traced;
     public final int format;
     public final int aspect;
     public final int mipLevels;
@@ -669,6 +671,7 @@ public class VulkanImage {
     }
 
     public void doFree() {
+        if (this.traced) dev.elemore.iroh.diag.ImageTrace.destroyed(this);
         if (this.id == 0L)
             return;
 
