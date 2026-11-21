@@ -71,6 +71,10 @@ public final class ShaderHarness {
         Map<String, Layer> builtinPacks = new LinkedHashMap<>();
 
         layers.add(vanillaLayer());
+        if (opt.containsKey("pack")) {
+            packMode(opt.get("pack"), layers.get(0), mode, show, outFile);
+            return;
+        }
         List<Path> jars;
         try (Stream<Path> s = Files.list(mods)) {
             jars = s.filter(p -> p.toString().endsWith(".jar")).sorted().toList();
@@ -187,6 +191,107 @@ public final class ShaderHarness {
         if (detail.length() > 0)
             System.out.print(detail);
         System.err.printf("shader harness: %d layers, %.1f s%n", layers.size(), (System.nanoTime() - t0) / 1e9);
+    }
+
+    /**
+     * RQ-14 test bed (P1-11 item 4): {@code --pack=dir[,dir...]} takes resource pack folders (or zips) that carry
+     * {@code assets/<ns>/shaders/...} overrides, lays them over vanilla (later wins, as the resource manager does) and
+     * reports for every core shader, post program and post chain the pack provides whether the P1-2a translator
+     * converts and compiles it, and whether the pack changes the vanilla GLSL or only the JSON. Read-only. The
+     * game does not load overrides yet; this only tells the later override card what would convert.
+     * Line: {@code PACK PASS|FAIL <kind> <id> <pack> [stage] message | files: a.vsh b.fsh ...}.
+     */
+    private static void packMode(String arg, Layer vanilla, String mode, String show, String outFile) throws Exception {
+        List<Layer> layers = new ArrayList<>();
+        layers.add(vanilla);
+        List<Layer> packs = new ArrayList<>();
+        for (String a : arg.split(",")) {
+            Path p = Paths.get(a.strip());
+            Layer l = Files.isDirectory(p) ? readDirPack(p.getFileName().toString(), p)
+                    : readZipPack(p.getFileName().toString(), Files.readAllBytes(p));
+            packs.add(l);
+            layers.add(l);
+        }
+        Map<String, Layer> winner = new TreeMap<>();
+        for (Layer l : layers)
+            for (String path : l.files.keySet())
+                winner.put(path, l);
+        ShaderSources sources = new ShaderSources() {
+            @Override
+            public String read(String id) {
+                Layer l = winner.get(toPath(id));
+                return l == null ? null : new String(l.files.get(toPath(id)), StandardCharsets.UTF_8);
+            }
+
+            @Override
+            public String packOf(String id) {
+                Layer l = winner.get(toPath(id));
+                return l == null ? "?" : l.pack;
+            }
+        };
+        StringBuilder detail = new StringBuilder();
+        List<String> lines = new ArrayList<>();
+        for (Layer pk : packs) {
+            for (String path : new TreeSet<>(pk.files.keySet())) {
+                if (winner.get(path) != pk)
+                    continue; // shadowed by a later pack
+                Matcher m;
+                String res = null;
+                if ((m = CORE_JSON.matcher(path)).matches()) {
+                    String ns = m.group(1), name = m.group(2);
+                    String id = ns.equals("minecraft") ? name : ns + ":" + name;
+                    res = runOne("core", id, pk, path, sources, mode, show, detail);
+                    res = packRow(res, pk, path, vanilla, sources, "core");
+                } else if ((m = PROGRAM_JSON.matcher(path)).matches()) {
+                    res = packRow(runOne("program", m.group(1) + ":" + m.group(2), pk, path, sources, mode, show, detail),
+                            pk, path, vanilla, sources, "program");
+                } else if ((m = POST_JSON.matcher(path)).matches()) {
+                    res = packRow(checkChain(m.group(1) + ":" + m.group(2), pk, path, winner), pk, path, vanilla, sources, "post");
+                }
+                if (res != null)
+                    lines.add("PACK " + res);
+            }
+            // stray GLSL / include files the pack ships without a JSON of its own
+            for (String path : new TreeSet<>(pk.files.keySet()))
+                if ((path.endsWith(".vsh") || path.endsWith(".fsh") || path.endsWith(".glsl"))
+                        && !pk.files.containsKey(path.replaceAll("\\.(vsh|fsh|glsl)$", ".json"))
+                        && !path.contains("/include/") && winner.get(path) == pk)
+                    lines.add("PACK NOTE   " + pk.pack + " " + path + " has no JSON in the same pack (a JSON elsewhere may use it)");
+            for (String path : new TreeSet<>(pk.files.keySet()))
+                if (path.contains("/shaders/include/") && winner.get(path) == pk)
+                    lines.add("PACK NOTE   " + pk.pack + " " + path + (vanilla.files.containsKey(path)
+                            ? " overrides a vanilla include: every shader that imports it changes (not re-checked here)"
+                            : " is a new include (used by the shaders above that import it)"));
+        }
+        long fail = lines.stream().filter(l -> l.startsWith("PACK FAIL")).count();
+        long pass = lines.stream().filter(l -> l.startsWith("PACK PASS")).count();
+        List<String> report = new ArrayList<>();
+        report.add("# Iroh shader harness, pack mode, packs=" + arg + ", mode=" + mode);
+        report.addAll(lines);
+        report.add("# pack total " + (pass + fail) + "  PASS " + pass + "  FAIL " + fail);
+        String text = String.join("\n", report) + "\n";
+        if (outFile != null)
+            Files.writeString(Paths.get(outFile), text);
+        System.out.print(text);
+        if (detail.length() > 0)
+            System.out.print(detail);
+    }
+
+    /** Appends which of the shader's files the pack replaces, and whether the GLSL differs from vanilla's. */
+    private static String packRow(String row, Layer pk, String jsonPath, Layer vanilla, ShaderSources sources, String kind) {
+        String base = jsonPath.substring(0, jsonPath.length() - ".json".length());
+        List<String> files = new ArrayList<>();
+        for (String ext : new String[]{".vsh", ".fsh"}) {
+            String f = base + ext;
+            if (pk.files.containsKey(f)) {
+                byte[] v = vanilla.files.get(f);
+                files.add(f.substring(f.lastIndexOf('/') + 1) + (v == null ? " (new)"
+                        : java.util.Arrays.equals(v, pk.files.get(f)) ? " (same as vanilla)" : " (changed)"));
+            }
+        }
+        boolean json = vanilla.files.containsKey(jsonPath);
+        return row + " | json " + (json ? (java.util.Arrays.equals(vanilla.files.get(jsonPath), pk.files.get(jsonPath))
+                ? "same as vanilla" : "changed") : "new") + (files.isEmpty() ? "" : "; files: " + String.join(" ", files));
     }
 
     private static String toPath(String id) {
