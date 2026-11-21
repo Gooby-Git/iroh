@@ -143,6 +143,18 @@ tasks.register('apiTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.apitest.ApiTest'
 }
 
+// P1-10 (RQ-14): resource-pack overrides of vanilla core shaders, offline. ./gradlew coreOverrideTest [-Ppack=dir];
+// last line "# coreoverride PASS n/n".
+tasks.register('coreOverrideTest', JavaExec) {
+	group = 'verification'
+	description = 'Which core shaders a pack stack overrides, and that they convert from the pack'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shadertest.CoreOverrideTest'
+	jvmArgs '-Xmx1g'
+	if (project.hasProperty('pack')) args project.property('pack')
+}
+
 // Headless test of config/iroh.json and the pack migration (P1-6). ./gradlew irohConfigTest [-Pconfig=dir]; last line "# configtest PASS n/n"
 tasks.register('irohConfigTest', JavaExec) {
 	group = 'verification'

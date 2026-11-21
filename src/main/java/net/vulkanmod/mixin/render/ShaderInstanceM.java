@@ -95,7 +95,7 @@ public class ShaderInstanceM implements ShaderMixed {
 
             if (config == null) {
                 createLegacyShader(resourceProvider, format);
-            } else {
+            } else if (!createPackOverride(resourceProvider, format)) {
                 createPipeline(configName, format, config);
             }
         } catch (Throwable t) {
@@ -324,14 +324,58 @@ public class ShaderInstanceM implements ShaderMixed {
         this.pipeline = pipeline;
     }
 
+    /**
+     * Iroh (P1-10, RQ-14): a resource pack or mod overrides this vanilla core shader (its json, a stage or an include;
+     * see CoreOverrides): build it from the resource manager's sources through the translator, with the vertex format
+     * vanilla passed and the samplers / uniforms of the winning json (vanilla already parsed it into this instance).
+     * Returns false to keep Iroh's built-in: nothing overridden, or the conversion failed (one log line + ShaderFallbacks).
+     * Runs on every shader reload (F3+T, pack list change), so pack order and removal behave as in vanilla.
+     */
     @Unique
-    private void createLegacyShader(ResourceProvider resourceProvider, VertexFormat format) {
+    private boolean createPackOverride(ResourceProvider resourceProvider, VertexFormat format) {
         ShaderSources sources = sourcesOf(resourceProvider);
+        dev.elemore.iroh.shader.CoreOverrides.Hit ov;
+        try {
+            ov = dev.elemore.iroh.shader.CoreOverrides.find(sources, this.name, this.vertexName, this.fragmentName);
+        } catch (Throwable t) {
+            return false;
+        }
+        if (ov == null)
+            return false;
+
+        ShaderConversion.Result result = convertFromSources(sources, format);
+        if (!result.ok) {
+            ShaderFallbacks.record(this.name, ov.pack(), result.stage, result.shortMessage());
+            Initializer.LOGGER.warn("Iroh: core shader {} overridden by pack {} ({}) could not be converted ({}: {}); using Iroh's built-in",
+                    this.name, ov.pack(), ov.file(), result.stage, result.shortMessage());
+            return false;
+        }
+        try {
+            createFromResult(result, format);
+        } catch (Throwable t) {
+            ShaderFallbacks.record(this.name, ov.pack(), "pipeline", String.valueOf(t));
+            Initializer.LOGGER.warn("Iroh: core shader {} overridden by pack {} converted but no pipeline ({}); using Iroh's built-in",
+                    this.name, ov.pack(), t.toString());
+            this.legacy = false;
+            this.doUniformUpdate = false;
+            return false;
+        }
+        Initializer.LOGGER.info("Iroh: core shader {} is overridden by pack {} ({}); using the pack's GLSL", this.name, ov.pack(), ov.file());
+        return true;
+    }
+
+    @Unique
+    private ShaderConversion.Result convertFromSources(ShaderSources sources, VertexFormat format) {
         ShaderConversion.Input input = new ShaderConversion.Input(ShaderConversion.Kind.CORE, this.name,
                 this.vertexName, this.fragmentName, new ArrayList<>(this.samplerNames),
                 new java.util.LinkedHashSet<>(this.uniformMap.keySet()), format.getElementAttributeNames());
+        return ShaderConversion.convert(input, sources, true);
+    }
 
-        ShaderConversion.Result result = ShaderConversion.convert(input, sources, true);
+    @Unique
+    private void createLegacyShader(ResourceProvider resourceProvider, VertexFormat format) {
+        ShaderSources sources = sourcesOf(resourceProvider);
+        ShaderConversion.Result result = convertFromSources(sources, format);
         if (!result.ok) {
             ShaderFallbacks.record(this.name, result.pack, result.stage, result.shortMessage());
             result = ShaderConversion.fallback(this.name);
