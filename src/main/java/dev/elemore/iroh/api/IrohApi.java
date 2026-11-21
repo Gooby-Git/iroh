@@ -24,12 +24,15 @@ import java.util.function.Predicate;
 public final class IrohApi {
     /**
      * Version of this API. Inlined into callers at compile time, so use {@link #apiVersion()} to ask the running Iroh.
-     * 1 = P1-6b (2026-11-20). 2 = P1-10: {@link #registerShadeHook}.
+     * 1 = P1-6b (2026-11-20). 2 = P1-10: {@link #registerShadeHook}. 3 = P1-13a: {@link IrohFrame}, {@link IrohSky},
+     * {@link IrohDraw}, {@link IrohShaders}, {@link IrohTextures}, {@link #limits()}, {@link #heldLightSource}.
      */
-    public static final int API_VERSION = 2;
+    public static final int API_VERSION = 3;
 
     private static final Set<Capability> CAPABILITIES = Collections.unmodifiableSet(
-            EnumSet.of(Capability.SECTION_VISIBILITY, Capability.FACE_CULL_VETO, Capability.LEAF_CULLING));
+            EnumSet.of(Capability.SECTION_VISIBILITY, Capability.FACE_CULL_VETO, Capability.LEAF_CULLING,
+                    Capability.FRAME_HOOKS, Capability.SKY_HOOKS, Capability.IMMEDIATE_DRAW, Capability.OWNER_SHADERS,
+                    Capability.DYNAMIC_TEXTURES));
 
     private IrohApi() {
     }
@@ -179,5 +182,30 @@ public final class IrohApi {
      */
     public static void registerHeldLightProvider(HeldLightProvider provider) {
         HeldLights.register(provider);
+    }
+
+    // ------------------------------------------------------------------------------------------------- api 3
+
+    /**
+     * The device's limits (api 3). Render thread after the window exists; null before the Vulkan device is up. Cheap
+     * (fields of a cached record).
+     */
+    public static Limits limits() {
+        return dev.elemore.iroh.apiimpl.DeviceLimits.get();
+    }
+
+    /**
+     * Held-light read path (api 3): the stack whose light {@code hand} gives off after every registered
+     * {@link HeldLightProvider} ran. What the PACK / RT held-light code will call; queryable now so owner mods can test
+     * their providers. Render thread. Cost: one call per provider.
+     */
+    public static net.minecraft.world.item.ItemStack heldLightSource(net.minecraft.world.entity.player.Player player,
+                                                                       net.minecraft.world.InteractionHand hand) {
+        return HeldLights.lightSource(player, hand, player.getItemInHand(hand));
+    }
+
+    /** Number of registered held-light providers. Any thread. */
+    public static int heldLightProviderCount() {
+        return HeldLights.count();
     }
 }

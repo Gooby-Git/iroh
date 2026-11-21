@@ -31,6 +31,13 @@ public abstract class LevelRendererM {
 
     @Inject(method = "renderClouds", at = @At("HEAD"), cancellable = true)
     public void renderClouds(PoseStack poseStack, Matrix4f modelView, Matrix4f projection, float partialTicks, double camX, double camY, double camZ, CallbackInfo ci) {
+        // Iroh P1-13a: IrohSky. A suppressor or a claiming override replaces the clouds; owner mods no longer need a
+        // priority race against this injector (third-party mixins keep the priority rule).
+        if (dev.elemore.iroh.apiimpl.SkyHooks.cloudsSuppressed(this.level) || dev.elemore.iroh.apiimpl.SkyHooks.drawCloudOverride()) {
+            Profiler.getMainProfiler().pop();
+            ci.cancel();
+            return;
+        }
         if (this.cloudRenderer == null) {
             this.cloudRenderer = new CloudRenderer();
         }
@@ -38,6 +45,13 @@ public abstract class LevelRendererM {
         this.cloudRenderer.renderClouds(this.level, poseStack, modelView, projection, this.ticks, partialTicks, camX, camY, camZ);
         Profiler.getMainProfiler().pop();
         ci.cancel();
+    }
+
+    /** Iroh P1-13a: IrohSky.overrideWeather; the first override that draws replaces vanilla rain and snow. */
+    @Inject(method = "renderSnowAndRain", at = @At("HEAD"), cancellable = true)
+    private void iroh$weatherOverride(LightTexture lightTexture, float partialTick, double camX, double camY, double camZ, CallbackInfo ci) {
+        if (dev.elemore.iroh.apiimpl.SkyHooks.drawWeatherOverride())
+            ci.cancel();
     }
 
     @Inject(method = "allChanged", at = @At("RETURN"))

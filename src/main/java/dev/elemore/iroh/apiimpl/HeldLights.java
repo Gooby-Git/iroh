@@ -44,4 +44,8 @@ public final class HeldLights {
         }
         return s;
     }
+
+    public static int count() {
+        return providers.length;
+    }
 }

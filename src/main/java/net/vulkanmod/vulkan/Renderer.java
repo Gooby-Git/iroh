@@ -306,12 +306,20 @@ public class Renderer {
         }
 
         recordingCmds = true;
+        // Iroh (P1-13a): GPU timestamps start outside the render pass
+        if (dev.elemore.iroh.apiimpl.FrameProfiler.ON)
+            dev.elemore.iroh.apiimpl.FrameProfiler.frameStart(commandBuffer, currentFrame);
         // Iroh (td-4a9be3): a new frame command buffer; uses recorded in the previous one have executed or will
         // execute before anything recorded from now on (see VulkanImage.uploadOwned / frameUse).
         net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
         mainPass.begin(commandBuffer, stack);
 
         resetDynamicState(commandBuffer);
+
+        // Iroh (P1-13a): frame hooks, FRAME_BEGIN (main target bound, nothing drawn yet)
+        dev.elemore.iroh.apiimpl.FrameHooks.beginFrame(Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false),
+                swapChain.getWidth(), swapChain.getHeight());
+        dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.FRAME_BEGIN);
     }
 
     public void endFrame() {
@@ -332,6 +340,9 @@ public class Renderer {
         waitFences();
 
         submitFrame();
+
+        // Iroh (P1-13a): AFTER_PRESENT (no command buffer is recording; CPU-side work only)
+        dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.AFTER_PRESENT);
 
         p.pop();
         p.push("Post_rendering");
