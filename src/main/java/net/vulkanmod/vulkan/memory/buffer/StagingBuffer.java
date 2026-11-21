@@ -74,6 +74,7 @@ public class StagingBuffer extends Buffer {
         submitAllConsumers();
         Synchronization.INSTANCE.waitFences();
         net.vulkanmod.vulkan.Vulkan.getStagingBuffer().reset();
+        ImageUploadHelper.INSTANCE.resetSpill(); // rc6: its readers (upload buffers) were just waited
     }
 
     private static void submitAllConsumers() {
@@ -111,6 +112,12 @@ public class StagingBuffer extends Buffer {
         this.usedBytes += size;
     }
 
+    /** rc6: whether {@code size} bytes fit after aligning to {@code alignment}, without flushing. */
+    public boolean fits(long size, int alignment) {
+        long aligned = Util.align(this.usedBytes, Math.max(1, alignment));
+        return aligned + size <= this.bufferSize;
+    }
+
     public void align(int alignment) {
         long alignedOffset = Util.align(usedBytes, alignment);
 
@@ -124,6 +131,14 @@ public class StagingBuffer extends Buffer {
 
     private void submitUploads() {
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.stagingOverflows++;
+        // rc6: the spill block's readers are submitted and waited here too
+        if (this.shared) {
+            submitAllConsumers();
+            Synchronization.INSTANCE.waitFences();
+            this.reset();
+            ImageUploadHelper.INSTANCE.resetSpill();
+            return;
+        }
         // Submit and wait all recorded uploads before resetting the buffer.
         // Iroh (R-3): includes IndirectBuffer's pending transfer buffer, which the base left unsubmitted here (its
         // copy would then read bytes the next writer had already overwritten).

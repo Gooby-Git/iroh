@@ -23,6 +23,102 @@ public class ImageUploadHelper {
     /** Iroh (rc5, td-1cb256): all read-only transitions of one submit as one barrier call, heap array reused. */
     private final net.vulkanmod.vulkan.texture.ImageBarrierBatch barriers = new net.vulkanmod.vulkan.texture.ImageBarrierBatch();
 
+    // ---- rc6: copy regions batched per (image, staging buffer); spill staging instead of a mid-frame stall
+
+    private VulkanImage pendingImage;
+    private long pendingBuffer;
+    private int pendingCount;
+    private org.lwjgl.vulkan.VkBufferImageCopy.Buffer regions = org.lwjgl.vulkan.VkBufferImageCopy.calloc(64);
+    /** Upload copies recorded as vkCmdCopyBufferToImage calls (for -Diroh.uploadStats). */
+    public long copyCommands;
+
+    private static final long SPILL_BLOCK = 32L << 20;
+    private net.vulkanmod.vulkan.memory.buffer.StagingBuffer spill;
+
+    /**
+     * rc6: staging memory for an async texture upload of {@code size} bytes, never triggering a flush: the shared per-frame
+     * staging buffer if it has room, else a spill block (32 MB, or larger for a larger upload) that lives until this
+     * frame's upload fence. The base submitted and waited for every consumer of the shared buffer when it overflowed
+     * (3 full stalls at a pack-world join). Render thread.
+     */
+    public net.vulkanmod.vulkan.memory.buffer.StagingBuffer stagingFor(long size, int alignment) {
+        var shared = net.vulkanmod.vulkan.Vulkan.getStagingBuffer();
+        if (shared.fits(size, alignment))
+            return shared;
+        if (spill == null || !spill.fits(size, alignment)) {
+            if (spill != null) {
+                flushPendingCopies(); // regions may point into the old spill block; record them before it is retired
+                spill.scheduleFree();
+            }
+            spill = new net.vulkanmod.vulkan.memory.buffer.StagingBuffer(Math.max(SPILL_BLOCK, size + alignment));
+            if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.spillBlocks++;
+        }
+        return spill;
+    }
+
+    /** rc6: called after the frame's upload fences were waited (StagingBuffer.flushConsumersAndReset): the spill block is free again. */
+    public void resetSpill() {
+        if (spill != null)
+            spill.reset();
+    }
+
+    /**
+     * rc6: queue one buffer-to-image copy. Consecutive copies into the same image from the same staging buffer (an animated
+     * sprite's mip chain, an atlas's sprites in one tick, a burst of DynamicTexture uploads) become ONE
+     * vkCmdCopyBufferToImage with many regions. Pending regions are recorded before anything else is recorded into the
+     * upload buffer ({@link #getOrStartCommandBuffer}) and at submit, so command order is unchanged.
+     */
+    public void queueCopy(VulkanImage image, long buffer, long bufferOffset, int mipLevel, int width, int height, int x, int y, int rowLength) {
+        if (image != this.pendingImage || buffer != this.pendingBuffer) {
+            flushPendingCopies();
+            this.pendingImage = image;
+            this.pendingBuffer = buffer;
+            // layout change recorded now, before this image's first pending region
+            try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+                image.transitionImageLayout(stack, startCommandBuffer().getHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            }
+        }
+        if (this.pendingCount == this.regions.capacity()) {
+            var bigger = org.lwjgl.vulkan.VkBufferImageCopy.calloc(this.regions.capacity() * 2);
+            org.lwjgl.system.MemoryUtil.memCopy(this.regions.address(), bigger.address(), (long) this.pendingCount * org.lwjgl.vulkan.VkBufferImageCopy.SIZEOF);
+            this.regions.free();
+            this.regions = bigger;
+        }
+        var r = this.regions.get(this.pendingCount++);
+        r.bufferOffset(bufferOffset).bufferRowLength(rowLength).bufferImageHeight(height);
+        r.imageSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, 0, 1);
+        r.imageOffset().set(x, y, 0);
+        r.imageExtent().set(width, height, 1);
+    }
+
+    /** Records the pending regions (one copy command). */
+    public void flushPendingCopies() {
+        if (this.pendingCount == 0) {
+            this.pendingImage = null;
+            return;
+        }
+        if (this.pendingImage.getId() == 0L) { // destroyed while its copies were pending: drop them, never copy into a null handle
+            this.pendingCount = 0;
+            this.pendingImage = null;
+            return;
+        }
+        var cb = startCommandBuffer().getHandle();
+        net.vulkanmod.vulkan.memory.buffer.StagingBuffer.checkConsumer(cb, this.pendingBuffer); // Iroh R-3
+        vkCmdCopyBufferToImage(cb, this.pendingBuffer, this.pendingImage.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                org.lwjgl.vulkan.VkBufferImageCopy.create(this.regions.address(), this.pendingCount));
+        this.copyCommands++;
+        this.pendingCount = 0;
+        this.pendingImage = null;
+        this.pendingBuffer = 0;
+    }
+
+    private CommandPool.CommandBuffer startCommandBuffer() {
+        if (this.currentCmdBuffer == null) {
+            this.currentCmdBuffer = this.queue.beginCommands();
+        }
+        return this.currentCmdBuffer;
+    }
+
     public ImageUploadHelper() {
         queue = DeviceManager.getGraphicsQueue();
     }
@@ -37,6 +133,7 @@ public class ImageUploadHelper {
         if (this.currentCmdBuffer == null) {
             return;
         }
+        flushPendingCopies(); // rc6
 
         // Iroh (td-4a9be3): this buffer executes before the frame command buffer. Every image it left in
         // TRANSFER_DST goes back to SHADER_READ_ONLY here, because the frame's draws (recorded earlier or later
@@ -72,12 +169,10 @@ public class ImageUploadHelper {
         }
     }
 
+    /** Anything recording into the upload buffer goes through here: pending copies are recorded first (rc6). */
     public CommandPool.CommandBuffer getOrStartCommandBuffer() {
-        if (this.currentCmdBuffer == null) {
-            this.currentCmdBuffer = this.queue.beginCommands();
-        }
-
-        return this.currentCmdBuffer;
+        flushPendingCopies();
+        return startCommandBuffer();
     }
 
     public CommandPool.CommandBuffer getCommandBuffer() {
