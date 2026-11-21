@@ -6,9 +6,8 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkCommandBuffer;
 
 /**
- * Frozen API: AsyncParticles' VulkanMod backend calls {@link #rebindMainTarget()} through
- * {@code Renderer.getMainPass()} (OUTLINE.md "Mod id decision"). Iroh (R-1) only ADDS default methods,
- * which keeps the interface source- and binary-compatible for callers and implementers.
+ * Main pass interface. Was frozen for AsyncParticles' VulkanMod backend until 2026-11-21, when the owner removed
+ * AsyncParticles from the Iroh pack; Iroh internals may change it now (our own mods use dev.elemore.iroh.api).
  */
 public interface MainPass {
 

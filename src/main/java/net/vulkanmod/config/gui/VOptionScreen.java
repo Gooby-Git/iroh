@@ -10,6 +10,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FormattedCharSequence;
 import dev.elemore.iroh.config.IrohOptions;
+import dev.elemore.iroh.config.OptionScreenLayout;
 import net.vulkanmod.Initializer;
 import org.lwjgl.glfw.GLFW;
 import net.vulkanmod.config.gui.widget.VAbstractWidget;
@@ -31,9 +32,7 @@ public class VOptionScreen extends Screen {
 
     private int currentListIdx = 0;
 
-    private int tooltipX;
-    private int tooltipY;
-    private int tooltipWidth;
+    private OptionScreenLayout.Layout layout;
 
     private VButtonWidget aboutButton;
 
@@ -65,31 +64,15 @@ public class VOptionScreen extends Screen {
     protected void init() {
         this.addPages();
 
-        int top = 40;
-        int bottom = 60;
         int itemHeight = 20;
 
-        int leftMargin = 100;
-//        int listWidth = (int) (this.width * 0.65f);
-        int listWidth = Math.min((int) (this.width * 0.65f), 420);
-        int listHeight = this.height - top - bottom;
+        int doneW = this.font.width(CommonComponents.GUI_DONE) + 20;
+        int applyW = this.font.width(Component.translatable("iroh.buttons.apply")) + 20;
+        int applyX = this.width - 20 - doneW - 5 - applyW;
+        this.layout = OptionScreenLayout.compute(this.width, this.height, applyX);
+        var list = this.layout.list();
 
-        this.buildLists(leftMargin, top, listWidth, listHeight, itemHeight);
-
-        int x = leftMargin + listWidth + 10;
-//        int width = Math.min(this.width - this.tooltipX - 10, 200);
-        int width = this.width - x - 10;
-        int y = 50;
-
-        if (width < 200) {
-            x = 100;
-            width = listWidth;
-            y = this.height - bottom + 10;
-        }
-
-        this.tooltipX = x;
-        this.tooltipY = y;
-        this.tooltipWidth = width;
+        this.buildLists(list.x0(), list.y0(), list.width(), list.height(), itemHeight);
 
         buildPage();
 
@@ -236,7 +219,7 @@ public class VOptionScreen extends Screen {
         guiGraphics.drawString(this.font, Component.literal("Iroh"), 12 + size + 6, 8 + (size - 8) / 2, 0xFFFFFFFF, true);
 
         if (IrohOptions.restartPending()) {
-            guiGraphics.drawString(this.font, Component.translatable("iroh.screen.restartPending"), 100, this.height - 22, 0xFFFFD060, true);
+            guiGraphics.drawString(this.font, Component.translatable("iroh.screen.restartPending"), 100, 14, 0xFFFFD060, true);
         }
 
         VOptionList currentList = this.optionPages.get(this.currentListIdx).getOptionList();
@@ -244,10 +227,7 @@ public class VOptionScreen extends Screen {
         currentList.renderWidget(mouseX, mouseY);
         renderButtons(mouseX, mouseY);
 
-        List<FormattedCharSequence> list = getHoveredButtonTooltip(currentList, mouseX, mouseY);
-        if (list != null) {
-            this.renderTooltip(list, this.tooltipX, this.tooltipY);
-        }
+        renderHoveredTooltip(currentList, mouseX, mouseY);
     }
 
     public void renderButtons(int mouseX, int mouseY) {
@@ -261,7 +241,7 @@ public class VOptionScreen extends Screen {
         int width = GuiRenderer.getMaxTextWidth(this.font, list);
         int height = list.size() * 10;
         float intensity = 0.05f;
-        int color = ColorUtil.ARGB.pack(intensity, intensity, intensity, 0.6f);
+        int color = ColorUtil.ARGB.pack(intensity, intensity, intensity, 0.92f);
         GuiRenderer.fill(x - padding, y - padding, x + width + padding, y + height + padding, color);
 
 //        intensity = 0.4f;
@@ -276,18 +256,30 @@ public class VOptionScreen extends Screen {
         }
     }
 
-    private List<FormattedCharSequence> getHoveredButtonTooltip(VOptionList buttonList, int mouseX, int mouseY) {
-        VAbstractWidget widget = buttonList.getHoveredWidget(mouseX, mouseY);
+    /** Description panel (td-7a78ea): the tooltip of the hovered or keyboard-selected row, in the area the layout reserves for it. */
+    private void renderHoveredTooltip(VOptionList list, int mouseX, int mouseY) {
+        VAbstractWidget widget = list.getHoveredWidget(mouseX, mouseY);
         if (widget == null)
-            widget = buttonList.selectedWidget();
-        if (widget != null) {
-            var tooltip = widget.getTooltip();
-            if (tooltip == null)
-                return null;
+            widget = list.selectedWidget();
+        if (widget == null)
+            return;
+        Component tooltip = widget.getTooltip();
+        if (tooltip == null)
+            return;
 
-            return this.font.split(tooltip, this.tooltipWidth);
+        final Component text = tooltip;
+        List<FormattedCharSequence> lines = this.font.split(text, this.layout.innerWidth());
+        OptionScreenLayout.Box box = OptionScreenLayout.box(this.layout, maxWidth -> {
+            List<FormattedCharSequence> l = this.font.split(text, maxWidth);
+            return new OptionScreenLayout.Wrapped(GuiRenderer.getMaxTextWidth(this.font, l), l.size());
+        });
+        if (box.truncated()) { // longer than the panel: cut, never spill into the rows
+            lines = new ArrayList<>(lines.subList(0, Math.max(1, box.lines()) - 1));
+            lines.add(Component.literal("...").getVisualOrderText());
+        } else if (lines.size() > box.lines()) {
+            lines = lines.subList(0, box.lines());
         }
-        return null;
+        this.renderTooltip(lines, box.rect().x0() + OptionScreenLayout.PAD, box.rect().y0() + OptionScreenLayout.PAD);
     }
 
     private void updateState() {

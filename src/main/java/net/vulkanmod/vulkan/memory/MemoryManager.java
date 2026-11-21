@@ -155,7 +155,21 @@ public class MemoryManager {
             }
 
             buffers.putIfAbsent(buffer.getId(), buffer);
+
+            // Iroh (rc3, td-154ba3): with validation on, name every buffer "<type> <size> <creator>" so leak reports at
+            // vkDestroyDevice say what each leaked VkBuffer is.
+            if (net.vulkanmod.vulkan.Vulkan.ENABLE_VALIDATION_LAYERS)
+                net.vulkanmod.vulkan.Vulkan.setDebugLabel(stack, org.lwjgl.vulkan.VK10.VK_OBJECT_TYPE_BUFFER, buffer.getId(),
+                        buffer.getClass().getSimpleName() + " " + size + " " + creator());
         }
+    }
+
+    /** The first stack frame outside Iroh's memory classes (who asked for the buffer). Validation runs only. */
+    private static String creator() {
+        return StackWalker.getInstance().walk(s -> s
+                .filter(f -> !f.getClassName().startsWith("net.vulkanmod.vulkan.memory."))
+                .findFirst().map(f -> f.getClassName().substring(f.getClassName().lastIndexOf('.') + 1) + "." + f.getMethodName())
+                .orElse("?"));
     }
 
     public void createImage(int width, int height, int mipLevels, int format, int tiling, int usage,

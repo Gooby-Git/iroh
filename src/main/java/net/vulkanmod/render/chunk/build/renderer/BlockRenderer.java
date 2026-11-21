@@ -50,6 +50,42 @@ public class BlockRenderer extends AbstractBlockRenderContext {
         this.random = new SingleThreadedRandomSource(42L);
     }
 
+    /**
+     * Iroh (rc3, td-242adb): {@code -Diroh.faceTrace=x,y,z} logs every quad the mesher writes for that block, with its
+     * face, cull face, light-face, AO, layer, per-vertex packed light and brightness, and the culling verdict of all six
+     * faces, once per rebuild of its section. For comparing a block's mesh with what vanilla draws (powder snow walls).
+     */
+    private static final BlockPos FACE_TRACE = parseTrace(System.getProperty("iroh.faceTrace"));
+
+    private static BlockPos parseTrace(String v) {
+        if (v == null || v.isBlank()) return null;
+        try {
+            String[] p = v.split(",");
+            return new BlockPos(Integer.parseInt(p[0].trim()), Integer.parseInt(p[1].trim()), Integer.parseInt(p[2].trim()));
+        } catch (RuntimeException e) {
+            Initializer.LOGGER.warn("Iroh: bad -Diroh.faceTrace={} (want x,y,z)", v);
+            return null;
+        }
+    }
+
+    private void traceQuad(MutableQuadViewImpl quad, boolean ao, BlendMode blend) {
+        QuadLightData d = this.quadLightData;
+        Initializer.LOGGER.info("[iroh-face] {} {} nominal={} cull={} light={} ao={} blend={} layer={} lm=[{},{},{},{}] br=[{},{},{},{}] uv0=({},{}) y=[{},{},{},{}]",
+                this.blockPos.toShortString(), this.blockState, quad.nominalFace(), quad.cullFace(), quad.lightFace(), ao, blend,
+                this.renderType, Integer.toHexString(d.lm[0]), Integer.toHexString(d.lm[1]), Integer.toHexString(d.lm[2]), Integer.toHexString(d.lm[3]),
+                d.br[0], d.br[1], d.br[2], d.br[3], quad.u(0), quad.v(0), quad.y(0), quad.y(1), quad.y(2), quad.y(3));
+    }
+
+    private void traceFaces() {
+        StringBuilder sb = new StringBuilder();
+        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+            BlockPos adj = this.blockPos.relative(dir);
+            sb.append(dir).append('=').append(this.shouldRenderFace(dir) ? "draw" : "cull")
+              .append('(').append(this.renderRegion.getBlockState(adj).getBlock().getDescriptionId()).append(") ");
+        }
+        Initializer.LOGGER.info("[iroh-face] {} {} faces: {}", this.blockPos.toShortString(), this.blockState, sb);
+    }
+
     public void renderBlock(BlockState blockState, BlockPos blockPos, Vector3f pos) {
         this.pos = pos;
         this.blockPos = blockPos;
@@ -70,6 +106,8 @@ public class BlockRenderer extends AbstractBlockRenderContext {
 
         this.prepareForBlock(blockState, blockPos, model.useAmbientOcclusion());
 
+        if (FACE_TRACE != null && FACE_TRACE.equals(blockPos))
+            traceFaces();
         model.emitBlockQuads(renderRegion, blockState, blockPos, this.randomSupplier, this);
     }
 
@@ -87,6 +125,8 @@ public class BlockRenderer extends AbstractBlockRenderContext {
 
         colorizeQuad(quad, colorIndex);
         shadeQuad(quad, lightPipeline, emissive, vanillaShade);
+        if (FACE_TRACE != null && FACE_TRACE.equals(this.blockPos))
+            traceQuad(quad, ao, mat.blendMode());
         bufferQuad(terrainBuilder, this.pos, quad, this.quadLightData);
     }
 

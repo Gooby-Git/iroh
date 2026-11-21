@@ -17,6 +17,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class LevelRendererM {
 
     @Shadow private int ticks;
+    // Iroh (rc3, td-154ba3): vanilla 1.21.1 LevelRenderer.close() never closes its sky / star / dark-sky / cloud vertex
+    // buffers (GL frees them with the context). Under Vulkan they were the 4 VkBuffers vkDestroyDevice reported leaked
+    // (three created at boot, handles 0xcd-0xcf, plus one created later: Iroh's cloud VBO).
+    @Shadow private @Nullable com.mojang.blaze3d.vertex.VertexBuffer starBuffer;
+    @Shadow private @Nullable com.mojang.blaze3d.vertex.VertexBuffer skyBuffer;
+    @Shadow private @Nullable com.mojang.blaze3d.vertex.VertexBuffer darkBuffer;
+    @Shadow private @Nullable com.mojang.blaze3d.vertex.VertexBuffer cloudBuffer;
     @Shadow private @Nullable ClientLevel level;
 
     @Unique
@@ -47,4 +54,17 @@ public abstract class LevelRendererM {
         }
     }
 
+
+    /** Iroh (rc3, td-154ba3): free what vanilla's close() leaves; MinecraftMixin.close2 -> Vulkan.cleanUp frees them. */
+    @Inject(method = "close", at = @At("TAIL"))
+    private void iroh$closeSkyAndClouds(CallbackInfo ci) {
+        for (com.mojang.blaze3d.vertex.VertexBuffer vb : new com.mojang.blaze3d.vertex.VertexBuffer[]{
+                this.starBuffer, this.skyBuffer, this.darkBuffer, this.cloudBuffer}) {
+            if (vb != null) vb.close();
+        }
+        this.starBuffer = this.skyBuffer = this.darkBuffer = this.cloudBuffer = null;
+        if (this.cloudRenderer != null) {
+            this.cloudRenderer.resetBuffer();
+        }
+    }
 }

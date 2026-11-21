@@ -32,8 +32,9 @@ public class DrawUtil {
         renderer.bindGraphicsPipeline(blitPipeline);
         renderer.uploadAndBindUBOs(blitPipeline);
 
-        VkCommandBuffer commandBuffer = Renderer.getCommandBuffer();
-        VK11.vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("fastBlit");
+        if (commandBuffer != null)
+            VK11.vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
         VRenderSystem.enableCull();
     }
