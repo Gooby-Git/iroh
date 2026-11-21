@@ -279,12 +279,12 @@ public class VulkanImage {
         // rc6: staging that fits without a flush (shared buffer or spill block); the copy into it is synchronous, so the
         // caller's memory is never read after this returns, and no staging offset is held across a flush.
         ImageUploadHelper helper = ImageUploadHelper.INSTANCE;
-        StagingBuffer stagingBuffer = helper.stagingFor(uploadSize, this.formatSize);
         srcPtr += ((long) unpackRowLength * unpackSkipRows + unpackSkipPixels) * this.formatSize;
-        stagingBuffer.align(this.formatSize);
-        stagingBuffer.copyBuffer((int) uploadSize, srcPtr);
+        // perf/uploads: ring staging (chained blocks, no flush); consumed now, recorded in this epoch's upload buffer
+        var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.asyncUploads++;
-        helper.queueCopy(this, stagingBuffer.getId(), stagingBuffer.getOffset(), mipLevel, width, height, xOffset, yOffset, unpackRowLength);
+        helper.queueCopy(this, alloc.bufferId, alloc.offset, mipLevel, width, height, xOffset, yOffset, unpackRowLength);
+        StagingBuffer.ring().consumed(alloc);
     }
 
     private void transferDstLayout(MemoryStack stack, VkCommandBuffer commandBuffer) {
@@ -295,42 +295,96 @@ public class VulkanImage {
      * Iroh (td-4a9be3): upload recorded in the frame command buffer, outside any render pass, from a private staging
      * buffer freed after this frame's fence (the per-frame staging buffer is reset before the frame executes).
      */
+    // ---------------------------------------------------------------- perf/uploads: batched in-frame uploads
+
+    private boolean inFramePending;
+    private static final it.unimi.dsi.fastutil.objects.ObjectArrayList<VulkanImage> IF_IMAGES = new it.unimi.dsi.fastutil.objects.ObjectArrayList<>();
+    private static final it.unimi.dsi.fastutil.longs.LongArrayList IF_DATA = new it.unimi.dsi.fastutil.longs.LongArrayList(); // 8 longs per upload
+    private static final ImageBarrierBatch IF_BARRIERS = new ImageBarrierBatch();
+
+    /**
+     * Iroh (perf/uploads): an upload into an image the frame already used. GL semantics: earlier draws keep the old
+     * texels, later draws see the new ones. The base ended and resumed the render pass and allocated a private staging
+     * buffer for EACH such upload; now the data goes to ring staging and the copy is queued, and all queued in-frame
+     * copies are recorded together (one pass break) right before the next draw that binds one of the images
+     * (VTextureSelector.bindShaderTextures), before an off-screen pass begins, before a host read, and at frame end.
+     */
     private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameUploads++;
         ImageUploadHelper.INSTANCE.flushPendingCopies(); // rc6: keep upload-buffer order for this image
-        StagingBuffer staging = new StagingBuffer(Math.max(uploadSize, 16));
-        staging.copyBuffer((int) uploadSize, srcPtr);
-        long bufferId = staging.getId();
-        int srcOffset = (int) staging.getOffset();
-        staging.scheduleFree();
+        var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
+        long bufferId = alloc.bufferId;
+        long srcOffset = alloc.offset;
+        StagingBuffer.ring().consumed(alloc); // read by this frame's command buffer: released after the frame
 
-        if (!outsideRenderPass(() -> {
-            try (MemoryStack stack = stackPush()) {
-                VkCommandBuffer cb = Renderer.getCommandBuffer();
-                transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                ImageUtil.copyBufferToImageCmd(stack, cb, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
-                                               srcOffset, rowLength, height);
-                if ((this.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
-                    transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-        })) {
-            // the image is an attachment of the bound pass: record in the frame buffer anyway is impossible inside
-            // the pass; fall back to the upload buffer (contents visible to the whole frame)
-            try (MemoryStack stack = stackPush()) {
-                VkCommandBuffer cb = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
-                transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                ImageUtil.copyBufferToImageCmd(stack, cb, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
-                                               srcOffset, rowLength, height);
-            }
+        Framebuffer boundFb = Renderer.getInstance().getBoundFramebuffer();
+        if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {
+            // an attachment of the bound pass (GL feedback loop): cannot copy inside the pass; upload buffer as before
+            logFeedbackOnce();
+            ImageUploadHelper.INSTANCE.queueCopy(this, bufferId, srcOffset, mipLevel, width, height, xOffset, yOffset, rowLength);
+            return;
         }
+        this.inFramePending = true;
+        IF_IMAGES.add(this);
+        IF_DATA.add(bufferId);
+        IF_DATA.add(srcOffset);
+        IF_DATA.add(mipLevel);
+        IF_DATA.add(width);
+        IF_DATA.add(height);
+        IF_DATA.add(xOffset);
+        IF_DATA.add(yOffset);
+        IF_DATA.add(rowLength);
     }
 
-    /**
-     * Iroh: runs {@code record} on the frame command buffer outside any render pass: ends the bound pass, records,
-     * then resumes the pass that was bound (main target: LOAD pass; off-screen: beginRendering + GL binding) and
-     * re-applies GL viewport and scissor. Returns false (nothing recorded) when this image is an attachment of the
-     * bound pass (a GL feedback loop that cannot be made valid). Without a bound pass it just records.
-     */
+    public boolean hasInFramePending() {
+        return this.inFramePending;
+    }
+
+    public static boolean anyInFramePending() {
+        return !IF_IMAGES.isEmpty();
+    }
+
+    /** Records every queued in-frame upload into the frame command buffer, outside the bound pass (one break). */
+    public static void flushInFrame() {
+        if (IF_IMAGES.isEmpty())
+            return;
+        if (Renderer.recordingCommandBuffer("in-frame uploads") == null) {
+            clearInFrame();
+            return;
+        }
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameFlushes++;
+        endPassRunResume(() -> {
+            VkCommandBuffer cb = Renderer.getCommandBuffer();
+            try (MemoryStack stack = stackPush()) {
+                for (int i = 0, n = IF_IMAGES.size(); i < n; i++) {
+                    VulkanImage img = IF_IMAGES.get(i);
+                    if (img.id == 0L) continue;
+                    img.transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    int o = i * 8;
+                    ImageUtil.copyBufferToImageCmd(stack, cb, IF_DATA.getLong(o), img.id, (int) IF_DATA.getLong(o + 2),
+                            (int) IF_DATA.getLong(o + 3), (int) IF_DATA.getLong(o + 4), (int) IF_DATA.getLong(o + 5),
+                            (int) IF_DATA.getLong(o + 6), (int) IF_DATA.getLong(o + 1), (int) IF_DATA.getLong(o + 7),
+                            (int) IF_DATA.getLong(o + 4));
+                }
+                for (int i = 0, n = IF_IMAGES.size(); i < n; i++) {
+                    VulkanImage img = IF_IMAGES.get(i);
+                    if (img.inFramePending && img.id != 0L && (img.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0
+                            && img.currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                        img.readOnlyLayoutBatched(IF_BARRIERS, cb);
+                    img.inFramePending = false;
+                }
+                IF_BARRIERS.flush(cb, ImageBarrierBatch.VULKAN);
+            }
+        });
+        clearInFrame();
+    }
+
+    private static void clearInFrame() {
+        for (VulkanImage img : IF_IMAGES) img.inFramePending = false;
+        IF_IMAGES.clear();
+        IF_DATA.clear();
+    }
+
     public boolean outsideRenderPass(Runnable record) {
         Renderer renderer = Renderer.getInstance();
         RenderPass boundPass = renderer.getBoundRenderPass();

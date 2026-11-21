@@ -70,6 +70,17 @@ public abstract class VTextureSelector {
     public static void bindShaderTextures(Pipeline pipeline) {
         var imageDescriptors = pipeline.getImageDescriptors();
 
+        // perf/uploads: in-frame uploads into a texture this draw samples are recorded now (one pass break for all)
+        if (VulkanImage.anyInFramePending()) {
+            for (ImageDescriptor state : imageDescriptors) {
+                VkGlTexture t = VkGlTexture.getTexture(RenderSystem.getShaderTexture(state.imageIdx));
+                if (t != null && t.getVulkanImage() != null && t.getVulkanImage().hasInFramePending()) {
+                    VulkanImage.flushInFrame();
+                    break;
+                }
+            }
+        }
+
         for (ImageDescriptor state : imageDescriptors) {
             final int shaderTexture = RenderSystem.getShaderTexture(state.imageIdx);
 
