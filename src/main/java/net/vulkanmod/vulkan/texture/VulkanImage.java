@@ -276,6 +276,7 @@ public class VulkanImage {
 
         long bufferId = stagingBuffer.getId();
 
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.asyncUploads++;
         VkCommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
         try (MemoryStack stack = stackPush()) {
             transferDstLayout(stack, commandBuffer);
@@ -296,6 +297,7 @@ public class VulkanImage {
      * buffer freed after this frame's fence (the per-frame staging buffer is reset before the frame executes).
      */
     private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameUploads++;
         StagingBuffer staging = new StagingBuffer(Math.max(uploadSize, 16));
         staging.copyBuffer((int) uploadSize, srcPtr);
         long bufferId = staging.getId();

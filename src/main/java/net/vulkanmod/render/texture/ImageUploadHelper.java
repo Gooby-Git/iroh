@@ -54,7 +54,9 @@ public class ImageUploadHelper {
                         image.readOnlyLayoutBatched(this.barriers, handle);
                     image.clearUploadOwned();
                 }
+                int queued = this.barriers.size();
                 this.barriers.flush(handle, net.vulkanmod.vulkan.texture.ImageBarrierBatch.VULKAN);
+                if (dev.elemore.iroh.diag.UploadStats.ON) { dev.elemore.iroh.diag.UploadStats.submitBarrierCalls += this.barriers.lastCalls(); dev.elemore.iroh.diag.UploadStats.submitBarrierImages += queued; }
             }
         } finally {
             // rc5 (td-08dc9f): even if recording the transitions throws, submit what is recorded now and drop the list.
@@ -65,6 +67,7 @@ public class ImageUploadHelper {
             CommandPool.CommandBuffer cb = this.currentCmdBuffer;
             this.currentCmdBuffer = null;
             queue.submitCommands(cb);
+            if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.submits++;
             Synchronization.INSTANCE.addCommandBuffer(cb);
         }
     }
