@@ -13,7 +13,19 @@ import java.nio.ByteBuffer;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
 public class IndirectBuffer extends Buffer {
+    /** Iroh (R-3): buffers holding an unsubmitted transfer command buffer that reads the shared staging buffer. */
+    private static final java.util.Set<IndirectBuffer> PENDING =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
     CommandPool.CommandBuffer commandBuffer;
+
+    /** Iroh (R-3): called before a shared staging buffer is reset. Main thread only, like recordCopyCmd. */
+    public static void submitAllPending() {
+        if (PENDING.isEmpty())
+            return;
+        for (IndirectBuffer b : PENDING.toArray(new IndirectBuffer[0]))
+            b.submitUploads();
+    }
 
     public IndirectBuffer(int size, MemoryType type) {
         super(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, type);
@@ -31,13 +43,17 @@ public class IndirectBuffer extends Buffer {
         if (this.type.mappable()) {
             this.type.copyToBuffer(this, byteBuffer, size, 0, this.usedBytes);
         } else {
-            if (commandBuffer == null)
+            // Iroh (R-3): copy into staging first; an overflow there submits every pending consumer, this one's
+            // command buffer included, so the command buffer is started afterwards (UploadManager's order).
+            var alloc = StagingBuffer.stage(size, 4, org.lwjgl.system.MemoryUtil.memAddress(byteBuffer)); // perf/uploads
+
+            if (commandBuffer == null) {
                 commandBuffer = DeviceManager.getTransferQueue().beginCommands();
+                PENDING.add(this);
+            }
 
-            StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
-            stagingBuffer.copyBuffer(size, byteBuffer);
-
-            TransferQueue.uploadBufferCmd(commandBuffer.getHandle(), stagingBuffer.id, stagingBuffer.offset, this.getId(), this.getUsedBytes(), size);
+            TransferQueue.uploadBufferCmd(commandBuffer.getHandle(), alloc.bufferId, alloc.offset, this.getId(), this.getUsedBytes(), size);
+            StagingBuffer.ring().consumed(alloc);
         }
 
         offset = usedBytes;
@@ -48,9 +64,10 @@ public class IndirectBuffer extends Buffer {
         if (commandBuffer == null)
             return;
 
-        DeviceManager.getTransferQueue().submitCommands(commandBuffer);
+        DeviceManager.getTransferQueue().submitCommandsSignalling(commandBuffer); // perf/uploads
         Synchronization.INSTANCE.addCommandBuffer(commandBuffer);
         commandBuffer = null;
+        PENDING.remove(this);
     }
 
 }

@@ -21,6 +21,11 @@ import static org.lwjgl.vulkan.VK10.*;
 public class VkGlTexture {
     private static int ID_COUNTER = 1;
     private static final Int2ReferenceOpenHashMap<VkGlTexture> map = new Int2ReferenceOpenHashMap<>();
+
+    /** rc8: live GL names (registry test, memStats). */
+    public static int liveCount() {
+        return map.size();
+    }
     private static int boundTextureId = 0;
     private static VkGlTexture boundTexture;
     private static int activeTexture = 0;
@@ -81,7 +86,7 @@ public class VkGlTexture {
         VkGlTexture glTexture = map.remove(i);
         VulkanImage image = glTexture != null ? glTexture.vulkanImage : null;
         if (image != null)
-            MemoryManager.getInstance().addToFreeable(image);
+            image.free(); // rc8: one free path (deferred, epoch-gated)
     }
 
     public static VkGlTexture getTexture(int id) {
@@ -120,12 +125,26 @@ public class VkGlTexture {
         return map.containsKey(id);
     }
 
+    /** rc9: the storage part of glTexImage2D (re-specification) for the offline registry test. */
+    public static void specifyStorageForTest(int id, int level, int internalFormat, int width, int height) {
+        VkGlTexture t = map.get(id);
+        t.updateParams(level, width, height, internalFormat, 0);
+        t.allocateIfNeeded();
+    }
+
+    public static void setMaxLevelForTest(int id, int level) {
+        map.get(id).setMaxLevel(level);
+        map.get(id).allocateIfNeeded();
+    }
+
     public static void texImage2D(int target, int level, int internalFormat, int width, int height, int border, int format, int type, long pixels) {
         if (checkParams(level, width, height) || boundTexture == null)
             return;
 
         boundTexture.updateParams(level, width, height, internalFormat, type);
         boundTexture.allocateIfNeeded();
+        if (boundTexture.vulkanImage == null)
+            return; // rc9: refused (runaway owner)
 
         VTextureSelector.bindTexture(activeTexture, boundTexture.vulkanImage);
 
@@ -138,6 +157,8 @@ public class VkGlTexture {
 
         boundTexture.updateParams(level, width, height, internalFormat, type);
         boundTexture.allocateIfNeeded();
+        if (boundTexture.vulkanImage == null)
+            return; // rc9: refused (runaway owner)
 
         VTextureSelector.bindTexture(activeTexture, boundTexture.vulkanImage);
 
@@ -194,7 +215,34 @@ public class VkGlTexture {
 
     /** Iroh: one upload with the current unpack state; {@code avail} = bytes readable from {@code base} (PBO bound). */
     void upload(int level, int xOffset, int yOffset, int width, int height, int format, int type, long base, long avail) {
+        uploadClient(level, xOffset, yOffset, width, height, format, type, base, avail,
+                unpackRowLength, unpackAlignment, unpackSkipRows, unpackSkipPixels);
+    }
+
+    private static boolean loggedBadRegion;
+
+    /**
+     * Iroh (rc6, td-fcd844): one upload from client memory with EXPLICIT unpack state (NativeImage passes its own, like
+     * vanilla's _upload, instead of whatever another mod left in the GL unpack state). {@code avail} = bytes readable from
+     * {@code base}. Source span and destination region are checked before any copy; a bad one is logged once and skipped.
+     */
+    public void uploadClient(int level, int xOffset, int yOffset, int width, int height, int format, int type, long base, long avail,
+                             int rowLength, int alignment, int skipRows, int skipPixels) {
         VulkanImage image = this.vulkanImage;
+        if (image == null || width <= 0 || height <= 0)
+            return;
+        int lw = Math.max(1, image.width >> level), lh = Math.max(1, image.height >> level);
+        if (level < 0 || level >= image.mipLevels || xOffset < 0 || yOffset < 0 || xOffset + width > lw || yOffset + height > lh
+                || skipRows < 0 || skipPixels < 0 || (rowLength > 0 && skipPixels + width > rowLength)) {
+            if (!loggedBadRegion) {
+                loggedBadRegion = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: texture upload skipped: {} level {} region {},{} {}x{} (level size {}x{}, mips {}), "
+                                + "unpack rowLength {} skip {},{} (logged once)", image.name, level, xOffset, yOffset, width, height, lw, lh,
+                        image.mipLevels, rowLength, skipPixels, skipRows, new Throwable("uploaded from"));
+            }
+            return;
+        }
+        int unpackRowLength = rowLength, unpackAlignment = alignment, unpackSkipRows = skipRows, unpackSkipPixels = skipPixels;
         PixelTransfer.Dst dst = dstLayout(image.format);
         if (dst == null || dst == PixelTransfer.Dst.D32F) {
             dev.elemore.iroh.glshim.GlShim.unhandled("glTexSubImage2D(into vk format " + image.format + ")");
@@ -209,9 +257,14 @@ public class VkGlTexture {
             return;
         }
         long skip = PixelTransfer.skipOffset(width, unpackRowLength, unpackAlignment, unpackSkipRows, unpackSkipPixels, format, type);
-        long need = skip + stride * (height - 1) + (long) width * bpp;
-        if (need > avail) {
+        long need = PixelTransfer.sourceNeed(width, height, unpackRowLength, unpackAlignment, unpackSkipRows, unpackSkipPixels, format, type);
+        if (need < 0 || need > avail || base == 0L) {
             dev.elemore.iroh.glshim.GlShim.unhandled("glTexSubImage2D(reads past the unpack buffer)");
+            if (!loggedBadRegion) {
+                loggedBadRegion = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: texture upload skipped: {} would read {} bytes from a {}-byte source (format 0x{}, {}x{}, rowLength {}, skip {},{}; logged once)",
+                        image.name, need, avail, Integer.toHexString(format), width, height, rowLength, skipPixels, skipRows, new Throwable("uploaded from"));
+            }
             return;
         }
         long src = base + skip;
@@ -497,28 +550,57 @@ public class VkGlTexture {
         }
     }
 
+    private static boolean loggedRefused;
+
     void allocateImage(int width, int height, int vkFormat) {
+        // rc9 (td-598433): name and owner carry the GL id and the calling mod, so a leak names its source
+        boolean depth = VulkanImage.isDepthFormat(vkFormat);
+        String mod = dev.elemore.iroh.diag.EmuStats.callerMod();
+        String owner = "GlTexture " + (depth ? "depth" : "color") + " by " + mod;
+        // rc9: an owner flagged for runaway image growth gets no image for a NEW texture id (reuse or refuse)
+        if (this.vulkanImage == null && dev.elemore.iroh.memory.MemoryGuard.refuseNewImage(owner)) {
+            if (!loggedRefused) {
+                loggedRefused = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: refusing new images for {} (runaway growth); texture {} stays empty (logged once)", owner, this.id);
+            }
+            return;
+        }
         if (this.vulkanImage != null)
             this.vulkanImage.free();
 
-        if (VulkanImage.isDepthFormat(vkFormat)) {
-            this.vulkanImage = VulkanImage.createDepthImage(
+        String name = "GlTexture " + this.id + (depth ? " depth " : " ") + width + "x" + height + " by " + mod;
+        if (FACTORY != null) { // offline registry test
+            this.vulkanImage = FACTORY.create(name, owner, depth, width, height, vkFormat, maxLevel + 1);
+        } else if (depth) {
+            this.vulkanImage = VulkanImage.createDepthImage(name, owner,
                     vkFormat, width, height,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     false, true);
         }
         else {
             this.vulkanImage = new VulkanImage.Builder(width, height)
-                    .setName(String.format("GlTexture %d", this.id))
+                    .setName(name)
+                    .setOwner(owner)
                     .setMipLevels(maxLevel + 1)
                     .setFormat(vkFormat)
                     .addUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
                     .createVulkanImage();
         }
+        this.imageGeneration++;
     }
 
+    /** rc9: test seam: when set, allocateImage gets its images here instead of the device. */
+    public interface ImageFactory {
+        VulkanImage create(String name, String owner, boolean depth, int width, int height, int vkFormat, int mipLevels);
+    }
+
+    public static ImageFactory FACTORY;
+
+    /** rc9: bumped whenever this texture's storage (VulkanImage) is replaced; framebuffers re-resolve attachments by it. */
+    int imageGeneration;
+
     void updateSampler() {
-        if (vulkanImage == null)
+        if (vulkanImage == null || vulkanImage.getId() == 0L) // rc9: no device image (offline registry test)
             return;
 
         byte samplerFlags;
@@ -526,8 +608,10 @@ public class VkGlTexture {
         samplerFlags |= magFilter == GL11.GL_LINEAR ? SamplerManager.LINEAR_FILTERING_BIT : 0;
 
         samplerFlags |= switch (minFilter) {
-            case GL11.GL_LINEAR_MIPMAP_LINEAR -> SamplerManager.USE_MIPMAPS_BIT | SamplerManager.MIPMAP_LINEAR_FILTERING_BIT;
-            case GL11.GL_NEAREST_MIPMAP_NEAREST -> SamplerManager.USE_MIPMAPS_BIT;
+            // Iroh (td-48591b): all four GL mipmap min filters; the base dropped mipmaps for NEAREST_MIPMAP_LINEAR (what
+            // vanilla's atlases use when set through glTexParameter) and LINEAR_MIPMAP_NEAREST.
+            case GL11.GL_LINEAR_MIPMAP_LINEAR, GL11.GL_NEAREST_MIPMAP_LINEAR -> SamplerManager.USE_MIPMAPS_BIT | SamplerManager.MIPMAP_LINEAR_FILTERING_BIT;
+            case GL11.GL_NEAREST_MIPMAP_NEAREST, GL11.GL_LINEAR_MIPMAP_NEAREST -> SamplerManager.USE_MIPMAPS_BIT;
             default -> 0;
         };
 

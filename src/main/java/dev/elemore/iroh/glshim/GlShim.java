@@ -58,17 +58,17 @@ public final class GlShim {
     /** Records one shimmed call. {@code call} is e.g. "glGetString(0x1f00)"; the first hit per call+mod is logged. */
     public static void note(String call, Object answer) {
         String caller = callerClass();
-        String key = call + " <- " + modOf(caller);
+        String mod = callerMod();
+        String key = call + " <- " + mod;
         if (COUNTS.computeIfAbsent(key, k -> new AtomicLong()).getAndIncrement() == 0) {
-            if (INFO) LOGGER.info("Iroh GL shim: {} from {} ({}) -> {}", call, modOf(caller), caller, answer);
-            else LOGGER.debug("Iroh GL shim: {} from {} ({}) -> {}", call, modOf(caller), caller, answer);
+            if (INFO) LOGGER.info("Iroh GL shim: {} from {} ({}) -> {}", call, mod, caller, answer);
+            else LOGGER.debug("Iroh GL shim: {} from {} ({}) -> {}", call, mod, caller, answer);
         }
     }
 
     /** A GL function with no emulation was called without a GL context (see {@link GlNet}). */
     public static void unhandled(String fn) {
-        String caller = callerClass();
-        String mod = modOf(caller);
+        String mod = callerMod();
         if (UNHANDLED.computeIfAbsent(fn + " <- " + mod, k -> new AtomicLong()).getAndIncrement() == 0)
             LOGGER.info("Iroh GL shim: {} called {} (unhandled) [{}]", mod, fn, callerFrame());
     }
@@ -90,7 +90,7 @@ public final class GlShim {
     /** A handler threw; the call returned 0. Logged once per function. */
     public static void failed(String fn, Throwable t) {
         if (UNHANDLED.computeIfAbsent(fn + " <- (handler error)", k -> new AtomicLong()).getAndIncrement() == 0)
-            LOGGER.warn("Iroh GL shim: handler for {} threw (call ignored, called by {})", fn, modOf(callerClass()), t);
+            LOGGER.warn("Iroh GL shim: handler for {} threw (call ignored, called by {})", fn, callerMod(), t);
     }
 
     /** One line per unhandled (function, mod) with its count, sorted; for logs and tests. */
@@ -110,26 +110,19 @@ public final class GlShim {
                 .findFirst().orElse("?"));
     }
 
-    /** Mod id owning a class, by matching the class's code source against every mod's root paths. "?" if unknown. */
+    /**
+     * Mod id owning a class (P1-13a: {@link dev.elemore.iroh.diag.ModAttribution}: mod roots incl. jar-in-jar, nested
+     * first; the slice-2 code-source match left every nested mod unmatched and mixin handlers attributed to "minecraft").
+     */
     static String modOf(String className) {
-        return MOD_OF_CLASS.computeIfAbsent(className, cn -> {
-            try {
-                Class<?> c = Class.forName(cn, false, GlShim.class.getClassLoader());
-                java.security.CodeSource cs = c.getProtectionDomain().getCodeSource();
-                if (cs == null) return "?";
-                // P1-2 slice 2: match the jar (or directory) a mod was loaded from. The old test also matched
-                // jar-in-jar roots, whose zipfs root path is "/" and is contained in every location: every GL call
-                // was blamed on the first nested mod (additional_rpg_jewelry), see pack-compat.md 0c-t.
-                Path loc = Path.of(cs.getLocation().toURI()).toAbsolutePath().normalize();
-                for (ModContainer m : FabricLoader.getInstance().getAllMods()) {
-                    net.fabricmc.loader.api.metadata.ModOrigin o = m.getOrigin();
-                    if (o.getKind() != net.fabricmc.loader.api.metadata.ModOrigin.Kind.PATH) continue;
-                    for (Path p : o.getPaths())
-                        if (p.toAbsolutePath().normalize().equals(loc)) return m.getMetadata().getId();
-                }
-            } catch (Throwable ignored) {
-            }
-            return cn.startsWith("net.minecraft.") || cn.startsWith("com.mojang.") ? "minecraft" : cn;
-        });
+        return dev.elemore.iroh.diag.ModAttribution.ofClass(className);
+    }
+
+    /** Mod of the first foreign frame, honouring mixin handler names merged into vanilla classes. */
+    static String callerMod() {
+        return WALKER.walk(s -> s
+                .filter(f -> isForeign(f.getClassName()))
+                .map(f -> dev.elemore.iroh.diag.ModAttribution.of(f.getClassName(), f.getMethodName()))
+                .findFirst().orElse("?"));
     }
 }

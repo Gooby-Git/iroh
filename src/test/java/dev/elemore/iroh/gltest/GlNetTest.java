@@ -142,6 +142,30 @@ public final class GlNetTest {
                 && org.lwjgl.opengl.GL32C.glGetSynci(sync, 0x9114, null) == 0x9119);
         org.lwjgl.opengl.GL32C.glDeleteSync(sync);
 
+        // P1-10 item 4b: timer queries (Reflex AntiLag): handles, GL_TIMESTAMP = System.nanoTime, results available
+        int q0 = org.lwjgl.opengl.GL15C.glGenQueries(), q1 = org.lwjgl.opengl.GL15C.glGenQueries();
+        long before = System.nanoTime();
+        org.lwjgl.opengl.GL33C.glQueryCounter(q0, 0x8E28);
+        long gpuNow = org.lwjgl.opengl.GL32C.glGetInteger64(0x8E28);
+        org.lwjgl.opengl.GL33C.glQueryCounter(q1, 0x8E28);
+        long after = System.nanoTime();
+        long t0 = org.lwjgl.opengl.GL33C.glGetQueryObjecti64(q0, 0x8866), t1 = org.lwjgl.opengl.GL33C.glGetQueryObjecti64(q1, 0x8866);
+        check(where + ": glGenQueries gives distinct handles", q0 != 0 && q1 != 0 && q0 != q1 && org.lwjgl.opengl.GL15C.glIsQuery(q0));
+        check(where + ": glQueryCounter(GL_TIMESTAMP) results on the nanoTime clock, in order",
+                before <= t0 && t0 <= gpuNow && gpuNow <= t1 && t1 <= after);
+        check(where + ": query result available at once", org.lwjgl.opengl.GL15C.glGetQueryObjecti(q0, 0x8867) == 1);
+        check(where + ": GL_QUERY_COUNTER_BITS of GL_TIMESTAMP is 64", org.lwjgl.opengl.GL15C.glGetQueryi(0x8E28, 0x8864) == 64);
+        org.lwjgl.opengl.GL15C.glBeginQuery(0x88BF, q1);
+        long spin = System.nanoTime();
+        while (System.nanoTime() - spin < 200_000) Thread.onSpinWait();
+        org.lwjgl.opengl.GL15C.glEndQuery(0x88BF);
+        long elapsed = org.lwjgl.opengl.GL33C.glGetQueryObjecti64(q1, 0x8866);
+        check(where + ": GL_TIME_ELAPSED measures the CPU time between begin and end", elapsed >= 200_000 && elapsed < 1_000_000_000L);
+        org.lwjgl.opengl.GL15C.glDeleteQueries(q0);
+        check(where + ": glDeleteQueries forgets the handle", !org.lwjgl.opengl.GL15C.glIsQuery(q0));
+        check(where + ": array-overload path (GlQueries.integer64) GL_TIMESTAMP is nanoTime",
+                Math.abs(dev.elemore.iroh.glshim.GlQueries.integer64(0x8E28) - System.nanoTime()) < 50_000_000L);
+
         // a function the net does not emulate, called with many args
         GL13C.glCompressedTexImage2D(0x0DE1, 0, 0x83F0, 4, 4, 0, (ByteBuffer) null);
         check(where + ": still alive after unhandled calls", true);

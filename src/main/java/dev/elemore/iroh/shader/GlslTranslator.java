@@ -236,6 +236,26 @@ public final class GlslTranslator {
         List<List<Decl>> stmts = new ArrayList<>();  // one list per handled statement (several declarators)
         boolean usesFragColor;
         boolean needsNullInit;
+        List<String> mainPrologue = new ArrayList<>(); // rc8: statements inserted at the start of main()
+    }
+
+    /**
+     * rc8 (td-40ae94): vanilla binds the integer UV elements (UV1 overlay, UV2 lightmap: SHORT) with
+     * glVertexAttribIPointer. A shader that declares them as float vectors (some pack / mod core shaders write
+     * {@code in vec2 UV2;}) is a mismatch Vulkan reports (R16G16_SINT feeding a float input). The input is declared with
+     * the integer type the format supplies and converted once at the start of main() into a private float global of the
+     * declared name, so the shader's code is unchanged and the values are the numeric light / overlay coordinates.
+     */
+    private static final Set<String> INTEGER_ATTRIBUTES = Set.of("UV1", "UV2");
+
+    private static String integerTwin(String floatType) {
+        return switch (floatType) {
+            case "float" -> "int";
+            case "vec2" -> "ivec2";
+            case "vec3" -> "ivec3";
+            case "vec4" -> "ivec4";
+            default -> null;
+        };
     }
 
     // ---------------------------------------------------------------- entry point
@@ -722,6 +742,15 @@ public final class GlslTranslator {
                               .append(defaultAttribute(d.type)).append(";\n");
                             break;
                         }
+                        if (st.stage == Stage.VERTEX && d.kind == DKind.IN && attributeNames != null
+                                && INTEGER_ATTRIBUTES.contains(d.name) && integerTwin(d.type) != null && d.array.isEmpty()) {
+                            String twin = integerTwin(d.type);
+                            sb.append("layout(location = ").append(d.location).append(") in ").append(twin)
+                              .append(" iroh_int_").append(name).append(";\n");
+                            sb.append(fullType).append(' ').append(name).append(";\n");
+                            st.mainPrologue.add(name + " = " + d.type + "(iroh_int_" + name + ");");
+                            break;
+                        }
                         List<String> lq = new ArrayList<>();
                         if (d.layoutArgs != null) {
                             for (String a : d.layoutArgs.split(","))
@@ -760,6 +789,12 @@ public final class GlslTranslator {
             pos = e.end;
         }
         appendRenamed(body, st, pos, st.text.length(), renames);
+        if (!st.mainPrologue.isEmpty()) {
+            java.util.regex.Matcher mm = java.util.regex.Pattern.compile("\\bvoid\\s+main\\s*\\(\\s*(?:void)?\\s*\\)\\s*\\{").matcher(body);
+            if (!mm.find())
+                throw new TranslationException(st.stage, "no main() to convert integer vertex inputs in");
+            body.insert(mm.end(), "\n    " + String.join("\n    ", st.mainPrologue) + "\n");
+        }
 
         StringBuilder out = new StringBuilder(body.length() + 1024);
         out.append("#version 450\n");

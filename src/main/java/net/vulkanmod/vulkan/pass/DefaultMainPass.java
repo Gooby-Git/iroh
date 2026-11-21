@@ -23,8 +23,8 @@ import static org.lwjgl.vulkan.VK10.*;
  * screenshots, flushCmds submits and readbacks between frames never see a presentable image.
  * <p>
  * The MainPass interface and the public methods the 0.5.5 base had (create, rebindMainTarget, bindAsTexture,
- * getColorAttachment, begin, end, onResize, cleanUp) keep their signatures: AsyncParticles' VulkanMod
- * backend calls {@code Renderer.getMainPass().rebindMainTarget()}.
+ * getColorAttachment, begin, end, onResize, cleanUp) keep their signatures. (The AsyncParticles freeze on these
+ * members ended 2026-11-21: the owner removed AsyncParticles from the Iroh pack.)
  */
 public class DefaultMainPass implements MainPass {
 
@@ -263,7 +263,9 @@ public class DefaultMainPass implements MainPass {
 
     @Override
     public void rebindMainTarget() {
-        VkCommandBuffer commandBuffer = Renderer.getCommandBuffer();
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("rebindMainTarget"); // rc3r2 (td-7937f0)
+        if (commandBuffer == null)
+            return;
 
         // Do not rebind if the framebuffer is already bound
         RenderPass boundRenderPass = Renderer.getInstance().getBoundRenderPass();
@@ -279,7 +281,11 @@ public class DefaultMainPass implements MainPass {
 
     @Override
     public void bindAsTexture() {
-        VkCommandBuffer commandBuffer = Renderer.getCommandBuffer();
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("bindAsTexture");
+        if (commandBuffer == null) {
+            VTextureSelector.bindTexture(this.sceneTarget.getColorAttachment());
+            return;
+        }
 
         // Check if render pass is using the framebuffer
         RenderPass boundRenderPass = Renderer.getInstance().getBoundRenderPass();

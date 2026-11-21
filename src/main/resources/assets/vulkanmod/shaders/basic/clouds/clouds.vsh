@@ -1,8 +1,13 @@
 #version 450
 
+#include "fog.glsl"
+
+// Iroh (rc3, td-429512): vanilla rendertype_clouds' fog distance: fog_distance(view-space position, FogShape). The base
+// used length(Position + ModelOffset) with no Y in ModelOffset (horizontal distance only).
 layout(binding = 0) uniform UniformBufferObject {
    mat4 MVP;
-   vec3 ModelOffset;
+   mat4 ModelViewMat;
+   int FogShape;
 };
 
 layout(location = 0) in vec3 Position;
@@ -13,8 +18,7 @@ layout(location = 1) out float vertexDistance;
 
 void main() {
     gl_Position = MVP * vec4(Position, 1.0);
-    vec3 viewPos = Position + ModelOffset;
-    vertexDistance = length(viewPos.xyz);
+    vertexDistance = fog_distance((ModelViewMat * vec4(Position, 1.0)).xyz, FogShape);
 
     vertexColor = Color;
 }

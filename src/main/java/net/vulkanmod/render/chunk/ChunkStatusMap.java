@@ -56,11 +56,11 @@ public class ChunkStatusMap {
                 if (checkNeighbours(x1, z1)) {
                     long key = ChunkPos.asLong(x1, z1);
                     if (map.put(key, ALL_FLAGS) != ALL_FLAGS) {
-                        // A chunk just became render-ready: dirty sections the last graph update could not schedule
-                        // (P1-9) get another chance on the next frame.
+                        // A chunk just became render-ready: sections parked for it (P1-9, td-27b474) get one retry
+                        // on the next graph update.
                         WorldRenderer wr = WorldRenderer.getInstance();
                         if (wr != null)
-                            wr.chunkBecameRenderReady();
+                            wr.chunkBecameRenderReady(x1, z1);
                     }
                 }
                 else {
@@ -96,6 +96,28 @@ public class ChunkStatusMap {
     public boolean chunkRenderReady(int x, int z) {
         byte status = map.get(ChunkPos.asLong(x, z));
         return status == ALL_FLAGS;
+    }
+
+    /**
+     * rc7: drop entries more than {@code radius} chunks from the camera chunk. A late light update for a chunk the client
+     * already forgot leaves a LIGHT_READY-only entry that nothing removes; along a long straight flight those accumulate.
+     * Render thread, called every few seconds; O(entries).
+     */
+    public int prune(int camChunkX, int camChunkZ, int radius) {
+        int before = map.size();
+        var it = map.long2ByteEntrySet().fastIterator();
+        while (it.hasNext()) {
+            long k = it.next().getLongKey();
+            int x = ChunkPos.getX(k), z = ChunkPos.getZ(k);
+            if (Math.abs(x - camChunkX) > radius || Math.abs(z - camChunkZ) > radius)
+                it.remove();
+        }
+        return before - map.size();
+    }
+
+    /** rc7: entries (for -Diroh.memStats). */
+    public int size() {
+        return map.size();
     }
 
     public void reset() {

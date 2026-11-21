@@ -55,6 +55,16 @@ public class SwitchOptionWidget extends OptionWidget<SwitchOption> {
         GuiRenderer.drawCenteredString(textRenderer, this.getDisplayedValue(), x, y, color);
     }
 
+    public void keyAdjust(int direction) {
+        if (this.active) this.option.setNewValue(direction > 0);
+    }
+
+    @Override
+    public void keyActivate() {
+        if (this.active) this.option.setNewValue(!this.option.getNewValue());
+    }
+
+    @Override
     public void onClick(double mouseX, double mouseY) {
         this.option.setNewValue(!this.option.getNewValue());
         updateDisplayedValue();

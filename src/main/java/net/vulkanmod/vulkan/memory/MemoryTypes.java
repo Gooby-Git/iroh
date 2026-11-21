@@ -73,10 +73,10 @@ public class MemoryTypes {
 
         @Override
         public void copyToBuffer(Buffer buffer, ByteBuffer src, long size, long srcOffset, long dstOffset) {
-            StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
-            stagingBuffer.copyBuffer((int) size, src);
-
-            DeviceManager.getTransferQueue().copyBufferCmd(stagingBuffer.getId(), stagingBuffer.getOffset(), buffer.getId(), dstOffset, size);
+            // perf/uploads: ring staging; copyBufferCmd submits at once (signalling), the reservation is consumed when recorded
+            var alloc = StagingBuffer.stage(size, 4, org.lwjgl.system.MemoryUtil.memAddress(src));
+            DeviceManager.getTransferQueue().copyBufferCmd(alloc.bufferId, alloc.offset, buffer.getId(), dstOffset, size);
+            StagingBuffer.ring().consumed(alloc);
         }
 
         @Override

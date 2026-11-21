@@ -39,11 +39,21 @@ public class RenderSection {
     private final CompileStatus compileStatus = new CompileStatus();
 
     private boolean dirty = true;
+    /** Refused because its chunk was not render-ready; parked in SectionGraph's RebuildWaiting until that chunk is ready (td-27b474). */
+    public boolean waitingForChunk;
+    /** Chunk key the section was parked under (valid while waitingForChunk). */
+    public long parkedKey;
     private boolean playerChanged;
     private boolean completelyEmpty = true;
     private boolean containsBlockEntities = false;
 
     public long visibility;
+
+    /**
+     * Iroh (P1-6b api): the graph frame (SectionGraph.lastFrame) in which this section was reached AND passed the
+     * frustum test, i.e. it is in this frame's visible set. Read by dev.elemore.iroh.api.IrohApi.isSectionVisible.
+     */
+    public short lastVisibleFrame = -1;
 
     public int xOffset, yOffset, zOffset;
 
@@ -227,8 +237,23 @@ public class RenderSection {
         return true;
     }
 
-    // TODO: sync rebuild
-    public void rebuildChunkSync(TaskDispatcher dispatcher, RenderRegionBuilder renderRegionCache) {
+    /**
+     * Queues an "important" rebuild (P1-11): front of the queue, and its latch goes into {@code waitSet} so the frame can
+     * wait for it. Same readiness rule as {@link #rebuildChunkAsync(TaskDispatcher, RenderRegionBuilder)}.
+     */
+    public boolean rebuildChunkImportant(TaskDispatcher dispatcher, RenderRegionBuilder renderRegionCache,
+                                         dev.elemore.iroh.chunk.SyncWaitSet waitSet) {
+        BuildTask chunkCompileTask = this.createCompileTask(renderRegionCache);
+
+        if (chunkCompileTask == null)
+            return false;
+
+        chunkCompileTask.highPriority = true;
+        var latch = new java.util.concurrent.CountDownLatch(1);
+        chunkCompileTask.done = latch;
+        waitSet.add(latch);
+        dispatcher.schedule(chunkCompileTask);
+        return true;
     }
 
     public BuildTask createCompileTask(RenderRegionBuilder renderRegionCache) {
@@ -377,11 +402,18 @@ public class RenderSection {
     }
 
     private void reset() {
+        if (this.waitingForChunk) { // relocated by the section grid: the parked entry belongs to the old chunk
+            this.waitingForChunk = false;
+            var w = WorldRenderer.rebuildWaiting();
+            if (w != null)
+                w.forget(this.parkedKey);
+        }
         this.cancelTasks();
         this.compileStatus.compiledSection = CompiledSection.UNCOMPILED;
         this.dirty = true;
         this.visibility = 0;
         this.completelyEmpty = true;
+        this.lastVisibleFrame = -1;
 
         this.resetDrawParameters();
     }

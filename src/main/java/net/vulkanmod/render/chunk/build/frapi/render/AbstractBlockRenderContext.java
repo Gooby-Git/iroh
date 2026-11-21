@@ -159,7 +159,35 @@ public abstract class AbstractBlockRenderContext extends AbstractRenderContext {
 		}
 	}
 
+	/**
+	 * Iroh (P1-6b): face-cull hooks for the current mesh task (IrohApi.registerFaceCullVeto + option leafCulling), taken
+	 * once per task by BuilderResources.update; null when there are none, and always null outside the chunk mesher.
+	 */
+	protected dev.elemore.iroh.apiimpl.FaceCullHooks.Snapshot faceCullHooks;
+
+	public void setFaceCullHooks(dev.elemore.iroh.apiimpl.FaceCullHooks.Snapshot hooks) {
+		this.faceCullHooks = hooks;
+	}
+
+	/** Iroh (P1-10): IrohApi shade hooks for the current mesh task (null = none); chunk mesher only. */
+	protected dev.elemore.iroh.api.ShadeHook[] shadeHooks;
+	private final float[] shadeSaved = new float[12];
+
+	public void setShadeHooks(dev.elemore.iroh.api.ShadeHook[] hooks) {
+		this.shadeHooks = hooks;
+	}
+
 	public boolean faceNotOccluded(BlockState blockState, Direction face) {
+		if (!this.vanillaFaceNotOccluded(blockState, face))
+			return false;
+		// Iroh (P1-6b): where Sodium's BlockOcclusionCache.shouldDrawSide let mods veto a face (Cull Fewer Leaves,
+		// elemore-core LeafCull): only ever turns "draw" into "hide".
+		dev.elemore.iroh.apiimpl.FaceCullHooks.Snapshot hooks = this.faceCullHooks;
+		return hooks == null || !hooks.hide(blockState, this.renderRegion, this.blockPos, face);
+	}
+
+	/** Vanilla's Block.shouldRenderFace decision (skipRendering, then occlusion shapes), with the base's cache. */
+	private boolean vanillaFaceNotOccluded(BlockState blockState, Direction face) {
 		BlockGetter blockGetter = this.renderRegion;
 
 		BlockPos adjPos = tempPos.setWithOffset(blockPos, face);
@@ -239,8 +267,17 @@ public abstract class AbstractBlockRenderContext extends AbstractRenderContext {
 	protected void shadeQuad(MutableQuadViewImpl quad, LightPipeline lightPipeline, boolean emissive, boolean vanillaShade) {
 		QuadLightData data = this.quadLightData;
 
+		// Iroh (P1-10): shade hooks may move vertices for the light calculation only (Polaris slope lighting, the
+		// role of its mixin on Sodium's shadeQuad); the positions are restored before the quad is written.
+		dev.elemore.iroh.api.ShadeHook[] hooks = this.shadeHooks;
+		boolean restore = hooks != null
+				&& dev.elemore.iroh.apiimpl.ShadeHooks.before(hooks, this.blockState, this.blockPos, quad, this.shadeSaved);
+
 		// TODO: enhanced AO
 		lightPipeline.calculate(quad, this.blockPos, data, quad.cullFace(), quad.lightFace(), quad.hasShade());
+
+		if (restore)
+			dev.elemore.iroh.apiimpl.ShadeHooks.restore(quad, this.shadeSaved);
 
 		if (emissive) {
 			for (int i = 0; i < 4; i++) {

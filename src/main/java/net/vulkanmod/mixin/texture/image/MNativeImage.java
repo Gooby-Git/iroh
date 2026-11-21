@@ -64,13 +64,26 @@ public abstract class MNativeImage {
      */
     @Overwrite
     private void _upload(int level, int xOffset, int yOffset, int unpackSkipPixels, int unpackSkipRows, int widthIn, int heightIn, boolean blur, boolean clamp, boolean mipmap, boolean autoClose) {
-        RenderSystem.assertOnRenderThreadOrInit();
-
-        VTextureSelector.uploadSubTexture(level, widthIn, heightIn, xOffset, yOffset, unpackSkipRows, unpackSkipPixels, this.getWidth(), this.buffer);
-        VTextureSelector.getBoundTexture().updateTextureSampler(blur, clamp, mipmap);
-
-        if (autoClose) {
-            this.close();
+        try {
+            RenderSystem.assertOnRenderThreadOrInit();
+            // vanilla: an image already closed throws here; Iroh used to read the stale cached buffer (use after free)
+            this.checkAllocated();
+            // Iroh (rc6, td-fcd844): upload in the image's OWN format with its OWN row layout, through the GL pixel-transfer
+            // path that converts to the texture's format. The base copied width*height*formatSize(texture) bytes from
+            // the image: an RGB or LUMINANCE image (Charta's cards) into an RGBA texture read past its allocation
+            // (SIGSEGV in nmemcpy). The copy is synchronous: nothing reads the image after this returns.
+            net.vulkanmod.gl.VkGlTexture tex = net.vulkanmod.gl.VkGlTexture.getBoundTexture();
+            if (tex == null || tex.getVulkanImage() == null) {
+                return;
+            }
+            int comps = this.format.components();
+            tex.uploadClient(level, xOffset, yOffset, widthIn, heightIn, this.format.glFormat(), org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE,
+                    this.pixels, this.size, this.getWidth(), 1, unpackSkipRows, unpackSkipPixels); // rows are tightly packed
+            VTextureSelector.getBoundTexture().updateTextureSampler(blur, clamp, mipmap);
+        } finally {
+            if (autoClose) {
+                this.close();
+            }
         }
     }
 

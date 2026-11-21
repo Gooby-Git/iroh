@@ -27,6 +27,7 @@ public abstract class BufferUploaderM {
      */
     @Overwrite
     public static void drawWithShader(MeshData meshData) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("BufferUploader.drawWithShader");
         RenderSystem.assertOnRenderThread();
 
         MeshData.DrawState parameters = meshData.drawState();
@@ -58,6 +59,7 @@ public abstract class BufferUploaderM {
      */
     @Overwrite
     public static void draw(MeshData meshData) {
+        if (dev.elemore.iroh.diag.EmuStats.ON) dev.elemore.iroh.diag.EmuStats.hit("BufferUploader.draw");
         MeshData.DrawState parameters = meshData.drawState();
 
         if (parameters.vertexCount() > 0) {

@@ -1,6 +1,7 @@
 package net.vulkanmod.config.option;
 
 import net.minecraft.network.chat.Component;
+
 import net.vulkanmod.config.gui.widget.CyclingOptionWidget;
 import net.vulkanmod.config.gui.widget.OptionWidget;
 import org.apache.commons.lang3.ArrayUtils;
@@ -38,15 +39,43 @@ public class CyclingOption<E> extends Option<E> {
         this.values = values;
     }
 
+    /** Reason one value cannot be picked (greyed, skipped when cycling), or null. */
+    private java.util.function.Function<E, Component> valueReason;
+
+    public CyclingOption<E> setValueReason(java.util.function.Function<E, Component> f) {
+        this.valueReason = f;
+        return this;
+    }
+
+    public Component reasonFor(E value) {
+        return this.valueReason == null ? null : this.valueReason.apply(value);
+    }
+
+    private boolean pickable(int i) {
+        return i >= 0 && i < values.length && reasonFor(values[i]) == null;
+    }
+
+    public boolean hasPrev() {
+        for (int i = this.index - 1; i >= 0; i--) if (pickable(i)) return true;
+        return false;
+    }
+
+    public boolean hasNext() {
+        for (int i = this.index + 1; i < values.length; i++) if (pickable(i)) return true;
+        return false;
+    }
+
     public void prevValue() {
-        if(this.index > 0)
-            this.index--;
+        for (int i = this.index - 1; i >= 0; i--) {
+            if (pickable(i)) { this.index = i; break; }
+        }
         this.updateValue();
     }
 
     public void nextValue() {
-        if(this.index < values.length - 1)
-            this.index++;
+        for (int i = this.index + 1; i < values.length; i++) {
+            if (pickable(i)) { this.index = i; break; }
+        }
         this.updateValue();
     }
 

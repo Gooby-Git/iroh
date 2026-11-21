@@ -70,6 +70,14 @@ public class RangeOptionWidget extends OptionWidget<RangeOption> {
     }
 
     @Override
+    public void keyAdjust(int direction) {
+        if (!this.active) return;
+        this.option.stepBy(direction);
+        this.value = this.option.getScaledValue();
+        this.updateDisplayedValue();
+    }
+
+    @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         boolean isLeft = keyCode == GLFW.GLFW_KEY_LEFT;
         boolean isRight = keyCode == GLFW.GLFW_KEY_RIGHT;

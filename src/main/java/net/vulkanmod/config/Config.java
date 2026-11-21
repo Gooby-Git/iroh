@@ -1,19 +1,18 @@
 package net.vulkanmod.config;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import net.vulkanmod.config.video.VideoModeManager;
+import dev.elemore.iroh.config.IrohOptions;
 import net.vulkanmod.config.video.VideoModeSet;
 
-import java.io.FileReader;
-import java.io.IOException;
-import java.lang.reflect.Modifier;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Collections;
-
+/**
+ * Live values of Iroh's options, read directly by the renderer ({@code Initializer.CONFIG.field}).
+ * The registry that owns defaults, ranges, serialisation and the screen is
+ * {@link IrohOptions}; the file is {@code config/iroh.json}. Field names of the original VulkanMod options are kept
+ * because other code reads them. Constructing a Config touches no GLFW or Minecraft class; {@code videoMode} is
+ * filled in by Initializer once the monitor is known.
+ */
 public class Config {
-    public VideoModeSet.VideoMode videoMode = VideoModeManager.getFirstAvailable().getVideoMode();
+    // ---- ported VulkanMod options (defaults unchanged) ----
+    public VideoModeSet.VideoMode videoMode = null;
     public int windowMode = 0;
 
     public int advCulling = 2;
@@ -22,6 +21,8 @@ public class Config {
     public boolean uniqueOpaqueLayer = true;
     public boolean entityCulling = true;
     public int device = -1;
+    /** rc8: Iroh's own device-memory cap in MiB; 0 = automatic (min(60% of the largest VRAM heap, 8 GiB)). */
+    public int maxDeviceMemoryMiB = 0;
 
     public int ambientOcclusion = 1;
     public int frameQueueSize = 2;
@@ -29,46 +30,26 @@ public class Config {
 
     public boolean backFaceCulling = true;
 
+    // ---- options the pack relied on (Sodium / Sodium Extra / Iris / Cull Fewer Leaves), see IrohOptions ----
+    /** DEFAULT follows the vanilla Graphics setting, FAST / FANCY override it. */
+    public String leavesQuality = "DEFAULT";
+    public boolean enableVignette = true;
+    public boolean showFps = false;
+    /** -1 terrain fog off, 0 vanilla, n > 0 chunks (not verified, treated as vanilla). */
+    public int fogDistanceChunks = 0;
+    /** Iroh leaf culling (Cull Fewer Leaves behaviour) on/off. Off unless migrated from cull-fewer-leaves.toml. */
+    public boolean leafCulling = false;
+    /** 0..100: share of partly covered inner leaf faces hidden anyway, at random (Cull Fewer Leaves randomRejection). */
+    public int leafCullingRejection = 0;
+    /** 1..4: layers of leaves before the inside is culled (Cull Fewer Leaves depth). */
+    public int leafCullingDepth = 2;
+    /** ALWAYS / ONE_FRAME / ZERO_FRAMES (Sodium chunk_build_defer_mode). */
+    public String chunkBuildDeferMode = "ALWAYS";
+    /** Intent carried over from iris.properties; read-only until the shader pack loader exists. */
+    public String shaderPack = "";
+    public boolean shadersEnabled = false;
+
     public void write() {
-
-        if(!Files.exists(CONFIG_PATH.getParent())) {
-            try {
-                Files.createDirectories(CONFIG_PATH);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-
-        try {
-            Files.write(CONFIG_PATH, Collections.singleton(GSON.toJson(this)));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static Path CONFIG_PATH;
-
-    private static final Gson GSON = new GsonBuilder()
-            .setPrettyPrinting()
-            .excludeFieldsWithModifiers(Modifier.PRIVATE)
-            .create();
-
-    public static Config load(Path path) {
-        Config config;
-        Config.CONFIG_PATH = path;
-
-        if (Files.exists(path)) {
-            try (FileReader fileReader = new FileReader(path.toFile())) {
-                config = GSON.fromJson(fileReader, Config.class);
-            }
-            catch (IOException exception) {
-                throw new RuntimeException(exception.getMessage());
-            }
-        }
-        else {
-            config = null;
-        }
-
-        return config;
+        IrohOptions.save();
     }
 }

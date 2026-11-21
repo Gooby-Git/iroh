@@ -22,9 +22,13 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
+import dev.elemore.iroh.chunk.ChunkDeferPolicy;
+import dev.elemore.iroh.chunk.SyncWaitSet;
+import dev.elemore.iroh.config.IrohOptions;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.render.PipelineManager;
 import net.vulkanmod.render.chunk.buffer.DrawBuffers;
+import net.vulkanmod.render.chunk.buffer.UploadManager;
 import net.vulkanmod.render.chunk.build.RenderRegionBuilder;
 import net.vulkanmod.render.chunk.build.task.TaskDispatcher;
 import net.vulkanmod.render.chunk.build.task.ChunkTask;
@@ -132,6 +136,8 @@ public class WorldRenderer {
         BuildTimeProfiler.runBench(this.graphNeedsUpdate || !this.taskDispatcher.isIdle());
     }
 
+    private int pruneTick;
+
     public void setupRenderer(Camera camera, Frustum frustum, boolean isCapturedFrustum, boolean spectator) {
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Setup_Renderer");
@@ -139,6 +145,10 @@ public class WorldRenderer {
         benchCallback();
 
         this.cameraPos = camera.getPosition();
+        // rc7: prune chunk-status entries far outside the client chunk cache (radius renderDistance + 3) every 600 frames
+        if (++this.pruneTick % 600 == 0 && ChunkStatusMap.INSTANCE != null)
+            ChunkStatusMap.INSTANCE.prune(net.minecraft.core.SectionPos.blockToSectionCoord(this.cameraPos.x),
+                    net.minecraft.core.SectionPos.blockToSectionCoord(this.cameraPos.z), this.renderDistance + 8);
         if (this.minecraft.options.getEffectiveRenderDistance() != this.renderDistance) {
             this.allChanged();
         }
@@ -189,6 +199,7 @@ public class WorldRenderer {
                 this.lastCamRotY = camera.getYRot();
 
                 this.sectionGraph.update(camera, frustum, spectator);
+                this.waitForImportantRebuilds(camera, frustum, spectator);
             }
         }
 
@@ -198,14 +209,78 @@ public class WorldRenderer {
         profiler.pop();
     }
 
+    private static final boolean DEFER_STATS = Boolean.getBoolean("iroh.deferStats");
+    private long deferStatsLast;
+
+    /**
+     * Chunk build defer mode, ZERO_FRAMES half (P1-11): the important rebuilds the graph update just queued finish before
+     * this frame is drawn. The render thread waits (bounded by {@link ChunkDeferPolicy#ZERO_FRAME_BUDGET_NS}), uploads what
+     * arrived, and reruns the graph update so a section that was empty and now has geometry is in this frame's draw queue.
+     * ONE_FRAME waits in {@link #uploadSections()} at the start of the next frame instead.
+     */
+    private void waitForImportantRebuilds(Camera camera, Frustum frustum, boolean spectator) {
+        if (IrohOptions.chunkBuildDeferMode() != IrohOptions.DeferMode.ZERO_FRAMES)
+            return;
+        SyncWaitSet set = this.sectionGraph.syncSet();
+        if (set.pending() == 0)
+            return;
+
+        this.minecraft.getProfiler().push("defer_zero_frames");
+        set.awaitAll(ChunkDeferPolicy.budgetNs(IrohOptions.DeferMode.ZERO_FRAMES));
+        boolean arrived;
+        try {
+            arrived = this.taskDispatcher.updateSections(true); // perf/uploads: waiting for these sections: no budget
+            UploadManager.INSTANCE.submitUploads();
+        } catch (Exception e) {
+            Initializer.LOGGER.error(e.getMessage());
+            allChanged();
+            this.minecraft.getProfiler().pop();
+            return;
+        }
+        if (arrived) {
+            this.sectionGraph.setSyncAllowed(false);
+            try {
+                this.sectionGraph.update(camera, frustum, spectator);
+            } finally {
+                this.sectionGraph.setSyncAllowed(true);
+            }
+        }
+        this.logDeferStats();
+        this.minecraft.getProfiler().pop();
+    }
+
+    private void logDeferStats() {
+        if (!DEFER_STATS)
+            return;
+        long now = System.currentTimeMillis();
+        if (now - this.deferStatsLast > 5000 && this.sectionGraph != null) {
+            this.deferStatsLast = now;
+            Initializer.LOGGER.info("Iroh chunk defer: {}", this.sectionGraph.syncSet().stats());
+        }
+    }
+
     public void uploadSections() {
         this.minecraft.getProfiler().push("upload");
 
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Uploads");
 
+        boolean waitedForSections = false;
+        // ONE_FRAME: the rebuilds queued as important in the previous frame finish before this one is presented.
+        if (this.sectionGraph != null) {
+            SyncWaitSet set = this.sectionGraph.syncSet();
+            IrohOptions.DeferMode mode = IrohOptions.chunkBuildDeferMode();
+            if (mode == IrohOptions.DeferMode.ONE_FRAME && set.pending() > 0) {
+                waitedForSections = true;
+                set.awaitAll(ChunkDeferPolicy.budgetNs(mode));
+                this.logDeferStats();
+            } else {
+                set.clear();
+            }
+        }
+
         try {
-            if (this.taskDispatcher.updateSections())
+            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections())
                 this.graphNeedsUpdate = true;
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
@@ -266,6 +341,7 @@ public class WorldRenderer {
         this.level = level;
         ChunkStatusMap.createInstance(renderDistance);
         if (level != null) {
+            dev.elemore.iroh.memory.MemoryGuard.worldStarted(); // rc9: growth rules warm up from here
             this.allChanged();
         } else {
             if (this.sectionGrid != null) {
@@ -274,6 +350,12 @@ public class WorldRenderer {
             }
 
             this.taskDispatcher.stopThreads();
+            // rc5 (td-dcbf58): compare across join/quit/rejoin; steady growth per world is a real leak
+            Initializer.LOGGER.info("Iroh: world unloaded; live Vulkan objects: {}", net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
+            dev.elemore.iroh.memory.MemoryGuard.worldUnloaded(); // rc8
+            // rc6: again once this frame slot's deferred frees have run (section buffers are scheduled, not yet freed, above)
+            net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(() -> Initializer.LOGGER.info(
+                    "Iroh: world unloaded, after deferred frees: {}", net.vulkanmod.vulkan.memory.MemoryManager.liveSummary()));
 
             this.graphNeedsUpdate = true;
         }
@@ -288,9 +370,37 @@ public class WorldRenderer {
         this.onAllChangedCallbacks.clear();
     }
 
+    /** Diagnostic (td-242adb): {@code -Diroh.fogTrace=true} logs the fog inputs terrain is drawn with, once a second per layer. */
+    private static final boolean FOG_TRACE = Boolean.getBoolean("iroh.fogTrace");
+    private long fogTraceLast;
+
+    private void traceFog(RenderType renderType, double camX, double camY, double camZ) {
+        long now = System.currentTimeMillis();
+        if (now - this.fogTraceLast < 1000 || renderType != RenderType.solid())
+            return;
+        this.fogTraceLast = now;
+        var cam = this.minecraft.gameRenderer.getMainCamera();
+        var fc = VRenderSystem.getShaderFogColor();
+        Initializer.LOGGER.info("[iroh-fog] cam=({}, {}, {}) fluid={} start={} end={} shape={} fogColor=({}, {}, {}, {})",
+                String.format("%.2f", camX), String.format("%.2f", camY), String.format("%.2f", camZ), cam.getFluidInCamera(),
+                com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart(), com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd(),
+                com.mojang.blaze3d.systems.RenderSystem.getShaderFogShape(), fc.getFloat(0), fc.getFloat(4), fc.getFloat(8), fc.getFloat(12));
+    }
+
+    private static final boolean DEBUG_TERRAIN_NO_CULL = Boolean.getBoolean("iroh.debug.terrainNoCull");
+
     public void renderSectionLayer(RenderType renderType, double camX, double camY, double camZ, Matrix4f modelView, Matrix4f projection) {
+        if (Renderer.recordingCommandBuffer("renderSectionLayer") == null) // rc3r2 (td-7937f0): no frame recording
+            return;
         TerrainRenderType terrainRenderType = TerrainRenderType.get(renderType);
         renderType.setupRenderState();
+        // td-242adb experiment: -Diroh.debug.terrainNoCull=true draws terrain without GPU back-face culling (pair it with
+        // iroh.json "backFaceCulling": false for the per-facing CPU buckets). If the powder-snow column then looks like the
+        // OpenGL reference, OpenGL is showing the column's own faces from inside.
+        if (DEBUG_TERRAIN_NO_CULL)
+            net.vulkanmod.vulkan.VRenderSystem.disableCull();
+        if (FOG_TRACE)
+            traceFog(renderType, camX, camY, camZ);
 
         this.sortTranslucentSections(camX, camY, camZ);
 
@@ -413,10 +523,16 @@ public class WorldRenderer {
         }
     }
 
-    /** A chunk turned render-ready (ChunkStatusMap): rerun the graph only if the last update deferred rebuilds. */
-    public void chunkBecameRenderReady() {
-        if (this.sectionGraph != null && this.sectionGraph.hasDeferredRebuilds())
+    /** Chunk (x, z) turned render-ready (ChunkStatusMap): one graph update, only if sections are parked waiting for it. */
+    public void chunkBecameRenderReady(int chunkX, int chunkZ) {
+        if (this.sectionGraph != null && this.sectionGraph.waiting().chunkReady(net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ)))
             this.graphNeedsUpdate = true;
+    }
+
+    /** The refused-rebuild bookkeeping of the current section graph, or null before the first allChanged. */
+    public static dev.elemore.iroh.chunk.RebuildWaiting rebuildWaiting() {
+        WorldRenderer wr = INSTANCE;
+        return wr != null && wr.sectionGraph != null ? wr.sectionGraph.waiting() : null;
     }
 
     public void scheduleGraphUpdate() {
@@ -451,7 +567,7 @@ public class WorldRenderer {
     }
 
     public ChunkAreaManager getChunkAreaManager() {
-        return this.sectionGrid.chunkAreaManager;
+        return this.sectionGrid != null ? this.sectionGrid.chunkAreaManager : null; // rc7: no NPE between worlds
     }
 
     public TaskDispatcher getTaskDispatcher() {

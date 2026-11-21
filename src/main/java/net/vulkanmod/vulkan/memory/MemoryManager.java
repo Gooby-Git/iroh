@@ -85,6 +85,7 @@ public class MemoryManager {
         this.setCurrentFrame(frame);
         this.freeBuffers(frame);
         this.freeImages(frame);
+        this.freeEpochGated();
         this.doFrameOps(frame);
         this.freeSegments(frame);
     }
@@ -95,6 +96,12 @@ public class MemoryManager {
     }
 
     public void freeAllBuffers() {
+        // callers wait for the device first (shutdown, frame-count change): everything is done
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring != null) ring.completeAll();
+        synchronized (this) {
+            freeEpochGated();
+        }
         for (int frame = 0; frame < Frames; ++frame) {
             this.freeBuffers(frame);
             this.freeImages(frame);
@@ -103,6 +110,58 @@ public class MemoryManager {
 
 //        buffers.values().forEach(buffer -> freeBuffer(buffer.getId(), buffer.getAllocation()));
 //        images.values().forEach(image -> image.doFree(this));
+    }
+
+    /**
+     * Iroh (rc5, td-dcbf58): at shutdown, after the device is idle and the deferred lists are freed, destroy every buffer
+     * and image still registered: objects mods never close (vanilla VertexBuffers cached by mods, GL textures never
+     * deleted; GL drops them with the context, Vulkan reports them as leaked at vkDestroyDevice). Logs the count by owner.
+     */
+    /** rc5: "buffers N (device MB), images M" for the world-unload log line (growth across rejoins = a real leak). */
+    public static String liveSummary() {
+        int pendingB = 0, pendingI = 0;
+        if (INSTANCE != null)
+            for (int i = 0; i < Frames; i++) {
+                pendingB += INSTANCE.freeableBuffers[i].size();
+                pendingI += INSTANCE.freeableImages[i].size();
+            }
+        if (INSTANCE != null) {
+            pendingB += INSTANCE.epochBuffers.size();
+            pendingI += INSTANCE.epochImages.size();
+            }
+        // rc6: per-owner breakdown (buffer class / image name with digits folded), top 8 each
+        java.util.Map<String, Integer> b = new java.util.HashMap<>(), im = new java.util.HashMap<>();
+        for (Buffer x : buffers.values()) b.merge(x.getClass().getSimpleName(), 1, Integer::sum);
+        for (VulkanImage x : images.values()) im.merge(x.name == null ? "?" : x.name.replaceAll("[0-9]+", "#"), 1, Integer::sum);
+        return "buffers " + buffers.size() + " (" + pendingB + " already scheduled for free), images " + images.size() + " (" + pendingI
+                + " scheduled), device " + (deviceMemory >> 20) + " MB, host " + (nativeMemory >> 20) + " MB; buffers by class " + top(b)
+                + "; images by name " + top(im);
+    }
+
+    private static String top(java.util.Map<String, Integer> m) {
+        return m.entrySet().stream().sorted((x, y) -> y.getValue() - x.getValue()).limit(8)
+                .map(e -> e.getKey() + "=" + e.getValue()).collect(java.util.stream.Collectors.joining(", ", "[", "]"));
+    }
+
+    public void freeLeftovers() {
+        java.util.Map<String, Integer> owners = new java.util.TreeMap<>();
+        int nb = 0, ni = 0;
+        for (Buffer b : new java.util.ArrayList<>(buffers.values())) {
+            owners.merge("buffer " + b.getClass().getSimpleName(), 1, Integer::sum);
+            vmaDestroyBuffer(ALLOCATOR, b.getId(), b.getAllocation());
+            nb++;
+        }
+        buffers.clear();
+        for (VulkanImage img : new java.util.ArrayList<>(images.values())) {
+            String n = img.name == null ? "?" : img.name.replaceAll("[0-9]+", "#");
+            owners.merge("image " + n, 1, Integer::sum);
+            img.doFree();
+            ni++;
+        }
+        images.clear();
+        if (nb + ni > 0)
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: freed {} buffers and {} images still alive at shutdown (never closed by their owners): {}",
+                    nb, ni, owners);
     }
 
     public void createBuffer(long size, int usage, int properties, LongBuffer pBuffer, PointerBuffer pBufferMemory) {
@@ -124,7 +183,8 @@ public class MemoryManager {
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack);
             allocationInfo.requiredFlags(properties);
 
-            int result = vmaCreateBuffer(ALLOCATOR, bufferInfo, allocationInfo, pBuffer, pBufferMemory, null);
+            dev.elemore.iroh.memory.MemoryGuard.beforeAllocation("buffer " + size + " B"); // rc8: never ask the driver again after an OOM
+            int result = dev.elemore.iroh.memory.MemoryGuard.check(vmaCreateBuffer(ALLOCATOR, bufferInfo, allocationInfo, pBuffer, pBufferMemory, null), "vmaCreateBuffer " + size + " B");
             if (result != VK_SUCCESS) {
                 Initializer.LOGGER.info(String.format("Failed to create buffer with size: %.3f MB", ((float) size / BYTES_IN_MB)));
                 Initializer.LOGGER.info(String.format("Tracked Device Memory used: %d/%d MB", getAllocatedDeviceMemoryMB(), getDeviceMemoryMB()));
@@ -155,7 +215,21 @@ public class MemoryManager {
             }
 
             buffers.putIfAbsent(buffer.getId(), buffer);
+
+            // Iroh (rc3, td-154ba3): with validation on, name every buffer "<type> <size> <creator>" so leak reports at
+            // vkDestroyDevice say what each leaked VkBuffer is.
+            if (net.vulkanmod.vulkan.Vulkan.ENABLE_VALIDATION_LAYERS)
+                net.vulkanmod.vulkan.Vulkan.setDebugLabel(stack, org.lwjgl.vulkan.VK10.VK_OBJECT_TYPE_BUFFER, buffer.getId(),
+                        buffer.getClass().getSimpleName() + " " + size + " " + creator());
         }
+    }
+
+    /** The first stack frame outside Iroh's memory classes (who asked for the buffer). Validation runs only. */
+    private static String creator() {
+        return StackWalker.getInstance().walk(s -> s
+                .filter(f -> !f.getClassName().startsWith("net.vulkanmod.vulkan.memory."))
+                .findFirst().map(f -> f.getClassName().substring(f.getClassName().lastIndexOf('.') + 1) + "." + f.getMethodName())
+                .orElse("?"));
     }
 
     public void createImage(int width, int height, int mipLevels, int format, int tiling, int usage,
@@ -183,7 +257,8 @@ public class MemoryManager {
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack);
             allocationInfo.requiredFlags(memProperties);
 
-            int result = vmaCreateImage(ALLOCATOR, imageInfo, allocationInfo, pTextureImage, pTextureImageMemory, null);
+            dev.elemore.iroh.memory.MemoryGuard.beforeAllocation("image " + width + "x" + height);
+            int result = dev.elemore.iroh.memory.MemoryGuard.check(vmaCreateImage(ALLOCATOR, imageInfo, allocationInfo, pTextureImage, pTextureImageMemory, null), "vmaCreateImage " + width + "x" + height);
             if (result != VK_SUCCESS) {
                 Initializer.LOGGER.info(String.format("Failed to create image with size: %dx%d", width, height));
 
@@ -197,6 +272,7 @@ public class MemoryManager {
         images.putIfAbsent(image.getId(), image);
 
         deviceMemory += image.size;
+        ownerCount(image.owner, 1);
     }
 
     public static void MapAndCopy(long allocation, Consumer<PointerBuffer> consumer) {
@@ -241,6 +317,46 @@ public class MemoryManager {
 
         VulkanImage image = images.remove(imageId);
         deviceMemory -= image.size;
+        ownerCount(image.owner, -1);
+    }
+
+    // rc9: live images per owner (creator + calling mod), for the growth monitor and the unload breakdown
+    private static final java.util.HashMap<String, Integer> OWNER_COUNTS = new java.util.HashMap<>();
+
+    private static synchronized void ownerCount(String owner, int d) {
+        OWNER_COUNTS.merge(owner == null ? "?" : owner, d, Integer::sum);
+    }
+
+    public static synchronized java.util.Map<String, Integer> ownerCounts() {
+        return new java.util.HashMap<>(OWNER_COUNTS);
+    }
+
+    // perf/uploads: deferred frees gated by the upload EPOCH they were scheduled in. Upload command buffers are no longer
+    // waited at every frame end, so "the frame slot came round again" no longer implies "every copy reading this object
+    // finished" (an upload recorded between two frames belongs to the next epoch). An object scheduled while epoch E is
+    // open is freed once E completed (its upload command buffers and the frame recorded during E have finished).
+    private final ObjectArrayList<Buffer.BufferInfo> epochBuffers = new ObjectArrayList<>();
+    private final it.unimi.dsi.fastutil.longs.LongArrayList epochBufferTags = new it.unimi.dsi.fastutil.longs.LongArrayList();
+    private final ObjectArrayList<VulkanImage> epochImages = new ObjectArrayList<>();
+    private final it.unimi.dsi.fastutil.longs.LongArrayList epochImageTags = new it.unimi.dsi.fastutil.longs.LongArrayList();
+
+    private void freeEpochGated() {
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        long done = ring == null ? Long.MAX_VALUE : ring.completedEpoch();
+        int w = 0;
+        for (int i = 0; i < epochBuffers.size(); i++) {
+            if (epochBufferTags.getLong(i) <= done) freeBuffer(epochBuffers.get(i));
+            else { epochBuffers.set(w, epochBuffers.get(i)); epochBufferTags.set(w, epochBufferTags.getLong(i)); w++; }
+        }
+        epochBuffers.size(w);
+        epochBufferTags.size(w);
+        w = 0;
+        for (int i = 0; i < epochImages.size(); i++) {
+            if (epochImageTags.getLong(i) <= done) epochImages.get(i).doFree();
+            else { epochImages.set(w, epochImages.get(i)); epochImageTags.set(w, epochImageTags.getLong(i)); w++; }
+        }
+        epochImages.size(w);
+        epochImageTags.size(w);
     }
 
     public synchronized void addToFreeable(Buffer buffer) {
@@ -248,6 +364,12 @@ public class MemoryManager {
 
         checkBuffer(bufferInfo);
 
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring != null) {
+            epochBuffers.add(bufferInfo);
+            epochBufferTags.add(ring.epoch());
+            return;
+        }
         freeableBuffers[currentFrame].add(bufferInfo);
 
         if (DEBUG)
@@ -255,6 +377,12 @@ public class MemoryManager {
     }
 
     public synchronized void addToFreeable(VulkanImage image) {
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring != null) {
+            epochImages.add(image);
+            epochImageTags.add(ring.epoch());
+            return;
+        }
         freeableImages[currentFrame].add(image);
     }
 

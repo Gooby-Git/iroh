@@ -9,6 +9,8 @@
   "client": [
     "window.WindowMixin",
     "render.PackFogM",
+    "render.IrohHudM",
+    "render.IrohLeavesM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",
@@ -39,9 +41,12 @@
 
     "render.BufferUploaderM",
     "render.GameRendererMixin",
+    "render.IrohFrameStagesM",
+    "render.IrohOverlayStageM",
     "render.GlProgramManagerMixin",
     "render.GlStateManagerM",
     "render.MinecraftMixin",
+    "render.IrohOomLogM",
     "render.RenderSystemMixin",
     "render.RenderTypeM",
     "render.ShaderInstanceM",
@@ -60,6 +65,7 @@
     "render.frapi.ItemRendererMixin",
     "render.frapi.ModelBlockRendererM",
     "render.particle.SingleQuadParticleM",
+    "render.particle.ParticleEngineStatsM",
     "render.target.MainTargetMixin",
     "render.target.RenderTargetMixin",
     "render.vertex.BufferBuilderM",

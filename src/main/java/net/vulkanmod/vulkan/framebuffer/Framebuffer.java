@@ -107,7 +107,7 @@ public class Framebuffer {
             framebufferInfo.layers(1);
             framebufferInfo.pAttachments(attachments);
 
-            if (VK10.vkCreateFramebuffer(Vulkan.getVkDevice(), framebufferInfo, null, pFramebuffer) != VK_SUCCESS) {
+            if (dev.elemore.iroh.memory.MemoryGuard.check(VK10.vkCreateFramebuffer(Vulkan.getVkDevice(), framebufferInfo, null, pFramebuffer), "vkCreateFramebuffer") != VK_SUCCESS) {
                 throw new RuntimeException("Failed to create framebuffer");
             }
 

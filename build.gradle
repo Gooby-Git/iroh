@@ -93,6 +93,13 @@ java {
 	targetCompatibility = JavaVersion.VERSION_21
 }
 
+// P1-11: a jar hash identifies a commit. No file timestamps, fixed entry order, for every archive task
+// (jar, sourcesJar, and Loom's remapJar / remapSourcesJar which copy those settings from the source archive).
+tasks.withType(AbstractArchiveTask).configureEach {
+	preserveFileTimestamps = false
+	reproducibleFileOrder = true
+}
+
 jar {
 	from("LICENSE") {
 		rename { "${it}_${project.base.archivesName.get()}"}
@@ -119,6 +126,7 @@ publishing {
 
 // Offline shader regression suite (P1-2a): converts and compiles every mod / vanilla shader in a mod folder
 // with the code the game runs. ./gradlew shaderHarness [-Pmods=dir] [-Pmode=legacy] [-Pshader=id] [-Pout=file]
+// -Ppack=dir[,dir] instead reports which shaders a resource pack's assets/*/shaders overrides would convert (RQ-14 test bed)
 tasks.register('shaderHarness', JavaExec) {
 	group = 'verification'
 	description = 'Convert and compile every core/post shader of the Vulkan instance offline'
@@ -127,10 +135,167 @@ tasks.register('shaderHarness', JavaExec) {
 	mainClass = 'dev.elemore.iroh.shadertest.ShaderHarness'
 	jvmArgs '-Xmx2g'
 	def a = []
-	['mods', 'mode', 'shader', 'out', 'instance', 'programs'].each { k ->
+	['mods', 'mode', 'shader', 'out', 'instance', 'programs', 'pack'].each { k ->
 		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
 	}
 	args a
+}
+
+// P1-6b api internals that need no game (leaf-culling rule, per-position random). ./gradlew apiTest ; last line
+// "# api PASS n/n".
+tasks.register('apiTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the api leaf-culling rule and position random headless'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.apitest.ApiTest'
+	jvmArgs '-ea'
+}
+
+// P1-10 (RQ-14): resource-pack overrides of vanilla core shaders, offline. ./gradlew coreOverrideTest [-Ppack=dir];
+// last line "# coreoverride PASS n/n".
+tasks.register('coreOverrideTest', JavaExec) {
+	group = 'verification'
+	description = 'Which core shaders a pack stack overrides, and that they convert from the pack'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shadertest.CoreOverrideTest'
+	jvmArgs '-Xmx1g'
+	if (project.hasProperty('pack')) args project.property('pack')
+}
+
+// Headless test of config/iroh.json and the pack migration (P1-6). ./gradlew irohConfigTest [-Pconfig=dir]; last line "# configtest PASS n/n"
+tasks.register('irohConfigTest', JavaExec) {
+	group = 'verification'
+	description = 'Migrate the pack config into iroh.json in temp dirs and check the result'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.configtest.ConfigMigrationTest'
+	workingDir = projectDir
+	if (project.hasProperty('config')) args project.property('config')
+}
+
+// rc2 (td-42f410, td-eb1e26): PipelineState bit-packing round trip + GL->Vulkan orientation truth table, headless.
+// ./gradlew orientationTest ; last line "# orientation PASS n/n".
+tasks.register('orientationTest', JavaExec) {
+	group = 'verification'
+	description = 'PipelineState packing round trip and the GL -> Vulkan viewport / cull / scissor truth table'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.gltest.OrientationTest'
+}
+
+// Refused-rebuild bookkeeping (td-27b474): parked sections retry only when their chunk turns render-ready, headless.
+// ./gradlew rebuildWaitTest ; last line "# rebuildwait PASS n/n"
+tasks.register('rebuildWaitTest', JavaExec) {
+	group = 'verification'
+	description = 'Check that refused section rebuilds are retried only on chunk readiness events'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.chunktest.RebuildWaitTest'
+}
+
+// Settings tooltip placement (td-7a78ea): never over the hovered row or the button bar at GUI scales 1-4, headless.
+// ./gradlew tooltipLayoutTest ; last line "# tooltiplayout PASS n/n"
+tasks.register('tooltipLayoutTest', JavaExec) {
+	group = 'verification'
+	description = 'Check TooltipPlacer for every option row position at 1280x720 and 1920x1080, GUI scale 1-4'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.configtest.TooltipLayoutTest'
+}
+
+// rc3: Iroh's own built-in shaders compile, and include/fog.glsl equals vanilla's fog functions.
+// ./gradlew builtinShaderTest ; last line "# builtin PASS n/n".
+tasks.register('builtinShaderTest', JavaExec) {
+	group = 'verification'
+	description = 'Compile every Iroh built-in shader; fog.glsl parity with vanilla'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shadertest.BuiltinShaderTest'
+	workingDir = projectDir
+}
+
+// rc3r2: the api members elemore-core's and Polaris' IrohBridge look up exist in the built jar with exact descriptors.
+// Bridge jars: newest per mod in -Pbridges=dir (default ~/Projects/iroh-wt-resync/build/p113b, else build/p16b); lookups discovered from IrohBridge constant pools. ./gradlew bridgeLinkTest [-Piroh=jar] [-Pbridges=dir]; last line "# bridgelink PASS n/n". Needs ./build.sh first.
+// rc5 (td-1cb256): upload-flush layout transitions batched, bounded stack. ./gradlew barrierBatchTest; last line "# barrierbatch PASS n/n".
+tasks.register('barrierBatchTest', JavaExec) {
+	group = 'verification'
+	description = 'Batch 50,000 image transitions through a fake recorder: one call per stage group, MemoryStack unmoved'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.BarrierBatchTest'
+	jvmArgs '-ea'
+}
+
+// rc6 (td-fcd844): texture-upload source spans and conversions. ./gradlew uploadBoundsTest; last line "# uploadbounds PASS n/n".
+tasks.register('uploadBoundsTest', JavaExec) {
+	group = 'verification'
+	description = 'Upload source spans never exceed the allocation; conversions keep a destination canary'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.UploadBoundsTest'
+	jvmArgs '-ea'
+}
+
+// perf/uploads: chained staging ring bookkeeping. ./gradlew stagingRingTest; last line "# stagingring PASS n/n".
+tasks.register('stagingRingTest', JavaExec) {
+	group = 'verification'
+	description = 'Staging ring: chain, budget, release after epoch, pinning, R-3 cases, concurrent workers'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.StagingRingTest'
+	jvmArgs '-ea'
+}
+
+// rc8: GL name -> VulkanImage registries return to baseline; every delete frees once. ./gradlew glRegistryTest
+tasks.register('glRegistryTest', JavaExec) {
+	group = 'verification'
+	description = 'GL texture/renderbuffer registries: create/delete/reuse cycles, one free per delete'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.GlRegistryTest'
+	jvmArgs '-ea'
+}
+
+// rc8: device-memory policy state machine. ./gradlew memoryBudgetTest; last line "# memorybudget PASS n/n".
+tasks.register('memoryBudgetTest', JavaExec) {
+	group = 'verification'
+	description = 'Memory cap policy: auto/configured cap, driver budget bound, warn, capped, OOM sticky'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.MemoryBudgetTest'
+	jvmArgs '-ea'
+}
+
+// rc10: per-facing bucket predicate never drops a front face. ./gradlew facingMaskTest
+tasks.register('facingMaskTest', JavaExec) {
+	group = 'verification'
+	description = 'Per-facing bucket visibility predicate: no front face dropped (camera inside blocks, on planes)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.chunktest.FacingMaskTest'
+	jvmArgs '-ea'
+}
+
+// rc10 (td-242adb): sub-step planes keep their side of block planes. ./gradlew planeSnapTest
+tasks.register('planeSnapTest', JavaExec) {
+	group = 'verification'
+	description = 'Terrain position quantisation: sub-step insets, on-grid exactness, monotonicity'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.chunktest.PlaneSnapTest'
+	jvmArgs '-ea'
+}
+
+tasks.register('bridgeLinkTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.compattest.BridgeLinkTest'
+	workingDir = projectDir
+	args((project.findProperty('iroh') ?: '') as String, (project.findProperty('bridges') ?: '') as String)
 }
 
 // GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).
@@ -142,6 +307,16 @@ tasks.register('glNetTest', JavaExec) {
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.gltest.GlNetTest'
 	jvmArgs '-Diroh.glnet.anythread=true' // no Minecraft render thread in the test
+}
+
+// Headless test of the chunk build defer mode machinery (P1-11): importance rule, wait set, latch contract.
+// ./gradlew chunkDeferTest ; last line "# chunkdefer PASS n/n"
+tasks.register('chunkDeferTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the chunk build defer policy, the bounded wait set and the task latch contract'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
 }
 
 // Offline Iris-pack front end (P3-1): parse, preprocess, translate and compile every program of a shader pack.

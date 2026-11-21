@@ -32,6 +32,8 @@ public class VulkanImage {
     private static final VkDevice DEVICE = Vulkan.getVkDevice();
 
     public final String name;
+    /** rc9: owner key for the growth monitor: creator + calling mod (digits folded), e.g. "GlTexture depth by vista". */
+    public String owner = "?";
     public final int format;
     public final int aspect;
     public final int mipLevels;
@@ -107,6 +109,7 @@ public class VulkanImage {
 
     private VulkanImage(Builder builder) {
         this.name = builder.name;
+        this.owner = builder.owner != null ? builder.owner : builder.name;
         this.mipLevels = builder.mipLevels;
         this.width = builder.width;
         this.height = builder.height;
@@ -138,7 +141,14 @@ public class VulkanImage {
     }
 
     public static VulkanImage createDepthImage(int format, int width, int height, int usage, boolean blur, boolean clamp) {
+        return createDepthImage(null, null, format, width, height, usage, blur, clamp);
+    }
+
+    /** rc9: named / owned depth image (null = derived from the caller). */
+    public static VulkanImage createDepthImage(String name, String owner, int format, int width, int height, int usage, boolean blur, boolean clamp) {
         VulkanImage image = VulkanImage.builder(width, height)
+                .setName(name)
+                .setOwner(owner)
                 .setFormat(format)
                 .setUsage(usage)
                 .setLinearFiltering(blur)
@@ -231,7 +241,7 @@ public class VulkanImage {
 
             LongBuffer pImageView = stack.mallocLong(1);
 
-            if (vkCreateImageView(DEVICE, viewInfo, null, pImageView) != VK_SUCCESS) {
+            if (dev.elemore.iroh.memory.MemoryGuard.check(vkCreateImageView(DEVICE, viewInfo, null, pImageView), "vkCreateImageView") != VK_SUCCESS) {
                 throw new RuntimeException("Failed to create texture image view");
             }
 
@@ -245,12 +255,28 @@ public class VulkanImage {
                                    MemoryUtil.memAddress(buffer));
     }
 
+    private static boolean loggedBadUpload;
+
     public void uploadSubTextureAsync(int mipLevel, int width, int height, int xOffset, int yOffset, int unpackSkipRows, int unpackSkipPixels, int unpackRowLength, long srcPtr) {
         // Iroh: GL semantics, row length 0 = width (the base copied 0 bytes then and uploaded staging garbage:
         // Xaero's striped map tiles, td-834bea). Size = exactly the rows the copy reads.
         if (unpackRowLength <= 0)
             unpackRowLength = width;
+        // Iroh (rc6, td-fcd844): destination checked before any copy (the source span is the caller's to check: it knows
+        // the allocation; VkGlTexture.uploadClient and the NativeImage path do).
+        int lw = Math.max(1, this.width >> mipLevel), lh = Math.max(1, this.height >> mipLevel);
+        if (srcPtr == 0L || width <= 0 || height <= 0 || mipLevel < 0 || mipLevel >= this.mipLevels || xOffset < 0 || yOffset < 0
+                || xOffset + width > lw || yOffset + height > lh || unpackSkipPixels + width > unpackRowLength || this.id == 0L) {
+            if (!loggedBadUpload) {
+                loggedBadUpload = true;
+                net.vulkanmod.Initializer.LOGGER.error("Iroh: texture upload skipped: {} level {} region {},{} {}x{} (level {}x{}, mips {}), rowLength {} skip {},{}, src 0x{} (logged once)",
+                        this.name, mipLevel, xOffset, yOffset, width, height, lw, lh, this.mipLevels, unpackRowLength, unpackSkipPixels,
+                        unpackSkipRows, Long.toHexString(srcPtr), new Throwable("uploaded from"));
+            }
+            return;
+        }
         long uploadSize = ((long) unpackRowLength * (height - 1) + width) * this.formatSize;
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.upload(this, uploadSize);
 
         // Iroh (td-4a9be3): the frame already used this image: upload in the frame buffer so earlier draws keep the
         // old contents and the layout history stays in one buffer.
@@ -260,31 +286,15 @@ public class VulkanImage {
             return;
         }
 
-        StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
-
-        // Use a temporary staging buffer if the upload size is greater than
-        // the default staging buffer
-        if (uploadSize > stagingBuffer.getBufferSize()) {
-            stagingBuffer = new StagingBuffer(uploadSize);
-            stagingBuffer.scheduleFree();
-        }
-
+        // rc6: staging that fits without a flush (shared buffer or spill block); the copy into it is synchronous, so the
+        // caller's memory is never read after this returns, and no staging offset is held across a flush.
+        ImageUploadHelper helper = ImageUploadHelper.INSTANCE;
         srcPtr += ((long) unpackRowLength * unpackSkipRows + unpackSkipPixels) * this.formatSize;
-
-        stagingBuffer.align(this.formatSize);
-        stagingBuffer.copyBuffer((int) uploadSize, srcPtr);
-
-        long bufferId = stagingBuffer.getId();
-
-        VkCommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
-        try (MemoryStack stack = stackPush()) {
-            transferDstLayout(stack, commandBuffer);
-
-            final int srcOffset = (int) (stagingBuffer.getOffset());
-
-            ImageUtil.copyBufferToImageCmd(stack, commandBuffer, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
-                                           srcOffset, unpackRowLength, height);
-        }
+        // perf/uploads: ring staging (chained blocks, no flush); consumed now, recorded in this epoch's upload buffer
+        var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.asyncUploads++;
+        helper.queueCopy(this, alloc.bufferId, alloc.offset, mipLevel, width, height, xOffset, yOffset, unpackRowLength);
+        StagingBuffer.ring().consumed(alloc);
     }
 
     private void transferDstLayout(MemoryStack stack, VkCommandBuffer commandBuffer) {
@@ -295,40 +305,96 @@ public class VulkanImage {
      * Iroh (td-4a9be3): upload recorded in the frame command buffer, outside any render pass, from a private staging
      * buffer freed after this frame's fence (the per-frame staging buffer is reset before the frame executes).
      */
-    private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
-        StagingBuffer staging = new StagingBuffer(Math.max(uploadSize, 16));
-        staging.copyBuffer((int) uploadSize, srcPtr);
-        long bufferId = staging.getId();
-        int srcOffset = (int) staging.getOffset();
-        staging.scheduleFree();
+    // ---------------------------------------------------------------- perf/uploads: batched in-frame uploads
 
-        if (!outsideRenderPass(() -> {
-            try (MemoryStack stack = stackPush()) {
-                VkCommandBuffer cb = Renderer.getCommandBuffer();
-                transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                ImageUtil.copyBufferToImageCmd(stack, cb, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
-                                               srcOffset, rowLength, height);
-                if ((this.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
-                    transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-        })) {
-            // the image is an attachment of the bound pass: record in the frame buffer anyway is impossible inside
-            // the pass; fall back to the upload buffer (contents visible to the whole frame)
-            try (MemoryStack stack = stackPush()) {
-                VkCommandBuffer cb = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
-                transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                ImageUtil.copyBufferToImageCmd(stack, cb, bufferId, this.id, mipLevel, width, height, xOffset, yOffset,
-                                               srcOffset, rowLength, height);
-            }
-        }
-    }
+    private boolean inFramePending;
+    private static final it.unimi.dsi.fastutil.objects.ObjectArrayList<VulkanImage> IF_IMAGES = new it.unimi.dsi.fastutil.objects.ObjectArrayList<>();
+    private static final it.unimi.dsi.fastutil.longs.LongArrayList IF_DATA = new it.unimi.dsi.fastutil.longs.LongArrayList(); // 8 longs per upload
+    private static final ImageBarrierBatch IF_BARRIERS = new ImageBarrierBatch();
 
     /**
-     * Iroh: runs {@code record} on the frame command buffer outside any render pass: ends the bound pass, records,
-     * then resumes the pass that was bound (main target: LOAD pass; off-screen: beginRendering + GL binding) and
-     * re-applies GL viewport and scissor. Returns false (nothing recorded) when this image is an attachment of the
-     * bound pass (a GL feedback loop that cannot be made valid). Without a bound pass it just records.
+     * Iroh (perf/uploads): an upload into an image the frame already used. GL semantics: earlier draws keep the old
+     * texels, later draws see the new ones. The base ended and resumed the render pass and allocated a private staging
+     * buffer for EACH such upload; now the data goes to ring staging and the copy is queued, and all queued in-frame
+     * copies are recorded together (one pass break) right before the next draw that binds one of the images
+     * (VTextureSelector.bindShaderTextures), before an off-screen pass begins, before a host read, and at frame end.
      */
+    private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameUploads++;
+        ImageUploadHelper.INSTANCE.flushPendingCopies(); // rc6: keep upload-buffer order for this image
+        var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
+        long bufferId = alloc.bufferId;
+        long srcOffset = alloc.offset;
+        StagingBuffer.ring().consumed(alloc); // read by this frame's command buffer: released after the frame
+
+        Framebuffer boundFb = Renderer.getInstance().getBoundFramebuffer();
+        if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {
+            // an attachment of the bound pass (GL feedback loop): cannot copy inside the pass; upload buffer as before
+            logFeedbackOnce();
+            ImageUploadHelper.INSTANCE.queueCopy(this, bufferId, srcOffset, mipLevel, width, height, xOffset, yOffset, rowLength);
+            return;
+        }
+        this.inFramePending = true;
+        IF_IMAGES.add(this);
+        IF_DATA.add(bufferId);
+        IF_DATA.add(srcOffset);
+        IF_DATA.add(mipLevel);
+        IF_DATA.add(width);
+        IF_DATA.add(height);
+        IF_DATA.add(xOffset);
+        IF_DATA.add(yOffset);
+        IF_DATA.add(rowLength);
+    }
+
+    public boolean hasInFramePending() {
+        return this.inFramePending;
+    }
+
+    public static boolean anyInFramePending() {
+        return !IF_IMAGES.isEmpty();
+    }
+
+    /** Records every queued in-frame upload into the frame command buffer, outside the bound pass (one break). */
+    public static void flushInFrame() {
+        if (IF_IMAGES.isEmpty())
+            return;
+        if (Renderer.recordingCommandBuffer("in-frame uploads") == null) {
+            clearInFrame();
+            return;
+        }
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameFlushes++;
+        endPassRunResume(() -> {
+            VkCommandBuffer cb = Renderer.getCommandBuffer();
+            try (MemoryStack stack = stackPush()) {
+                for (int i = 0, n = IF_IMAGES.size(); i < n; i++) {
+                    VulkanImage img = IF_IMAGES.get(i);
+                    if (img.id == 0L) continue;
+                    img.transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    int o = i * 8;
+                    ImageUtil.copyBufferToImageCmd(stack, cb, IF_DATA.getLong(o), img.id, (int) IF_DATA.getLong(o + 2),
+                            (int) IF_DATA.getLong(o + 3), (int) IF_DATA.getLong(o + 4), (int) IF_DATA.getLong(o + 5),
+                            (int) IF_DATA.getLong(o + 6), (int) IF_DATA.getLong(o + 1), (int) IF_DATA.getLong(o + 7),
+                            (int) IF_DATA.getLong(o + 4));
+                }
+                for (int i = 0, n = IF_IMAGES.size(); i < n; i++) {
+                    VulkanImage img = IF_IMAGES.get(i);
+                    if (img.inFramePending && img.id != 0L && (img.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0
+                            && img.currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                        img.readOnlyLayoutBatched(IF_BARRIERS, cb);
+                    img.inFramePending = false;
+                }
+                IF_BARRIERS.flush(cb, ImageBarrierBatch.VULKAN);
+            }
+        });
+        clearInFrame();
+    }
+
+    private static void clearInFrame() {
+        for (VulkanImage img : IF_IMAGES) img.inFramePending = false;
+        IF_IMAGES.clear();
+        IF_DATA.clear();
+    }
+
     public boolean outsideRenderPass(Runnable record) {
         Renderer renderer = Renderer.getInstance();
         RenderPass boundPass = renderer.getBoundRenderPass();
@@ -527,7 +593,18 @@ public class VulkanImage {
 
     public static void transitionLayout(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int baseLevel, int oldLayout, int newLayout,
                                         int sourceStage, int srcAccessMask, int destinationStage, int dstAccessMask) {
+        // Iroh (rc5, td-1cb256): own stack frame. Callers record many transitions under one frame (an upload flush of
+        // thousands of images); a per-call calloc without a pop overflowed LWJGL's 64 KB thread stack ->
+        // OutOfMemoryError -> vanilla's emergencySave halted the world.
+        try (MemoryStack frame = stack.push()) {
+            recordBarrier(frame, commandBuffer, image, baseLevel, newLayout, sourceStage, srcAccessMask, destinationStage, dstAccessMask);
+        }
+        image.currentLayout = newLayout;
+        noteRecordedIn(image, commandBuffer);
+    }
 
+    private static void recordBarrier(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int baseLevel, int newLayout,
+                                      int sourceStage, int srcAccessMask, int destinationStage, int dstAccessMask) {
         VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
         barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
         barrier.oldLayout(image.currentLayout);
@@ -552,9 +629,19 @@ public class VulkanImage {
                 null,
                 null,
                 barrier);
+    }
 
-        image.currentLayout = newLayout;
-        noteRecordedIn(image, commandBuffer);
+    /**
+     * Iroh (rc5, td-1cb256): queue this image's TRANSFER_DST -> SHADER_READ_ONLY transition into {@code batch} (recorded by
+     * the batch's flush into {@code commandBuffer}); state is updated now, as the barrier precedes any later command.
+     */
+    public void readOnlyLayoutBatched(ImageBarrierBatch batch, VkCommandBuffer commandBuffer) {
+        if (this.currentLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+            throw new IllegalStateException("batched read-only transition expects TRANSFER_DST, layout " + this.currentLayout);
+        batch.add(this.getId(), this.aspect, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        this.currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        noteRecordedIn(this, commandBuffer);
     }
 
     /** Iroh (td-4a9be3): remember which buffer holds the image's latest layout change (see uploadOwned). */
@@ -574,21 +661,26 @@ public class VulkanImage {
         return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
     }
 
+    /** rc8: where free() sends an image (the deferred, epoch-gated free); replaceable for the offline registry test. */
+    public static java.util.function.Consumer<VulkanImage> FREE = img -> MemoryManager.getInstance().addToFreeable(img);
+
     public void free() {
-        MemoryManager.getInstance().addToFreeable(this);
+        FREE.accept(this);
     }
 
     public void doFree() {
         if (this.id == 0L)
             return;
 
-        MemoryManager.freeImage(this.id, this.allocation);
-
         vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null);
 
         if (this.levelImageViews != null)
             Arrays.stream(this.levelImageViews).forEach(
-                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null));
+                    // Iroh (rc5, td-dcbf58): destroy each level view (the base destroyed mainImageView again for every
+                    // level: a double destroy, and every level view leaked)
+                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), imageView, null));
+
+        MemoryManager.freeImage(this.id, this.allocation); // rc5: views first, then the image
 
         this.id = 0L;
     }
@@ -634,6 +726,7 @@ public class VulkanImage {
         final int height;
 
         String name;
+        String owner;
         int format = VulkanImage.DefaultFormat;
         int formatSize;
         byte mipLevels = 1;
@@ -692,6 +785,11 @@ public class VulkanImage {
             return this;
         }
 
+        public Builder setOwner(String owner) {
+            this.owner = owner;
+            return this;
+        }
+
         public Builder setLevelViews(boolean b) {
             this.levelViews = b;
             return this;
@@ -699,8 +797,26 @@ public class VulkanImage {
 
         public VulkanImage createVulkanImage() {
             this.formatSize = formatSize(this.format);
+            // Iroh (rc8): every image is named (leak reports and the world-unload breakdown group by name). Unnamed
+            // callers get "<creator class>.<method> WxH fmt".
+            if (this.name == null || this.owner == null) {
+                String creator = creatorName();
+                String mod = dev.elemore.iroh.diag.EmuStats.callerMod();
+                if (this.name == null)
+                    this.name = creator + " " + this.width + "x" + this.height + " fmt" + this.format + " by " + mod;
+                if (this.owner == null)
+                    this.owner = (this.name.replaceAll("[0-9]+", "#")) + (this.name.contains(" by ") ? "" : " by " + mod);
+            }
 
             return VulkanImage.createTextureImage(this);
+        }
+
+        private static String creatorName() {
+            return StackWalker.getInstance().walk(s -> s
+                    .filter(f -> !f.getClassName().startsWith("net.vulkanmod.vulkan.texture.VulkanImage"))
+                    .findFirst()
+                    .map(f -> f.getClassName().substring(f.getClassName().lastIndexOf('.') + 1) + "." + f.getMethodName())
+                    .orElse("?"));
         }
 
         private static int formatSize(int format) {

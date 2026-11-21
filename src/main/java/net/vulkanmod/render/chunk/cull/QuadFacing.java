@@ -63,4 +63,21 @@ public enum QuadFacing {
 
         return QuadFacing.UNDEFINED;
     }
+    /**
+     * rc10: which per-facing buckets of the section at (secX, secY, secZ) can contain front faces for a camera at
+     * (x, y, z). A bucket is skipped only when every plane of that facing in the section is behind the camera: e.g.
+     * Z_NEG faces (normal -z) can face the camera only if the camera is at a smaller z than some face plane, and face
+     * planes lie in [secZ, secZ + 16]. Conservative by the whole section (camera inside the section -> all buckets).
+     * Pure, tested offline (facingMaskTest).
+     */
+    public static int facingMask(double camX, double camY, double camZ, int secX, int secY, int secZ) {
+        int mask = 1 << UNDEFINED.ordinal();
+        mask |= camX - secX >= 0 ? 1 << X_POS.ordinal() : 0;
+        mask |= camY - secY >= 0 ? 1 << Y_POS.ordinal() : 0;
+        mask |= camZ - secZ >= 0 ? 1 << Z_POS.ordinal() : 0;
+        mask |= camX - (secX + 16) < 0 ? 1 << X_NEG.ordinal() : 0;
+        mask |= camY - (secY + 16) < 0 ? 1 << Y_NEG.ordinal() : 0;
+        mask |= camZ - (secZ + 16) < 0 ? 1 << Z_NEG.ordinal() : 0;
+        return mask;
+    }
 }

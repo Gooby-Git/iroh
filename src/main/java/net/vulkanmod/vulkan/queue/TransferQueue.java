@@ -32,7 +32,7 @@ public class TransferQueue extends Queue {
 
             vkCmdCopyBuffer(commandBuffer.getHandle(), srcBuffer, dstBuffer, copyRegion);
 
-            this.submitCommands(commandBuffer);
+            this.submitCommandsSignalling(commandBuffer); // perf/uploads: the frame waits on the GPU, not the CPU
             Synchronization.INSTANCE.addCommandBuffer(commandBuffer);
 
             return commandBuffer.fence;
@@ -58,6 +58,7 @@ public class TransferQueue extends Queue {
     }
 
     public static void uploadBufferCmd(VkCommandBuffer commandBuffer, long srcBuffer, long srcOffset, long dstBuffer, long dstOffset, long size) {
+        net.vulkanmod.vulkan.memory.buffer.StagingBuffer.checkConsumer(commandBuffer, srcBuffer); // Iroh R-3
 
         try (MemoryStack stack = stackPush()) {
 

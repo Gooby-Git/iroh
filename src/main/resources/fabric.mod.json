@@ -15,7 +15,7 @@
     "sources": "https://github.com/xCollateral/VulkanMod"
   },
 
-  "icon": "assets/vulkanmod/Vlogo.png",
+  "icon": "assets/vulkanmod/iroh_logo.png",
 
   "environment": "client",
   "entrypoints": {
@@ -25,8 +25,7 @@
   },
   "mixins": [
     "iroh.mixins.json",
-    "iroh-compat.mixins.json",
-    "iroh-gates.mixins.json"
+    "iroh-compat.mixins.json"
   ],
   "accessWidener" : "vulkanmod.accesswidener",
 

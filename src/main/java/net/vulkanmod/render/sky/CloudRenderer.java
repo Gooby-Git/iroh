@@ -7,6 +7,7 @@ import net.minecraft.client.CloudStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.FogRenderer;
+import net.minecraft.client.renderer.RenderStateShard;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceManager;
@@ -134,26 +135,42 @@ public class CloudRenderer {
         RenderSystem.setShaderColor((float) cloudColor.x, (float) cloudColor.y, (float) cloudColor.z, 0.8f);
 
         GraphicsPipeline pipeline = PipelineManager.getCloudsPipeline();
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.enableDepthTest();
+        // Fabulous: vanilla draws clouds through RenderType.clouds(), whose output shard binds the clouds target (cleared by
+        // LevelRenderer, composited by transparency.json). Iroh bypasses the RenderType, so bind it here; without this the draw
+        // lands on whatever LevelRenderer left bound (RenderTarget.clear() leaves FBO 0) and the clouds vanish (td-429512).
+        // The shard is a no-op unless Minecraft.useShaderTransparency(), so Fancy / Fast are untouched.
+        RenderStateShard.CLOUDS_TARGET.setupRenderState();
+        try {
+            RenderSystem.enableBlend();
+            if (Minecraft.useShaderTransparency()) {
+                // vanilla TRANSLUCENT_TRANSPARENCY: the clouds target holds premultiplied colour, alpha accumulates (fast clouds overlap)
+                RenderSystem.blendFuncSeparate(com.mojang.blaze3d.platform.GlStateManager.SourceFactor.SRC_ALPHA, com.mojang.blaze3d.platform.GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
+                        com.mojang.blaze3d.platform.GlStateManager.SourceFactor.ONE, com.mojang.blaze3d.platform.GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA);
+            } else {
+                RenderSystem.defaultBlendFunc();
+            }
+            RenderSystem.enableDepthTest();
 
-        boolean fastClouds = this.prevCloudsType == CloudStatus.FAST;
-        boolean insideClouds = yState == Y_INSIDE_CLOUDS;
-        boolean disableCull = insideClouds || (fastClouds && centerY <= 0.0f);
+            boolean fastClouds = this.prevCloudsType == CloudStatus.FAST;
+            boolean insideClouds = yState == Y_INSIDE_CLOUDS;
+            boolean disableCull = insideClouds || (fastClouds && centerY <= 0.0f);
 
-        if (disableCull) {
-            RenderSystem.disableCull();
-        }
+            if (disableCull) {
+                RenderSystem.disableCull();
+            }
 
-        if (!fastClouds) {
-            RenderSystem.colorMask(false, false, false, false);
+            if (!fastClouds) {
+                RenderSystem.colorMask(false, false, false, false);
+                this.cloudBuffer.drawWithShader(poseStack.last().pose(), projection, pipeline);
+
+                RenderSystem.colorMask(true, true, true, true);
+            }
+
             this.cloudBuffer.drawWithShader(poseStack.last().pose(), projection, pipeline);
 
-            RenderSystem.colorMask(true, true, true, true);
+        } finally {
+            RenderStateShard.CLOUDS_TARGET.clearRenderState();
         }
-
-        this.cloudBuffer.drawWithShader(poseStack.last().pose(), projection, pipeline);
 
         RenderSystem.enableCull();
         RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);

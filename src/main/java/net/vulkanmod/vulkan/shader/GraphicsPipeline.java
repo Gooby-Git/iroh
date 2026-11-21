@@ -112,7 +112,7 @@ public class GraphicsPipeline extends Pipeline {
             rasterizer.polygonMode(polygonMode);
             rasterizer.lineWidth(1.0f);
             rasterizer.cullMode(cullMode);
-            rasterizer.frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            rasterizer.frontFace(dev.elemore.iroh.glshim.Orientation.FRONT_FACE); // conventions: Orientation
             rasterizer.depthBiasEnable(true);
 
             // ===> MULTISAMPLING <===

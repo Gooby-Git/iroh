@@ -6,6 +6,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.vulkanmod.config.gui.GuiRenderer;
 import net.vulkanmod.config.option.CyclingOption;
 import net.vulkanmod.vulkan.util.ColorUtil;
@@ -36,8 +37,8 @@ public class CyclingOptionWidget extends OptionWidget<CyclingOption<?>> {
 
         this.renderBars();
 
-        this.leftButton.setStatus(option.index() > 0);
-        this.rightButton.setStatus(option.index() < option.getValues().length - 1);
+        this.leftButton.setStatus(option.hasPrev());
+        this.rightButton.setStatus(option.hasNext());
 
         int color = this.active ? 0xFFFFFF : 0xA0A0A0;
         Font textRenderer = Minecraft.getInstance().font;
@@ -68,8 +69,46 @@ public class CyclingOptionWidget extends OptionWidget<CyclingOption<?>> {
             float y0 = this.y + this.height - 5.0f;
 
             int c = i == current ? activeColor : color;
+            if (unpickable(i))
+                c = ColorUtil.ARGB.pack(0.8f, 0.2f, 0.2f, i == current ? 0.9f : 0.5f);
             GuiRenderer.fill(x0, y0, x0 + barWidth, y0 + 1.5f, c);
         }
+    }
+
+    private boolean unpickable(int i) {
+        Object[] values = option.getValues();
+        return i >= 0 && i < values.length && reason(values[i]) != null;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Component reason(Object value) {
+        return ((CyclingOption) option).reasonFor(value);
+    }
+
+    @Override
+    public Component getTooltip() {
+        Component base = super.getTooltip();
+        Object[] values = option.getValues();
+        MutableComponent out = null;
+        for (Object v : values) {
+            Component r = reason(v);
+            if (r == null) continue;
+            if (out == null) out = base == null ? Component.empty() : Component.empty().append(base).append("\n");
+            out.append("\n").append(Component.translatable("iroh.screen.valueUnavailable", valueName(v), r));
+        }
+        return out != null ? out : base;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Component valueName(Object v) {
+        var tr = ((CyclingOption) option).getTranslatorOrNull();
+        return tr == null ? Component.literal(String.valueOf(v)) : (Component) tr.apply(v);
+    }
+
+    @Override
+    public void keyAdjust(int direction) {
+        if (direction < 0) option.prevValue();
+        else option.nextValue();
     }
 
     @Override

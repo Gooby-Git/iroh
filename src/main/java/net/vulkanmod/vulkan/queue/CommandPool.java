@@ -60,7 +60,7 @@ public class CommandPool {
         allocInfo.commandBufferCount(size);
 
         PointerBuffer pCommandBuffer = stack.mallocPointer(size);
-        vkAllocateCommandBuffers(Vulkan.getVkDevice(), allocInfo, pCommandBuffer);
+        dev.elemore.iroh.memory.MemoryGuard.check(vkAllocateCommandBuffers(Vulkan.getVkDevice(), allocInfo, pCommandBuffer), "vkAllocateCommandBuffers"); // rc8: unchecked in the base
 
         VkFenceCreateInfo fenceInfo = VkFenceCreateInfo.calloc(stack);
         fenceInfo.sType$Default();
@@ -157,7 +157,7 @@ public class CommandPool {
                 submitInfo.pSignalSemaphores(stack.longs(this.semaphore));
             }
 
-            vkQueueSubmit(queue, submitInfo, fence);
+            dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(queue, submitInfo, fence), "upload vkQueueSubmit"); // rc8: unchecked in the base
 
             this.recording = false;
             this.submitted = true;

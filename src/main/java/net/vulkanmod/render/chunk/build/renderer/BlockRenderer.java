@@ -50,6 +50,45 @@ public class BlockRenderer extends AbstractBlockRenderContext {
         this.random = new SingleThreadedRandomSource(42L);
     }
 
+    /**
+     * Iroh (rc3, td-242adb): {@code -Diroh.faceTrace=x,y,z} logs every quad the mesher writes for that block, with its
+     * face, cull face, light-face, AO, layer, per-vertex packed light and brightness, and the culling verdict of all six
+     * faces, once per rebuild of its section. For comparing a block's mesh with what vanilla draws (powder snow walls).
+     */
+    private static final BlockPos FACE_TRACE = parseTrace(System.getProperty("iroh.faceTrace"));
+
+    private static BlockPos parseTrace(String v) {
+        if (v == null || v.isBlank()) return null;
+        try {
+            String[] p = v.split(",");
+            return new BlockPos(Integer.parseInt(p[0].trim()), Integer.parseInt(p[1].trim()), Integer.parseInt(p[2].trim()));
+        } catch (RuntimeException e) {
+            Initializer.LOGGER.warn("Iroh: bad -Diroh.faceTrace={} (want x,y,z)", v);
+            return null;
+        }
+    }
+
+    private void traceQuad(MutableQuadViewImpl quad, boolean ao, BlendMode blend) {
+        QuadLightData d = this.quadLightData;
+        // rc10 (td-242adb): also the quad's plane (x, z), its facing bucket and the GPU-visible normal, so a missing
+        // inner face (powder snow's model has inward faces 0.002 inside the block) shows up in the log
+        Initializer.LOGGER.info("[iroh-face] {} {} nominal={} cull={} light={} facing={} ao={} blend={} layer={} lm=[{},{},{},{}] br=[{},{},{},{}] uv0=({},{}) x=[{},{},{},{}] y=[{},{},{},{}] z=[{},{},{},{}]",
+                this.blockPos.toShortString(), this.blockState, quad.nominalFace(), quad.cullFace(), quad.lightFace(), quad.getQuadFacing(), ao, blend,
+                this.renderType, Integer.toHexString(d.lm[0]), Integer.toHexString(d.lm[1]), Integer.toHexString(d.lm[2]), Integer.toHexString(d.lm[3]),
+                d.br[0], d.br[1], d.br[2], d.br[3], quad.u(0), quad.v(0), quad.x(0), quad.x(1), quad.x(2), quad.x(3),
+                quad.y(0), quad.y(1), quad.y(2), quad.y(3), quad.z(0), quad.z(1), quad.z(2), quad.z(3));
+    }
+
+    private void traceFaces() {
+        StringBuilder sb = new StringBuilder();
+        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+            BlockPos adj = this.blockPos.relative(dir);
+            sb.append(dir).append('=').append(this.shouldRenderFace(dir) ? "draw" : "cull")
+              .append('(').append(this.renderRegion.getBlockState(adj).getBlock().getDescriptionId()).append(") ");
+        }
+        Initializer.LOGGER.info("[iroh-face] {} {} faces: {}", this.blockPos.toShortString(), this.blockState, sb);
+    }
+
     public void renderBlock(BlockState blockState, BlockPos blockPos, Vector3f pos) {
         this.pos = pos;
         this.blockPos = blockPos;
@@ -70,6 +109,8 @@ public class BlockRenderer extends AbstractBlockRenderContext {
 
         this.prepareForBlock(blockState, blockPos, model.useAmbientOcclusion());
 
+        if (FACE_TRACE != null && FACE_TRACE.equals(blockPos))
+            traceFaces();
         model.emitBlockQuads(renderRegion, blockState, blockPos, this.randomSupplier, this);
     }
 
@@ -87,15 +128,22 @@ public class BlockRenderer extends AbstractBlockRenderContext {
 
         colorizeQuad(quad, colorIndex);
         shadeQuad(quad, lightPipeline, emissive, vanillaShade);
+        if (FACE_TRACE != null && FACE_TRACE.equals(this.blockPos))
+            traceQuad(quad, ao, mat.blendMode());
         bufferQuad(terrainBuilder, this.pos, quad, this.quadLightData);
     }
 
+    /** Iroh (P1-6b FRAPI): the layer the current quad goes to (its material's blend mode, else the block's layer). */
+    private TerrainRenderType quadRenderType;
+
     private TerrainBuilder getBufferBuilder(BlendMode blendMode) {
         if (blendMode == BlendMode.DEFAULT) {
+            this.quadRenderType = this.renderType;
             return this.terrainBuilder;
         } else {
             TerrainRenderType renderType = TerrainRenderType.get(blendMode.blockRenderLayer);
             renderType = TerrainRenderType.getRemapped(renderType);
+            this.quadRenderType = renderType;
             TerrainBuilder bufferBuilder = this.resources.builderPack.builder(renderType);
             bufferBuilder.setBlockAttributes(this.blockState);
 
@@ -106,7 +154,12 @@ public class BlockRenderer extends AbstractBlockRenderContext {
     public void bufferQuad(TerrainBuilder terrainBuilder, Vector3f pos, ModelQuadView quad, QuadLightData quadLightData) {
         QuadFacing quadFacing = quad.getQuadFacing();
 
-        if (renderType == TerrainRenderType.TRANSLUCENT || !this.backFaceCulling) {
+        // Iroh (P1-6b FRAPI): test the layer the quad is written to, not the block's layer. A BlendMode.TRANSLUCENT
+        // material on a solid/cutout block (Polaris' chisel paint coat) went to a per-facing bucket of the translucent
+        // builder, which only sorts and indexes the UNDEFINED bucket (TerrainBuilder.setupQuadSortingPoints): the
+        // quads were left unsorted or not drawn at all.
+        TerrainRenderType target = this.quadRenderType != null ? this.quadRenderType : this.renderType;
+        if (target == TerrainRenderType.TRANSLUCENT || !this.backFaceCulling) {
             quadFacing = QuadFacing.UNDEFINED;
         }
 

@@ -1,5 +1,13 @@
+// Iroh (rc3): exactly vanilla 1.21.1 include/fog.glsl: rgb toward the fog colour, alpha KEPT. The base mixed the whole
+// vec4, which moved alpha toward FogColor.a (translucent terrain, clouds and entities got more opaque in fog; visible in
+// Fabulous' alpha-weighted composite).
 vec4 linear_fog(vec4 inColor, float vertexDistance, float fogStart, float fogEnd, vec4 fogColor) {
-    return (vertexDistance <= fogStart) ? inColor : mix(inColor, fogColor, smoothstep(fogStart, fogEnd, vertexDistance) * fogColor.a);
+    if (vertexDistance <= fogStart) {
+        return inColor;
+    }
+
+    float fogValue = vertexDistance < fogEnd ? smoothstep(fogStart, fogEnd, vertexDistance) : 1.0;
+    return vec4(mix(inColor.rgb, fogColor.rgb, fogValue * fogColor.a), inColor.a);
 }
 
 float linear_fog_fade(float vertexDistance, float fogStart, float fogEnd) {

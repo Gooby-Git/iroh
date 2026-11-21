@@ -94,6 +94,7 @@ public class TaskDispatcher {
                 task.runTask(builderResources);
             } finally {
                 this.pendingTasks.decrementAndGet();
+                task.finish();
             }
         }
     }
@@ -145,15 +146,58 @@ public class TaskDispatcher {
 
     }
 
+    /** perf/uploads: render-thread section-upload budget per frame while playing (unlimited on loading screens). */
+    private static final long UPLOAD_BUDGET_NS = Long.getLong("iroh.uploadBudgetUs", 1000L) * 1000L;
+    private static final long UPLOAD_BUDGET_BYTES = Long.getLong("iroh.uploadBudgetMB", 48L) << 20;
+
     public boolean updateSections() {
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        boolean loading = mc.level == null || mc.screen instanceof net.minecraft.client.gui.screens.LevelLoadingScreen
+                || mc.screen instanceof net.minecraft.client.gui.screens.ReceivingLevelScreen;
+        return updateSections(loading);
+    }
+
+    /**
+     * Uploads finished section meshes. perf/uploads: with {@code unlimited} false it stops after about 1 ms or 48 MB
+     * of render-thread work (-Diroh.uploadBudgetUs / -Diroh.uploadBudgetMB); the rest stays queued for the next frame,
+     * so a burst of rebuilds (fly-through, world load behind the HUD) spreads over frames instead of one long frame.
+     * Callers that are waiting for specific sections (ZERO_FRAMES / ONE_FRAME defer modes, loading screens) pass true.
+     */
+    public boolean updateSections(boolean unlimited) {
+        long t0 = System.nanoTime();
+        long bytes0 = dev.elemore.iroh.diag.UploadStats.chunkBytes;
         CompileResult result;
         boolean flag = false;
-        while((result = this.compileResults.poll()) != null) {
+        int n = 0;
+        while ((result = this.compileResults.peek()) != null) {
+            if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > UPLOAD_BUDGET_BYTES)) {
+                if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.sectionsDeferred += this.compileResults.size();
+                break;
+            }
+            this.compileResults.poll();
             flag = true;
-            doSectionUpdate(result);
+            n++;
+            try {
+                doSectionUpdate(result);
+            } finally {
+                releaseAll(result); // idempotent: whatever the upload did not consume goes back
+            }
+        }
+        approxBytes = 0;
+        if (dev.elemore.iroh.diag.UploadStats.ON) {
+            dev.elemore.iroh.diag.UploadStats.sectionsUploaded += n;
+            dev.elemore.iroh.diag.UploadStats.frameUploadNs += System.nanoTime() - t0;
         }
 
         return flag;
+    }
+
+    /** Bytes of the results uploaded in the current updateSections call (budget). */
+    private long approxBytes;
+
+    private void releaseAll(CompileResult result) {
+        for (var b : result.renderedLayers.values())
+            if (b != null) b.release();
     }
 
     public void scheduleSectionUpdate(CompileResult compileResult) {
@@ -167,8 +211,10 @@ public class TaskDispatcher {
 
         // Check if area has been dismissed before uploading
         ChunkAreaManager chunkAreaManager = WorldRenderer.getInstance().getChunkAreaManager();
-        if (chunkAreaManager.getChunkArea(renderArea.index) != renderArea)
+        if (chunkAreaManager == null || chunkAreaManager.getChunkArea(renderArea.index) != renderArea) {
+            releaseAll(compileResult); // perf/uploads: the base leaked these buffers (native heap, now ring staging)
             return;
+        }
 
         if(compileResult.fullUpdate) {
             var renderLayers = compileResult.renderedLayers;
@@ -176,6 +222,7 @@ public class TaskDispatcher {
                 UploadBuffer uploadBuffer = renderLayers.get(renderType);
 
                 if(uploadBuffer != null) {
+                    this.approxBytes += uploadBuffer.byteSize();
                     drawBuffers.upload(section, uploadBuffer, renderType);
                 } else {
                     section.resetDrawParameters(renderType);
@@ -198,6 +245,7 @@ public class TaskDispatcher {
             if (chunkTask != null) {
                 chunkTask.cancel();
                 this.pendingTasks.decrementAndGet();
+                chunkTask.finish();
             }
         }
 
@@ -206,6 +254,7 @@ public class TaskDispatcher {
             if (chunkTask != null) {
                 chunkTask.cancel();
                 this.pendingTasks.decrementAndGet();
+                chunkTask.finish();
             }
         }
     }

@@ -34,3 +34,5 @@ run/
 
 # Iroh
 reference/
+logs/
+run/
