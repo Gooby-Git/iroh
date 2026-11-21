@@ -70,10 +70,13 @@ public class BlockRenderer extends AbstractBlockRenderContext {
 
     private void traceQuad(MutableQuadViewImpl quad, boolean ao, BlendMode blend) {
         QuadLightData d = this.quadLightData;
-        Initializer.LOGGER.info("[iroh-face] {} {} nominal={} cull={} light={} ao={} blend={} layer={} lm=[{},{},{},{}] br=[{},{},{},{}] uv0=({},{}) y=[{},{},{},{}]",
-                this.blockPos.toShortString(), this.blockState, quad.nominalFace(), quad.cullFace(), quad.lightFace(), ao, blend,
+        // rc10 (td-242adb): also the quad's plane (x, z), its facing bucket and the GPU-visible normal, so a missing
+        // inner face (powder snow's model has inward faces 0.002 inside the block) shows up in the log
+        Initializer.LOGGER.info("[iroh-face] {} {} nominal={} cull={} light={} facing={} ao={} blend={} layer={} lm=[{},{},{},{}] br=[{},{},{},{}] uv0=({},{}) x=[{},{},{},{}] y=[{},{},{},{}] z=[{},{},{},{}]",
+                this.blockPos.toShortString(), this.blockState, quad.nominalFace(), quad.cullFace(), quad.lightFace(), quad.getQuadFacing(), ao, blend,
                 this.renderType, Integer.toHexString(d.lm[0]), Integer.toHexString(d.lm[1]), Integer.toHexString(d.lm[2]), Integer.toHexString(d.lm[3]),
-                d.br[0], d.br[1], d.br[2], d.br[3], quad.u(0), quad.v(0), quad.y(0), quad.y(1), quad.y(2), quad.y(3));
+                d.br[0], d.br[1], d.br[2], d.br[3], quad.u(0), quad.v(0), quad.x(0), quad.x(1), quad.x(2), quad.x(3),
+                quad.y(0), quad.y(1), quad.y(2), quad.y(3), quad.z(0), quad.z(1), quad.z(2), quad.z(3));
     }
 
     private void traceFaces() {

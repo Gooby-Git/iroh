@@ -350,21 +350,9 @@ public class DrawBuffers {
     }
 
     private int getMask(Vec3 camera, RenderSection section) {
-        final int secX = section.xOffset;
-        final int secY = section.yOffset;
-        final int secZ = section.zOffset;
-
-        int mask = 1 << QuadFacing.UNDEFINED.ordinal();
-
-        mask |= camera.x - secX >= 0 ? 1 << QuadFacing.X_POS.ordinal() : 0;
-        mask |= camera.y - secY >= 0 ? 1 << QuadFacing.Y_POS.ordinal() : 0;
-        mask |= camera.z - secZ >= 0 ? 1 << QuadFacing.Z_POS.ordinal() : 0;
-        mask |= camera.x - (secX + 16) < 0 ? 1 << QuadFacing.X_NEG.ordinal() : 0;
-        mask |= camera.y - (secY + 16) < 0 ? 1 << QuadFacing.Y_NEG.ordinal() : 0;
-        mask |= camera.z - (secZ + 16) < 0 ? 1 << QuadFacing.Z_NEG.ordinal() : 0;
-
-        return mask;
+        return QuadFacing.facingMask(camera.x, camera.y, camera.z, section.xOffset, section.yOffset, section.zOffset);
     }
+
 
     public void bindBuffers(VkCommandBuffer commandBuffer, Pipeline pipeline, TerrainRenderType terrainRenderType, double camX, double camY, double camZ) {
         try (MemoryStack stack = MemoryStack.stackPush()) {

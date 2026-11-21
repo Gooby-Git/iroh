@@ -56,7 +56,8 @@ public class MTextureUtil {
                 image.free();
 
             image = new VulkanImage.Builder(width, height)
-                    .setName(String.format("Texture %d", id))
+                    .setName(String.format("Texture %d %dx%d by %s", id, width, height, preparer()))
+                    .setOwner("Texture by " + preparer())
                     .setMipLevels(mipLevels + 1)
                     .setFormat(convertFormat(internalGlFormat))
                     .setLinearFiltering(false)
@@ -66,6 +67,18 @@ public class MTextureUtil {
             glTexture.setVulkanImage(image);
             VTextureSelector.bindTexture(image);
         }
+    }
+
+    /** rc10: the class that prepared the texture (DynamicTexture, SimpleTexture, FontTexture, a mod class...). */
+    @Unique
+    private static String preparer() {
+        return StackWalker.getInstance().walk(st -> st
+                .map(f -> f.getClassName())
+                .filter(c -> !c.startsWith("com.mojang.blaze3d.") && !c.startsWith("net.vulkanmod.") && !c.startsWith("java.")
+                        && !c.contains("TextureUtil") && !c.startsWith("dev.elemore.iroh."))
+                .findFirst()
+                .map(c -> c.substring(c.lastIndexOf('.') + 1))
+                .orElse("?"));
     }
 
     @Unique

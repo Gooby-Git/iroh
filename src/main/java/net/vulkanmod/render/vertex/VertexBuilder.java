@@ -78,9 +78,11 @@ public interface VertexBuilder {
         public static final float UV_CONV_MUL = 32768.0f;
 
         public void vertex(long ptr, float x, float y, float z, int color, float u, float v, int light, int packedNormal) {
-            final short sX = (short) (x * POS_CONV_MUL + POS_OFFSET_CONV);
-            final short sY = (short) (y * POS_CONV_MUL + POS_OFFSET_CONV);
-            final short sZ = (short) (z * POS_CONV_MUL + POS_OFFSET_CONV);
+            // rc10 (td-242adb): round to the grid without collapsing sub-step planes onto block planes (PlaneSnap);
+            // the base truncated toward zero (round up below the +4 offset, down above it)
+            final short sX = (short) Math.round(PlaneSnap.snap(x) * POS_CONV_MUL + POS_OFFSET_CONV);
+            final short sY = (short) Math.round(PlaneSnap.snap(y) * POS_CONV_MUL + POS_OFFSET_CONV);
+            final short sZ = (short) Math.round(PlaneSnap.snap(z) * POS_CONV_MUL + POS_OFFSET_CONV);
 
             MemoryUtil.memPutShort(ptr + 0, sX);
             MemoryUtil.memPutShort(ptr + 2, sY);
@@ -97,9 +99,11 @@ public interface VertexBuilder {
 
         @Override
         public void position(long ptr, float x, float y, float z) {
-            final short sX = (short) (x * POS_CONV_MUL + POS_OFFSET_CONV);
-            final short sY = (short) (y * POS_CONV_MUL + POS_OFFSET_CONV);
-            final short sZ = (short) (z * POS_CONV_MUL + POS_OFFSET_CONV);
+            // rc10 (td-242adb): round to the grid without collapsing sub-step planes onto block planes (PlaneSnap);
+            // the base truncated toward zero (round up below the +4 offset, down above it)
+            final short sX = (short) Math.round(PlaneSnap.snap(x) * POS_CONV_MUL + POS_OFFSET_CONV);
+            final short sY = (short) Math.round(PlaneSnap.snap(y) * POS_CONV_MUL + POS_OFFSET_CONV);
+            final short sZ = (short) Math.round(PlaneSnap.snap(z) * POS_CONV_MUL + POS_OFFSET_CONV);
 
             MemoryUtil.memPutShort(ptr + 0, sX);
             MemoryUtil.memPutShort(ptr + 2, sY);
