@@ -223,6 +223,7 @@ public class Renderer {
     }
 
     public void beginFrame() {
+        dev.elemore.iroh.diag.RenderWatchdog.heartbeat(); // rc3r2 (td-3bc9d5): stall diagnostics
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.push("Frame_fence");
