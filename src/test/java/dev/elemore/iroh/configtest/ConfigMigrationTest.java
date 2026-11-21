@@ -1,0 +1,131 @@
+package dev.elemore.iroh.configtest;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import dev.elemore.iroh.config.IrohOptions;
+import net.vulkanmod.config.Config;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+/**
+ * Headless test of config/iroh.json (card P1-6). Usage: ConfigMigrationTest <instance config dir>.
+ * Copies the pack's leftover Sodium / Sodium Extra / Iris / Cull Fewer Leaves files into temp dirs, runs the first-run
+ * migration, prints the resulting iroh.json and checks values, persistence, the old VulkanMod file, and that every
+ * option has its lang keys. Last line "# configtest PASS n/n" or FAIL.
+ */
+public class ConfigMigrationTest {
+    static int pass, total;
+
+    static void check(boolean ok, String what) {
+        total++;
+        if (ok) pass++;
+        System.out.println((ok ? "ok   " : "FAIL ") + what);
+    }
+
+    public static void main(String[] args) throws Exception {
+        Path src = Path.of(args.length > 0 ? args[0] : System.getProperty("user.home") + "/.local/share/atlauncher/instances/Vulkan/config");
+        String[] files = {"sodium-options.json", "sodium-extra-options.json", "iris.properties", "cull-fewer-leaves.toml"};
+
+        // --- A: pack files only ---
+        Path a = Files.createTempDirectory("iroh-cfg-a");
+        for (String f : files) if (Files.exists(src.resolve(f))) Files.copy(src.resolve(f), a.resolve(f));
+        Config ca = new Config();
+        List<String> log = IrohOptions.load(ca, a);
+        log.forEach(l -> System.out.println("  log: " + l));
+        String text = Files.readString(a.resolve("iroh.json"));
+        System.out.println("---- iroh.json (A: first run, pack files only) ----");
+        System.out.println(text);
+        System.out.println("----");
+        JsonObject j = JsonParser.parseString(text).getAsJsonObject();
+        check(j.get("leavesQuality").getAsString().equals("FANCY"), "leaves_quality FANCY -> leavesQuality FANCY");
+        check(!j.get("enableVignette").getAsBoolean(), "enable_vignette false -> enableVignette false");
+        check(j.get("builderThreads").getAsInt() == Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)), "chunk_builder_threads 4 -> builderThreads 4");
+        check(j.get("chunkBuildDeferMode").getAsString().equals("ONE_FRAME"), "chunk_build_defer_mode ONE_FRAME");
+        check(j.get("showFps").getAsBoolean(), "show_fps true -> showFps");
+        check(j.get("fogDistanceChunks").getAsInt() == -1, "atmospheric distance_chunks -1 -> fogDistanceChunks -1");
+        check(j.get("shaderPack").getAsString().equals("Navidson") && j.get("shadersEnabled").getAsBoolean(), "iris shaderPack Navidson, enabled");
+        check(j.get("leafCullingRejection").getAsInt() == 20 && j.get("leafCullingDepth").getAsInt() == 2, "cull-fewer-leaves randomRejection 20, depth 2");
+        check(j.get("advCulling").getAsInt() == 2 && j.get("indirectDraw").getAsBoolean(), "VulkanMod defaults unchanged");
+        check(Files.exists(a.resolve("sodium-options.json")), "old files left in place");
+
+        // --- B: persistence: edit a Sodium file, load again; iroh.json wins, nothing re-migrated ---
+        Files.writeString(a.resolve("sodium-options.json"), "{\"quality\":{\"leaves_quality\":\"FAST\"}}");
+        Config cb = new Config();
+        IrohOptions.load(cb, a);
+        check(cb.leavesQuality.equals("FANCY") && !cb.enableVignette && cb.showFps && cb.fogDistanceChunks == -1, "second run reads iroh.json, ignores the old files");
+        cb.enableVignette = true;
+        IrohOptions.save();
+        Config cb2 = new Config();
+        IrohOptions.load(cb2, a);
+        check(cb2.enableVignette, "a changed value survives a reload");
+
+        // --- C: VulkanMod file present: migrated and kept, its builderThreads beats Sodium's ---
+        Path c = Files.createTempDirectory("iroh-cfg-c");
+        for (String f : files) if (Files.exists(src.resolve(f))) Files.copy(src.resolve(f), c.resolve(f));
+        Files.writeString(c.resolve("vulkanmod_settings.json"),
+                "{\"windowMode\":1,\"advCulling\":3,\"indirectDraw\":false,\"frameQueueSize\":3,\"builderThreads\":2,\"backFaceCulling\":false,"
+                        + "\"videoMode\":{\"width\":2560,\"height\":1440,\"bitDepth\":8,\"refreshRate\":144}}");
+        Config cc = new Config();
+        IrohOptions.load(cc, c);
+        System.out.println("---- iroh.json (C: vulkanmod_settings.json + pack files) ----");
+        System.out.println(Files.readString(c.resolve("iroh.json")));
+        System.out.println("----");
+        check(cc.windowMode == 1 && cc.advCulling == 3 && !cc.indirectDraw && cc.frameQueueSize == 3 && !cc.backFaceCulling, "vulkanmod_settings.json values carried over");
+        check(cc.videoMode != null && cc.videoMode.refreshRate == 144, "video mode carried over");
+        check(cc.builderThreads == 2, "VulkanMod builderThreads 2 kept over Sodium's 4");
+        check(cc.leavesQuality.equals("FANCY"), "pack options still seeded");
+        check(Files.exists(c.resolve("vulkanmod_settings.json")), "vulkanmod_settings.json kept");
+
+        // --- D: nothing at all: defaults ---
+        Path d = Files.createTempDirectory("iroh-cfg-d");
+        Config cd = new Config();
+        IrohOptions.load(cd, d);
+        check(cd.leavesQuality.equals("DEFAULT") && cd.enableVignette && !cd.showFps && cd.fogDistanceChunks == 0 && cd.builderThreads == 0,
+                "no files: defaults (vignette on, fps off, vanilla fog)");
+        check(Files.exists(d.resolve("iroh.json")), "iroh.json written on first run");
+
+        // --- E: garbage in the file does not crash ---
+        Files.writeString(d.resolve("iroh.json"), "{\"advCulling\": 77, \"leavesQuality\": \"WOBBLY\", \"fogDistanceChunks\": 9999, \"showFps\": \"yes\"}");
+        Config ce = new Config();
+        IrohOptions.load(ce, d);
+        check(ce.advCulling == 2 && ce.leavesQuality.equals("DEFAULT") && ce.fogDistanceChunks == 256, "bad values rejected or clamped");
+
+        // --- F: registry sanity: unique ids, lang keys for everything shown, defaults equal Config's ---
+        JsonObject lang = JsonParser.parseString(Files.readString(Path.of("src/main/resources/assets/vulkanmod/lang/en_us.json"))).getAsJsonObject();
+        int missing = 0;
+        for (IrohOptions.Opt<?> o : IrohOptions.all()) {
+            if (o.id.equals("videoMode") || o.id.equals("shaderPack") || o.id.equals("shadersEnabled")) continue;
+            for (String k : new String[]{o.nameKey, o.tooltipKey}) {
+                if (!lang.has(k) && !k.startsWith("options.") && !k.startsWith("vulkanmod.options.advCulling")) {
+                    if (k.startsWith("options.")) continue;
+                    System.out.println("  missing lang key " + k);
+                    missing++;
+                }
+            }
+        }
+        check(missing == 0, "every option has a name and tooltip key in en_us.json");
+        Config defaults = new Config();
+        Config reg = new Config();
+        IrohOptions.load(reg, Files.createTempDirectory("iroh-cfg-f"));
+        boolean same = defaults.advCulling == reg.advCulling && defaults.indirectDraw == reg.indirectDraw && defaults.uniqueOpaqueLayer == reg.uniqueOpaqueLayer
+                && defaults.entityCulling == reg.entityCulling && defaults.device == reg.device && defaults.ambientOcclusion == reg.ambientOcclusion
+                && defaults.frameQueueSize == reg.frameQueueSize && defaults.builderThreads == reg.builderThreads && defaults.backFaceCulling == reg.backFaceCulling;
+        check(same, "ported VulkanMod options keep their defaults");
+        boolean regDefaults = true;
+        for (IrohOptions.Opt<?> o : IrohOptions.all()) {
+            if (o.storage != IrohOptions.Storage.JSON || o.defaultValue == null) continue;
+            if (!String.valueOf(o.get()).equals(String.valueOf(o.defaultValue))) {
+                System.out.println("  default mismatch " + o.id + ": " + o.get() + " vs " + o.defaultValue);
+                regDefaults = false;
+            }
+        }
+        check(regDefaults, "registry defaults equal the Config initialisers");
+
+        System.out.println("---- registry ----");
+        IrohOptions.describeAll().forEach(l -> System.out.println("  " + l));
+        System.out.println("# configtest " + (pass == total ? "PASS " : "FAIL ") + pass + "/" + total);
+        if (pass != total) System.exit(1);
+    }
+}
