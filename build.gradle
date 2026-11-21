@@ -298,6 +298,15 @@ tasks.register('planeSnapTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// WaterMedia video path (td-75c89e), offline. ./gradlew videoFrameTest ; last line "# videoframe PASS n/n".
+tasks.register('videoFrameTest', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.compattest.VideoFrameTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
