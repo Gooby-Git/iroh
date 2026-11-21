@@ -192,6 +192,16 @@ errors. Retro triage.
 
 ## Phase 2: performance of the core
 
+Bar (owner, 2026-11-20): the pack ships Vulkan-only and must be clearly FASTER than the OpenGL
+pack: a measured win on every perf scene in the FULL pack for average fps, 1% and 0.1% lows and
+frame-time spread, plus load time, chunk throughput, RAM/VRAM and stutter. P2-0 (perf scenes and
+the measurement harness, Iroh vs the frozen OpenGL clone) is brought forward into the Phase 1
+campaign so Phase 1 already reports the comparison; Phase 2 then optimises until the win is clear.
+In scope beyond the cards below: particle/entity/block-entity batching, GPU-driven terrain
+culling, shader/pipeline warm-up to remove hitches, GC pressure in the frame loop, upload
+scheduling, frame pacing, and Iroh's own profiler overlay (`-Diroh.profile`: per-stage CPU and GPU
+times) as the tool every later phase uses.
+
 **P2-0 [P] Perf scenes.** Fixed camera paths: citadel fly-through, dense forest, 32-chunk vista,
 cave, boss fight with particles, storm. Record avg, 1% low, frame-time histogram, GPU and CPU time
 on OpenGL+Sodium (from the baseline clone) and on Iroh. `knowledge/perf.md`.
