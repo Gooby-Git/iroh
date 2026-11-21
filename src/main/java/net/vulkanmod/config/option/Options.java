@@ -163,7 +163,7 @@ public abstract class Options {
                 block(IrohOptions.GRAPHICS, IrohOptions.PARTICLES, IrohOptions.CLOUDS, IrohOptions.AMBIENT_OCCLUSION,
                         IrohOptions.BIOME_BLEND, IrohOptions.LEAVES_QUALITY),
                 block(IrohOptions.ENTITY_SHADOWS, IrohOptions.ENTITY_DISTANCE_SCALING, IrohOptions.MIPMAPS),
-                block(IrohOptions.ENABLE_VIGNETTE, IrohOptions.FOG_DISTANCE_CHUNKS, IrohOptions.LEAF_CULLING_DEPTH,
+                block(IrohOptions.ENABLE_VIGNETTE, IrohOptions.FOG_DISTANCE_CHUNKS, IrohOptions.LEAF_CULLING, IrohOptions.LEAF_CULLING_DEPTH,
                         IrohOptions.LEAF_CULLING_REJECTION)
         };
     }

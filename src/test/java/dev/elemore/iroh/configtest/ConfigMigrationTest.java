@@ -47,6 +47,9 @@ public class ConfigMigrationTest {
         check(j.get("fogDistanceChunks").getAsInt() == -1, "atmospheric distance_chunks -1 -> fogDistanceChunks -1");
         check(j.get("shaderPack").getAsString().equals("Navidson") && j.get("shadersEnabled").getAsBoolean(), "iris shaderPack Navidson, enabled");
         check(j.get("leafCullingRejection").getAsInt() == 20 && j.get("leafCullingDepth").getAsInt() == 2, "cull-fewer-leaves randomRejection 20, depth 2");
+        check(j.get("leafCulling").getAsBoolean(), "cull-fewer-leaves enabled -> leafCulling on");
+        check(dev.elemore.iroh.apiimpl.LeafCulling.enabled() && dev.elemore.iroh.apiimpl.LeafCulling.depth() == 2
+                && dev.elemore.iroh.apiimpl.LeafCulling.randomRejection() == 20, "mesher LeafCulling follows iroh.json after load");
         check(j.get("advCulling").getAsInt() == 2 && j.get("indirectDraw").getAsBoolean(), "VulkanMod defaults unchanged");
         check(Files.exists(a.resolve("sodium-options.json")), "old files left in place");
 

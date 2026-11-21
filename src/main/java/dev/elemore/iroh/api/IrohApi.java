@@ -127,7 +127,7 @@ public final class IrohApi {
         FaceCullHooks.unregister(veto);
     }
 
-    /** How leaves are being drawn (follows the video settings graphics mode). Any thread. */
+    /** How leaves are being drawn: option leavesQuality (FANCY / FAST, DEFAULT follows the graphics mode). Any thread. */
     public static LeavesQuality leavesQuality() {
         return LeafCulling.leavesFancy() ? LeavesQuality.FANCY : LeavesQuality.FAST;
     }

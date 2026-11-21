@@ -35,7 +35,9 @@ public class Config {
     public boolean showFps = false;
     /** -1 terrain fog off, 0 vanilla, n > 0 chunks (not verified, treated as vanilla). */
     public int fogDistanceChunks = 0;
-    /** 0..100: share of inner-layer leaves kept rendered at random (Cull Fewer Leaves randomRejection). */
+    /** Iroh leaf culling (Cull Fewer Leaves behaviour) on/off. Off unless migrated from cull-fewer-leaves.toml. */
+    public boolean leafCulling = false;
+    /** 0..100: share of partly covered inner leaf faces hidden anyway, at random (Cull Fewer Leaves randomRejection). */
     public int leafCullingRejection = 0;
     /** 1..4: layers of leaves before the inside is culled (Cull Fewer Leaves depth). */
     public int leafCullingDepth = 2;

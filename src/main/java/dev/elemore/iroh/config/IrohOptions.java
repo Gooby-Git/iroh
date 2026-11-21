@@ -242,6 +242,7 @@ public final class IrohOptions {
     public static final Opt<Boolean> ENABLE_VIGNETTE;
     public static final Opt<Boolean> SHOW_FPS;
     public static final Opt<Integer> FOG_DISTANCE_CHUNKS;
+    public static final Opt<Boolean> LEAF_CULLING;
     public static final Opt<Integer> LEAF_CULLING_DEPTH;
     public static final Opt<Integer> LEAF_CULLING_REJECTION;
     public static final Opt<DeferMode> CHUNK_BUILD_DEFER_MODE;
@@ -341,13 +342,14 @@ public final class IrohOptions {
                 : Component.translatable("iroh.options.fogDistanceChunks.chunks", v));
         FOG_DISTANCE_CHUNKS.choiceUnavailable(v -> v > 0 ? Component.translatable("iroh.reason.unverified") : null);
 
+        LEAF_CULLING = bool("leafCulling", Category.QUALITY, false, c -> c.leafCulling, (c, v) -> c.leafCulling = v);
+        LEAF_CULLING.reload(Reload.RELOAD_CHUNKS);
         LEAF_CULLING_DEPTH = integer("leafCullingDepth", Category.QUALITY, 2, c -> c.leafCullingDepth, (c, v) -> c.leafCullingDepth = v);
-        LEAF_CULLING_DEPTH.range(0, 4, 1).reload(Reload.RELOAD_CHUNKS)
-                .label(v -> v == 0 ? Component.translatable("options.off") : Component.literal(String.valueOf(v)))
-                .note("iroh.note.mesherHook");
+        LEAF_CULLING_DEPTH.range(1, 4, 1).reload(Reload.RELOAD_CHUNKS)
+                .label(v -> Component.literal(String.valueOf(v)));
         LEAF_CULLING_REJECTION = integer("leafCullingRejection", Category.QUALITY, 0, c -> c.leafCullingRejection, (c, v) -> c.leafCullingRejection = v);
         LEAF_CULLING_REJECTION.range(0, 100, 5).reload(Reload.RELOAD_CHUNKS)
-                .label(v -> Component.literal(v + "%")).note("iroh.note.mesherHook");
+                .label(v -> Component.literal(v + "%"));
 
         CHUNK_BUILD_DEFER_MODE = enumOpt("chunkBuildDeferMode", Category.PERFORMANCE, DeferMode.class, DeferMode.ALWAYS,
                 c -> parse(DeferMode.class, c.chunkBuildDeferMode, DeferMode.ALWAYS), (c, v) -> c.chunkBuildDeferMode = v.name());
@@ -468,8 +470,9 @@ public final class IrohOptions {
         ENABLE_VIGNETTE.applier = v -> config.enableVignette = v;
         SHOW_FPS.applier = v -> config.showFps = v;
         FOG_DISTANCE_CHUNKS.applier = v -> config.fogDistanceChunks = v;
-        LEAF_CULLING_DEPTH.applier = v -> { config.leafCullingDepth = v; mc().levelRenderer.allChanged(); };
-        LEAF_CULLING_REJECTION.applier = v -> { config.leafCullingRejection = v; mc().levelRenderer.allChanged(); };
+        LEAF_CULLING.applier = v -> { config.leafCulling = v; applyLeafCulling(true); };
+        LEAF_CULLING_DEPTH.applier = v -> { config.leafCullingDepth = v; applyLeafCulling(true); };
+        LEAF_CULLING_REJECTION.applier = v -> { config.leafCullingRejection = v; applyLeafCulling(true); };
         CHUNK_BUILD_DEFER_MODE.applier = v -> config.chunkBuildDeferMode = v.name();
     }
 
@@ -530,14 +533,30 @@ public final class IrohOptions {
         return v == -1 ? -1 : 0;
     }
 
-    /**
-     * Hook for the block mesher (card owned elsewhere): percentage 0..100 of inner-layer leaves that Cull Fewer Leaves
-     * kept rendered at random ({@code randomRejection}). 0 = never reject extra.
-     */
+    /** Leaf culling on (P1-10: the single source of truth is config/iroh.json; apiimpl.LeafCulling mirrors it). */
+    public static boolean leafCulling() { return config.leafCulling; }
+
+    /** Percentage 0..100 of partly covered inner leaf faces hidden anyway (Cull Fewer Leaves {@code randomRejection}). */
     public static int leafCullingRejection() { return config.leafCullingRejection; }
 
-    /** Hook for the block mesher: layers of leaves before the inside is culled; 0 = no leaf culling. */
+    /** Layers of leaves (1..4, fancy leaves) that must cover a face before it is culled. */
     public static int leafCullingDepth() { return config.leafCullingDepth; }
+
+    /**
+     * Pushes the three leaf-culling settings into the mesher ({@code apiimpl.LeafCulling}); with {@code rebuild}, one
+     * {@code allChanged()} when that changed anything (a world mesh rebuild, never a storm).
+     */
+    public static void applyLeafCulling(boolean rebuild) {
+        boolean changed = dev.elemore.iroh.apiimpl.LeafCulling.set(config.leafCulling, config.leafCullingDepth, config.leafCullingRejection);
+        if (changed && rebuild) {
+            try {
+                Minecraft m = Minecraft.getInstance();
+                if (m != null && m.levelRenderer != null) m.levelRenderer.allChanged();
+            } catch (Throwable t) {
+                LOGGER.debug("leaf culling rebuild skipped: {}", t.toString());
+            }
+        }
+    }
 
     /** Hook for the chunk scheduler: how player-changed sections are rebuilt. Base behaviour is ALWAYS (all async). */
     public static DeferMode chunkBuildDeferMode() { return parse(DeferMode.class, config.chunkBuildDeferMode, DeferMode.ALWAYS); }
@@ -589,6 +608,7 @@ public final class IrohOptions {
         Path file = dir.resolve(FILE);
         if (Files.isRegularFile(file)) {
             readFile(file, log);
+            applyLeafCulling(false);
             return log;
         }
         log.add("no " + FILE + ": first run");
@@ -598,6 +618,7 @@ public final class IrohOptions {
         }
         PackMigration.apply(dir, config, log);
         save();
+        applyLeafCulling(false);
         return log;
     }
 

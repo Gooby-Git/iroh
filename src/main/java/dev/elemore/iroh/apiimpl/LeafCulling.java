@@ -1,37 +1,33 @@
 package dev.elemore.iroh.apiimpl;
 
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.GraphicsStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.state.BlockState;
-import net.vulkanmod.Initializer;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.function.Predicate;
 
 /**
- * Iroh internal (P1-6b): option {@code leafCulling}, Iroh's replacement for the Cull Fewer Leaves mod (LGPL-3.0, read
- * as bytecode for behaviour only, no code taken). Behaviour, in our words: a face of a leaves block is hidden when every
- * block in a straight line out of that face, up to {@code depth} blocks, is leaves (depth = the configured value on
- * fancy leaves, 1 on fast leaves). When the first block out is leaves but a deeper one is not, the face is hidden
- * anyway for {@code randomRejection} percent of block positions, chosen by a fixed per-position random number (the
- * first {@code nextFloat()} of {@code java.util.Random} seeded with {@code BlockPos.asLong()}, so the same blocks are
- * picked as with the old mod and the pattern never flickers). Faces whose first neighbour is not leaves are untouched.
+ * Iroh internal (P1-6b, P1-10): the mesher's copy of option {@code leafCulling}, Iroh's replacement for the Cull Fewer
+ * Leaves mod (LGPL-3.0, read as bytecode for behaviour only, no code taken). Behaviour, in our words: a face of a
+ * leaves block is hidden when every block in a straight line out of that face, up to {@code depth} blocks, is leaves
+ * (depth = the setting on fancy leaves, 1 on fast leaves). When the first block out is leaves but a deeper one is not,
+ * the face is hidden anyway for {@code randomRejection} percent of block positions, chosen by a fixed per-position random
+ * number (the first {@code nextFloat()} of {@code java.util.Random} seeded with {@code BlockPos.asLong()}, so the same
+ * blocks are picked as with the old mod and the pattern never flickers). Faces whose first neighbour is not leaves are
+ * untouched.
  * <p>
- * Defaults are migrated from {@code config/cull-fewer-leaves.toml} when the old mod left one (the pack: enabled,
- * depth 2, randomRejection 20). Without that file the option is off, which is vanilla's and Sodium's look. The settings
- * screen (P1-6) owns persistence and calls {@link #set}; a change needs one {@code LevelRenderer.allChanged()}.
+ * Single source of truth: {@code config/iroh.json} ({@code IrohOptions}, migrated from {@code cull-fewer-leaves.toml}
+ * by {@code PackMigration}). {@code IrohOptions.applyLeafCulling} pushes it here with {@link #set} after loading and on
+ * every change (then one {@code allChanged()}). Off until then.
  */
 public final class LeafCulling {
     private record Settings(boolean enabled, int depth, int randomRejection) {
     }
 
-    private static volatile Settings settings = migrate();
-
+    private static volatile Settings settings = new Settings(false, 2, 0);
     private LeafCulling() {
     }
 
@@ -60,10 +56,14 @@ public final class LeafCulling {
         return true;
     }
 
-    /** Fancy leaves: what Iroh's mesher draws, which follows the graphics mode (vanilla's rule). Any thread. */
+    /**
+     * Fancy leaves: what Iroh's mesher draws, i.e. option leavesQuality (FANCY / FAST, or DEFAULT = the graphics mode),
+     * the same rule IrohLeavesM gives vanilla's ItemBlockRenderTypes. Any thread.
+     */
     public static boolean leavesFancy() {
         Minecraft mc = Minecraft.getInstance();
-        return mc == null || mc.options == null || mc.options.graphicsMode().get() != GraphicsStatus.FAST;
+        boolean vanillaFancy = mc == null || mc.options == null || mc.options.graphicsMode().get() != GraphicsStatus.FAST;
+        return dev.elemore.iroh.config.IrohOptions.leavesFancy(vanillaFancy);
     }
 
     /** The depth to use right now: the setting on fancy leaves, 1 on fast. */
@@ -84,35 +84,5 @@ public final class LeafCulling {
 
     public static boolean cullFace(BlockGetter level, BlockPos pos, Direction face, Predicate<BlockState> isLeaf, int depth) {
         return cullFace(level, pos, face, isLeaf, depth, rejection());
-    }
-
-    private static Settings migrate() {
-        Path f = FabricLoader.getInstance().getConfigDir().resolve("cull-fewer-leaves.toml");
-        if (!Files.isRegularFile(f))
-            return new Settings(false, 2, 0);
-        boolean enabled = true;
-        int depth = 2, rejection = 0;
-        try {
-            for (String raw : Files.readAllLines(f)) {
-                String line = raw.strip();
-                if (line.startsWith("#") || !line.contains("="))
-                    continue;
-                String key = line.substring(0, line.indexOf('=')).strip();
-                String val = line.substring(line.indexOf('=') + 1).strip();
-                switch (key) {
-                    case "enabled" -> enabled = Boolean.parseBoolean(val);
-                    case "depth" -> depth = Integer.parseInt(val);
-                    case "randomRejection" -> rejection = Integer.parseInt(val);
-                    default -> {
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Initializer.LOGGER.warn("Iroh: could not read {} for the leafCulling defaults; leaf culling stays off", f, e);
-            return new Settings(false, 2, 0);
-        }
-        Settings s = new Settings(enabled, Math.max(1, Math.min(4, depth)), Math.max(0, Math.min(100, rejection)));
-        Initializer.LOGGER.info("Iroh: leafCulling migrated from cull-fewer-leaves.toml: {}", s);
-        return s;
     }
 }

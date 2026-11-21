@@ -127,11 +127,11 @@ public final class PackMigration {
                     default -> { }
                 }
             }
-            if (!enabled) c.leafCullingDepth = 0;
-            else if (depth != null) c.leafCullingDepth = Math.max(1, Math.min(4, depth));
+            c.leafCulling = enabled;
+            if (depth != null) c.leafCullingDepth = Math.max(1, Math.min(4, depth));
             if (rejection != null) c.leafCullingRejection = Math.max(0, Math.min(100, rejection));
             log.add("cull-fewer-leaves enabled=" + enabled + " depth=" + depth + " randomRejection=" + rejection
-                    + " -> leafCullingDepth " + c.leafCullingDepth + ", leafCullingRejection " + c.leafCullingRejection);
+                    + " -> leafCulling " + c.leafCulling + ", leafCullingDepth " + c.leafCullingDepth + ", leafCullingRejection " + c.leafCullingRejection);
         } catch (IOException | RuntimeException e) {
             log.add("could not read cull-fewer-leaves.toml: " + e);
         }
