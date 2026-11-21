@@ -651,8 +651,11 @@ public class VulkanImage {
         return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
     }
 
+    /** rc8: where free() sends an image (the deferred, epoch-gated free); replaceable for the offline registry test. */
+    public static java.util.function.Consumer<VulkanImage> FREE = img -> MemoryManager.getInstance().addToFreeable(img);
+
     public void free() {
-        MemoryManager.getInstance().addToFreeable(this);
+        FREE.accept(this);
     }
 
     public void doFree() {
@@ -778,8 +781,20 @@ public class VulkanImage {
 
         public VulkanImage createVulkanImage() {
             this.formatSize = formatSize(this.format);
+            // Iroh (rc8): every image is named (leak reports and the world-unload breakdown group by name). Unnamed
+            // callers get "<creator class>.<method> WxH fmt".
+            if (this.name == null)
+                this.name = creatorName() + " " + this.width + "x" + this.height + " fmt" + this.format;
 
             return VulkanImage.createTextureImage(this);
+        }
+
+        private static String creatorName() {
+            return StackWalker.getInstance().walk(s -> s
+                    .filter(f -> !f.getClassName().startsWith("net.vulkanmod.vulkan.texture.VulkanImage"))
+                    .findFirst()
+                    .map(f -> f.getClassName().substring(f.getClassName().lastIndexOf('.') + 1) + "." + f.getMethodName())
+                    .orElse("?"));
         }
 
         private static int formatSize(int format) {

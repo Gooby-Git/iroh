@@ -16,6 +16,11 @@ import static org.lwjgl.vulkan.VK10.*;
 public class VkGlRenderbuffer {
     private static int ID_COUNTER = 1;
     private static final Int2ReferenceOpenHashMap<VkGlRenderbuffer> map = new Int2ReferenceOpenHashMap<>();
+
+    /** rc8: live GL names (registry test, memStats). */
+    public static int liveCount() {
+        return map.size();
+    }
     private static int boundId = 0;
     private static VkGlRenderbuffer bound;
 
@@ -46,7 +51,20 @@ public class VkGlRenderbuffer {
     }
 
     public static void deleteRenderbuffer(int i) {
-        map.remove(i);
+        // Iroh (rc8, P0 per-world GPU leak): the base only dropped the map entry, so every deleted renderbuffer's
+        // VulkanImage (screen-sized colour/depth, ~3.7 MB at 1280x720) stayed allocated until vkDestroyDevice. Mods that
+        // build framebuffers with renderbuffers per world / per screen leaked them all. Free through the deferred path.
+        VkGlRenderbuffer rb = map.remove(i);
+        if (rb == null)
+            return;
+        if (bound == rb) {
+            bound = null;
+            boundId = 0;
+        }
+        if (rb.vulkanImage != null) {
+            rb.vulkanImage.free();
+            rb.vulkanImage = null;
+        }
     }
 
     public static VkGlRenderbuffer getRenderbuffer(int id) {
@@ -151,6 +169,7 @@ public class VkGlRenderbuffer {
                     false, true);
         else
             this.vulkanImage = new VulkanImage.Builder(width, height)
+                    .setName("GlRenderbuffer " + this.id)
                     .setMipLevels(maxLevel + 1)
                     .setFormat(vkFormat)
                     .addUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)

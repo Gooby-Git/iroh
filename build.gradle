@@ -248,6 +248,16 @@ tasks.register('stagingRingTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc8: GL name -> VulkanImage registries return to baseline; every delete frees once. ./gradlew glRegistryTest
+tasks.register('glRegistryTest', JavaExec) {
+	group = 'verification'
+	description = 'GL texture/renderbuffer registries: create/delete/reuse cycles, one free per delete'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.GlRegistryTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
