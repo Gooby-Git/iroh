@@ -113,8 +113,11 @@ public class StagingBuffer extends Buffer {
             submitAllConsumers();
             boolean waited = Synchronization.INSTANCE.waitOldest();
             if (!waited) {
-                Synchronization.INSTANCE.waitFences();
-                ring.completeAll();
+                // rc12: never mark the open frame's epoch complete (td-7799fa); with the device idle, only the upload
+                // copies of the open epoch are known finished: reuse the blocks no frame command buffer reads.
+                net.vulkanmod.vulkan.Vulkan.waitIdle();
+                Synchronization.INSTANCE.deviceIdle();
+                ring.uploadsCompleted(ring.epoch());
             }
             a = ring.reserve(size, align);
             if (a == null && (round >= 8 || (!waited && ring.pendingReservations() == 0 && ring.liveBlocks() == 0))) {

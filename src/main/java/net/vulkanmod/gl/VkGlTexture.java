@@ -84,6 +84,8 @@ public class VkGlTexture {
             boundTexture = null;
         }
         VkGlTexture glTexture = map.remove(i);
+        if (glTexture != null)
+            VkGlFramebuffer.onAttachmentDeleted(i, false); // rc12: no framebuffer keeps the deleted image's view
         VulkanImage image = glTexture != null ? glTexture.vulkanImage : null;
         if (image != null)
             image.free(); // rc8: one free path (deferred, epoch-gated)
