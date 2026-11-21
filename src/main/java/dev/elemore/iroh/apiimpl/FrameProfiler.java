@@ -49,19 +49,19 @@ public final class FrameProfiler {
         int s = stage.ordinal();
         if (prevStage >= 0) cpuNs[s] += now - prevT;
         prevStage = stage == FrameStage.AFTER_PRESENT ? -1 : s;
-        prevT = now;
         if (stage == FrameStage.AFTER_PRESENT) {
             frames++;
             maybeLog(now);
-            return;
-        }
-        if (gpuOk && currentSlot >= 0) {
+        } else if (gpuOk && currentSlot >= 0) {
             VkCommandBuffer cb = Renderer.recordingCommandBuffer("profiler timestamp");
             if (cb != null) {
                 vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, currentSlot * N + s);
                 writtenMask[currentSlot] |= 1 << s;
             }
         }
+        // rc7: the next segment starts AFTER the profiler's own work (timestamp write, logging), so no stage is charged
+        // for the profiler.
+        prevT = System.nanoTime();
     }
 
     /**
