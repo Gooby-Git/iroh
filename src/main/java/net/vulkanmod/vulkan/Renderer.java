@@ -1,5 +1,7 @@
 package net.vulkanmod.vulkan;
 
+import net.vulkanmod.vulkan.memory.buffer.StagingBuffer;
+
 import com.mojang.blaze3d.platform.GlStateManager;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
@@ -450,10 +452,12 @@ public class Renderer {
     }
 
     private void waitFences() {
-        // Make sure there are no uploads/transitions scheduled
-        ImageUploadHelper.INSTANCE.submitCommands();
-        Synchronization.INSTANCE.waitFences();
-        Vulkan.getStagingBuffer().reset();
+        // Make sure there are no uploads/transitions scheduled.
+        // Iroh (R-3, RQ-18): the shared staging buffer may be reset here, before the frame command buffer is
+        // submitted, because only upload command buffers read it (invariant in StagingBuffer, checked at every
+        // recording site). flushConsumersAndReset submits all of them (UploadManager and IndirectBuffer included,
+        // which the base left out) and waits before the reset.
+        StagingBuffer.flushConsumersAndReset();
     }
 
     private void resetDescriptors() {

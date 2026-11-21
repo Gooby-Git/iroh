@@ -165,6 +165,7 @@ public class Vulkan {
 
         for (int i = 0; i < stagingBuffers.length; ++i) {
             stagingBuffers[i] = new StagingBuffer();
+            stagingBuffers[i].markShared();
         }
     }
 
@@ -415,6 +416,17 @@ public class Vulkan {
 
     public static long getCommandPool() {
         return commandPool;
+    }
+
+    /** Iroh (R-3): true when {@code bufferId} is one of the per-frame shared staging buffers. */
+    public static boolean isSharedStagingBuffer(long bufferId) {
+        StagingBuffer[] arr = stagingBuffers;
+        if (arr == null || bufferId == 0L)
+            return false;
+        for (StagingBuffer b : arr)
+            if (b != null && b.getId() == bufferId)
+                return true;
+        return false;
     }
 
     public static StagingBuffer getStagingBuffer() {

@@ -34,6 +34,7 @@ public abstract class ImageUtil {
         region.imageOffset().set(xOffset, yOffset, 0);
         region.imageExtent(VkExtent3D.calloc(stack).set(width, height, 1));
 
+        net.vulkanmod.vulkan.memory.buffer.StagingBuffer.checkConsumer(commandBuffer, buffer); // Iroh R-3
         vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
     }
 
