@@ -71,6 +71,50 @@ public final class GlRegistryTest {
                 VkGlTexture.liveCount() == tbase);
         check("textures: every deleted image freed exactly once", timgs.stream().allMatch(i -> freed.getOrDefault(i, 0) == 1) && freed.size() == timgs.size());
 
+        // rc9 (td-598433): re-specifying ONE texture id 10,000 times (same size, other size, depth, mip-level changes):
+        // one live image at the end, every replaced image freed exactly once
+        freed.clear();
+        java.util.List<VulkanImage> created = new java.util.ArrayList<>();
+        VkGlTexture.FACTORY = (name, owner, depth, w, h, fmt, mips) -> {
+            try {
+                VulkanImage img = (VulkanImage) unsafe.allocateInstance(VulkanImage.class);
+                unsafe.putInt(img, unsafe.objectFieldOffset(VulkanImage.class.getDeclaredField("width")), w);
+                unsafe.putInt(img, unsafe.objectFieldOffset(VulkanImage.class.getDeclaredField("height")), h);
+                unsafe.putInt(img, unsafe.objectFieldOffset(VulkanImage.class.getDeclaredField("format")), fmt);
+                unsafe.putInt(img, unsafe.objectFieldOffset(VulkanImage.class.getDeclaredField("mipLevels")), mips);
+                created.add(img);
+                return img;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        };
+        int tex = VkGlTexture.genTextureId();
+        java.util.SplittableRandom rnd = new java.util.SplittableRandom(3);
+        int[][] sizes = {{1280, 720}, {1280, 720}, {854, 480}, {1280, 720}, {64, 64}};
+        int[] formats = {0x1908 /* RGBA */, 0x1902 /* DEPTH_COMPONENT */, 0x8CAC /* DEPTH_COMPONENT32F */};
+        int sameSizeAllocs = 0;
+        int lastW = -1, lastH = -1, lastF = -1;
+        for (int i = 0; i < 10_000; i++) {
+            int[] sz = sizes[rnd.nextInt(sizes.length)];
+            int fm = formats[rnd.nextInt(formats.length)];
+            int before = created.size();
+            if (rnd.nextInt(10) == 0) {
+                VkGlTexture.setMaxLevelForTest(tex, rnd.nextInt(3)); // a mip-count change may reallocate
+                lastW = -1;
+                continue;
+            }
+            VkGlTexture.specifyStorageForTest(tex, 0, fm, sz[0], sz[1]);
+            if (created.size() > before && sz[0] == lastW && sz[1] == lastH && fm == lastF) sameSizeAllocs++;
+            lastW = sz[0]; lastH = sz[1]; lastF = fm;
+        }
+        long live = created.stream().filter(img -> !freed.containsKey(img)).count();
+        boolean once = created.stream().allMatch(img -> freed.getOrDefault(img, 0) <= 1);
+        check("10,000 re-specifications of one id: " + created.size() + " images created, " + live + " live at the end (1 expected)", live == 1 && once);
+        check("same size + same format re-specification reuses the image (" + sameSizeAllocs + " needless reallocations)", sameSizeAllocs == 0);
+        VkGlTexture.glDeleteTextures(tex);
+        check("delete frees the last one: none live", created.stream().allMatch(img -> freed.getOrDefault(img, 0) == 1));
+        VkGlTexture.FACTORY = null;
+
         System.out.println("# glregistry " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
     }

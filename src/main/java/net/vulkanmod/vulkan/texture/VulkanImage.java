@@ -32,6 +32,8 @@ public class VulkanImage {
     private static final VkDevice DEVICE = Vulkan.getVkDevice();
 
     public final String name;
+    /** rc9: owner key for the growth monitor: creator + calling mod (digits folded), e.g. "GlTexture depth by vista". */
+    public String owner = "?";
     public final int format;
     public final int aspect;
     public final int mipLevels;
@@ -107,6 +109,7 @@ public class VulkanImage {
 
     private VulkanImage(Builder builder) {
         this.name = builder.name;
+        this.owner = builder.owner != null ? builder.owner : builder.name;
         this.mipLevels = builder.mipLevels;
         this.width = builder.width;
         this.height = builder.height;
@@ -138,7 +141,14 @@ public class VulkanImage {
     }
 
     public static VulkanImage createDepthImage(int format, int width, int height, int usage, boolean blur, boolean clamp) {
+        return createDepthImage(null, null, format, width, height, usage, blur, clamp);
+    }
+
+    /** rc9: named / owned depth image (null = derived from the caller). */
+    public static VulkanImage createDepthImage(String name, String owner, int format, int width, int height, int usage, boolean blur, boolean clamp) {
         VulkanImage image = VulkanImage.builder(width, height)
+                .setName(name)
+                .setOwner(owner)
                 .setFormat(format)
                 .setUsage(usage)
                 .setLinearFiltering(blur)
@@ -716,6 +726,7 @@ public class VulkanImage {
         final int height;
 
         String name;
+        String owner;
         int format = VulkanImage.DefaultFormat;
         int formatSize;
         byte mipLevels = 1;
@@ -774,6 +785,11 @@ public class VulkanImage {
             return this;
         }
 
+        public Builder setOwner(String owner) {
+            this.owner = owner;
+            return this;
+        }
+
         public Builder setLevelViews(boolean b) {
             this.levelViews = b;
             return this;
@@ -783,8 +799,14 @@ public class VulkanImage {
             this.formatSize = formatSize(this.format);
             // Iroh (rc8): every image is named (leak reports and the world-unload breakdown group by name). Unnamed
             // callers get "<creator class>.<method> WxH fmt".
-            if (this.name == null)
-                this.name = creatorName() + " " + this.width + "x" + this.height + " fmt" + this.format;
+            if (this.name == null || this.owner == null) {
+                String creator = creatorName();
+                String mod = dev.elemore.iroh.diag.EmuStats.callerMod();
+                if (this.name == null)
+                    this.name = creator + " " + this.width + "x" + this.height + " fmt" + this.format + " by " + mod;
+                if (this.owner == null)
+                    this.owner = (this.name.replaceAll("[0-9]+", "#")) + (this.name.contains(" by ") ? "" : " by " + mod);
+            }
 
             return VulkanImage.createTextureImage(this);
         }
