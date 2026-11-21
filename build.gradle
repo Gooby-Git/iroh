@@ -228,6 +228,16 @@ tasks.register('barrierBatchTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc6 (td-fcd844): texture-upload source spans and conversions. ./gradlew uploadBoundsTest; last line "# uploadbounds PASS n/n".
+tasks.register('uploadBoundsTest', JavaExec) {
+	group = 'verification'
+	description = 'Upload source spans never exceed the allocation; conversions keep a destination canary'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.UploadBoundsTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'

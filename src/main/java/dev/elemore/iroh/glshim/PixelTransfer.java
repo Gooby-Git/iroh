@@ -97,6 +97,19 @@ public final class PixelTransfer {
                + (long) skipPixels * bytesPerPixel(format, type);
     }
 
+    /**
+     * rc6 (td-fcd844): bytes an upload of {@code width x height} reads from client memory with this unpack state
+     * (skip + (height-1) rows + one row of width pixels), or -1 for an unsupported format/type or negative state. Every
+     * upload compares this with the real allocation before copying.
+     */
+    public static long sourceNeed(int width, int height, int rowLength, int alignment, int skipRows, int skipPixels, int format, int type) {
+        int bpp = bytesPerPixel(format, type);
+        long stride = rowStride(width, rowLength, alignment, format, type);
+        if (bpp <= 0 || stride <= 0 || width <= 0 || height <= 0 || skipRows < 0 || skipPixels < 0) return -1;
+        if (rowLength > 0 && skipPixels + width > rowLength) return -1;
+        return skipOffset(width, rowLength, alignment, skipRows, skipPixels, format, type) + stride * (height - 1) + (long) width * bpp;
+    }
+
     /** True when client data in (format, type) is byte-identical to {@code dst} (memcpy per row). */
     public static boolean identical(int format, int type, Dst dst) {
         return switch (dst) {
