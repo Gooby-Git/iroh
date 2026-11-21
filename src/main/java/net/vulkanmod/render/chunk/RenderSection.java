@@ -39,6 +39,8 @@ public class RenderSection {
     private final CompileStatus compileStatus = new CompileStatus();
 
     private boolean dirty = true;
+    /** Refused because its chunk was not render-ready; parked in SectionGraph's RebuildWaiting until that chunk is ready (td-27b474). */
+    public boolean waitingForChunk;
     private boolean playerChanged;
     private boolean completelyEmpty = true;
     private boolean containsBlockEntities = false;

@@ -1,6 +1,7 @@
 package net.vulkanmod.render.chunk.graph;
 
 import dev.elemore.iroh.chunk.ChunkDeferPolicy;
+import dev.elemore.iroh.chunk.RebuildWaiting;
 import dev.elemore.iroh.chunk.SyncWaitSet;
 import dev.elemore.iroh.config.IrohOptions;
 import dev.elemore.iroh.config.IrohOptions.DeferMode;
@@ -10,6 +11,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
@@ -235,14 +237,18 @@ public class SectionGraph {
     /** Debug switch (P1-9): reproduce the old behaviour (a section whose chunk was not render-ready was marked clean and lost). */
     private static final boolean LEGACY_DROP = Boolean.getBoolean("iroh.legacyDirtyDrop");
     private static final boolean STATS = Boolean.getBoolean("iroh.rebuildStats");
+    /** First-refusal snapshot of the compiled section, to tell "compiled after retry" from "never compiled" in the stats line. */
     private final java.util.IdentityHashMap<RenderSection, CompiledSection> droppedStats = new java.util.IdentityHashMap<>();
-    private long statsDropEvents, statsLastLog;
+    private long statsLastLog;
 
-    /** True when the last graph update left dirty sections it could not schedule because their chunk was not render-ready. */
-    private boolean deferredRebuilds;
+    /**
+     * Sections whose rebuild was refused (chunk not render-ready) wait here until that chunk turns ready (td-27b474). The
+     * decision is event driven: ChunkStatusMap -> WorldRenderer.chunkBecameRenderReady -> {@link RebuildWaiting#chunkReady}.
+     */
+    private final RebuildWaiting waiting = new RebuildWaiting();
 
-    public boolean hasDeferredRebuilds() {
-        return this.deferredRebuilds;
+    public RebuildWaiting waiting() {
+        return this.waiting;
     }
 
     /** Camera block of the last update, for the vanilla "nearby" radius (P1-11). */
@@ -262,12 +268,22 @@ public class SectionGraph {
     }
 
     private void scheduleRebuilds() {
-        boolean deferred = false;
         DeferMode mode = this.syncAllowed ? IrohOptions.chunkBuildDeferMode() : DeferMode.ALWAYS;
         boolean nearbyRule = mode != DeferMode.ALWAYS
                 && this.minecraft.options.prioritizeChunkUpdates().get() == PrioritizeChunkUpdates.NEARBY;
         for (int i = 0; i < this.rebuildQueue.size(); i++) {
             RenderSection section = this.rebuildQueue.get(i);
+
+            // Parked section: its chunk was not render-ready when it was refused. Nothing changed unless the chunk is
+            // ready now, so do not even try (this is what made the retry events multiply in rc2).
+            boolean retry = false;
+            if (section.waitingForChunk && !LEGACY_DROP) {
+                if (!section.isChunkRenderReady())
+                    continue;
+                section.waitingForChunk = false;
+                this.waiting.unpark(chunkKey(section));
+                retry = true;
+            }
 
             boolean scheduled;
             if (mode != DeferMode.ALWAYS && ChunkDeferPolicy.isImportant(mode, nearbyRule, section.isDirtyFromPlayer(),
@@ -281,43 +297,67 @@ public class SectionGraph {
             } else {
                 scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
             }
-            if (scheduled || LEGACY_DROP) {
-                if (!scheduled && STATS) {
-                    this.statsDropEvents++;
+
+            if (scheduled) {
+                if (retry)
+                    this.waiting.retriedAccepted++;
+                section.setNotDirty();
+            } else if (LEGACY_DROP) {
+                if (STATS) {
+                    this.waiting.refused++;
                     this.droppedStats.putIfAbsent(section, section.getCompiledSection());
                 }
                 section.setNotDirty();
             } else {
-                // Chunk (or its neighbours) not render-ready: stay dirty. ChunkStatusMap asks for a graph update when
-                // a chunk becomes ready, so there is no per-frame retry.
-                deferred = true;
-                if (STATS) {
-                    this.statsDropEvents++;
+                // Chunk (or a neighbour chunk) not render-ready: stay dirty and wait for that chunk's status to change.
+                section.waitingForChunk = true;
+                this.waiting.park(chunkKey(section));
+                if (STATS)
                     this.droppedStats.putIfAbsent(section, section.getCompiledSection());
-                }
             }
         }
-        this.deferredRebuilds = deferred;
         this.rebuildQueue.clear();
 
-        if (STATS) {
-            long now = System.currentTimeMillis();
-            if (now - this.statsLastLog > 3000 && this.statsDropEvents > 0) {
-                this.statsLastLog = now;
-                int compiledSince = 0, neverCompiled = 0, stale = 0, dirtyNow = 0;
-                for (var e : this.droppedStats.entrySet()) {
-                    RenderSection s = e.getKey();
-                    boolean wasUncompiled = e.getValue() == CompiledSection.UNCOMPILED;
-                    boolean changed = s.getCompiledSection() != e.getValue();
-                    if (s.isDirty()) dirtyNow++;
-                    if (changed) compiledSince++;
-                    else if (wasUncompiled) neverCompiled++;
-                    else stale++;
-                }
-                Initializer.LOGGER.info("[iroh-rebuild-stats] legacy={} dropEvents={} distinctSections={} compiledSince={} neverCompiled={} staleKeptOldMesh={} dirtyNow={}",
-                        LEGACY_DROP, this.statsDropEvents, this.droppedStats.size(), compiledSince, neverCompiled, stale, dirtyNow);
+        if (STATS)
+            logStats();
+    }
+
+    private static long chunkKey(RenderSection section) {
+        return ChunkPos.asLong(section.xOffset() >> 4, section.zOffset() >> 4);
+    }
+
+    private void logStats() {
+        long now = System.currentTimeMillis();
+        if (now - this.statsLastLog <= 3000 || (this.waiting.refused == 0 && this.waiting.idleEvents == 0))
+            return;
+        this.statsLastLog = now;
+        int compiledAfter = 0, neverCompiled = 0, stale = 0, waitingNow = 0, waitingChunkReady = 0;
+        for (var e : this.droppedStats.entrySet()) {
+            RenderSection s = e.getKey();
+            boolean wasUncompiled = e.getValue() == CompiledSection.UNCOMPILED;
+            boolean changed = s.getCompiledSection() != e.getValue();
+            if (s.waitingForChunk) {
+                waitingNow++;
+                // Must stay 0 after the next graph update: a parked section whose chunk is ready would be a missed wake-up.
+                if (s.isChunkRenderReady()) waitingChunkReady++;
             }
+            if (changed) compiledAfter++;
+            else if (wasUncompiled) neverCompiled++;
+            else stale++;
         }
+        Initializer.LOGGER.info("[iroh-rebuild-stats] legacy={} refusedWaiting={} retried={} retriedAccepted={} compiledAfterRetry={} "
+                        + "neverCompiled={} staleKeptOldMesh={} waitingNow={} waitingButChunkReady={} wakeups={} idleReadyEvents={} "
+                        + "distinctSections={} dropEvents={} dirtyNow={}",
+                LEGACY_DROP, this.waiting.refused, this.waiting.retried, this.waiting.retriedAccepted, compiledAfter,
+                neverCompiled, stale, waitingNow, waitingChunkReady, this.waiting.wakeups, this.waiting.idleEvents,
+                this.droppedStats.size(), this.waiting.refused, countDirty());
+    }
+
+    private int countDirty() {
+        int n = 0;
+        for (RenderSection s : this.droppedStats.keySet())
+            if (s.isDirty()) n++;
+        return n;
     }
 
     private boolean notInFrustum(RenderSection renderSection) {

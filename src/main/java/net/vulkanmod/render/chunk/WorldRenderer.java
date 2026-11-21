@@ -480,9 +480,9 @@ public class WorldRenderer {
         }
     }
 
-    /** A chunk turned render-ready (ChunkStatusMap): rerun the graph only if the last update deferred rebuilds. */
-    public void chunkBecameRenderReady() {
-        if (this.sectionGraph != null && this.sectionGraph.hasDeferredRebuilds())
+    /** Chunk (x, z) turned render-ready (ChunkStatusMap): one graph update, only if sections are parked waiting for it. */
+    public void chunkBecameRenderReady(int chunkX, int chunkZ) {
+        if (this.sectionGraph != null && this.sectionGraph.waiting().chunkReady(net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ)))
             this.graphNeedsUpdate = true;
     }
 

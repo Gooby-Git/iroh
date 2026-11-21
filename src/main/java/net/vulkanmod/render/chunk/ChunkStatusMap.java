@@ -56,11 +56,11 @@ public class ChunkStatusMap {
                 if (checkNeighbours(x1, z1)) {
                     long key = ChunkPos.asLong(x1, z1);
                     if (map.put(key, ALL_FLAGS) != ALL_FLAGS) {
-                        // A chunk just became render-ready: dirty sections the last graph update could not schedule
-                        // (P1-9) get another chance on the next frame.
+                        // A chunk just became render-ready: sections parked for it (P1-9, td-27b474) get one retry
+                        // on the next graph update.
                         WorldRenderer wr = WorldRenderer.getInstance();
                         if (wr != null)
-                            wr.chunkBecameRenderReady();
+                            wr.chunkBecameRenderReady(x1, z1);
                     }
                 }
                 else {
