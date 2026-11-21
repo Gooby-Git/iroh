@@ -152,7 +152,8 @@ public final class PackGlsl {
     /** Keywords of 4.60 that older GLSL let packs use as names; renamed when used as a name. */
     static final Set<String> NEW_KEYWORDS = Set.of("sample", "patch", "subroutine", "precise", "buffer", "shared",
             "coherent", "volatile", "restrict", "readonly", "writeonly", "resource", "atomic_uint", "noperspective",
-            "smooth", "flat", "centroid", "invariant", "layout", "demote", "texture");
+            "smooth", "flat", "centroid", "invariant", "layout", "demote", "texture", "sampler", "filter", "common",
+            "partition", "active", "superp", "input", "output");
 
     static final Set<String> STORAGE = Set.of("uniform", "in", "out", "inout", "varying", "attribute", "buffer", "shared", "const");
     static final Set<String> INTERP = Set.of("flat", "smooth", "noperspective", "centroid", "sample", "patch", "invariant", "precise");
@@ -564,7 +565,7 @@ public final class PackGlsl {
             d.line = nameTok.line();
             String arr = typeArray;
             int k = declStart + 1;
-            if (k < stop && toks.get(k).is("[")) {
+            while (k < stop && toks.get(k).is("[")) { // arrays of arrays: x[4][8]
                 int close = matching(toks, k, stop);
                 arr = arr + compact(u.text.substring(toks.get(k).start(), toks.get(close).end()));
                 k = close + 1;
@@ -971,6 +972,31 @@ public final class PackGlsl {
                 all.put(d.name, new String[]{d.type, d.array, vs == null ? "pack" : "owed-by-vertex"});
         }
         compatVaryings.forEach((n, t) -> all.put(n, new String[]{t[0], t[1], "compat"}));
+        // struct varyings (Photon's fog parameters): one varying per member, the struct rebuilt around main
+        // (Vitrail's approach): vertex copies members out after the pack's main, fragment fills the struct first
+        Map<String, List<Std140.Member>> structVaryings = new TreeMap<>();
+        // copy the pairs: TreeMap.remove moves a successor's key/value into the removed entry object
+        List<Map.Entry<String, String[]>> pairs = new ArrayList<>();
+        for (Map.Entry<String, String[]> x : all.entrySet())
+            pairs.add(Map.entry(x.getKey(), x.getValue()));
+        for (Map.Entry<String, String[]> e : pairs) {
+            String type = e.getValue()[0];
+            if (Std140.isScalarOrVector(type) || type.matches("d?mat[234](x[234])?") || type.matches("dvec[234]"))
+                continue;
+            List<Std140.Member> members = null;
+            for (Unit u : units.values())
+                if (u.structs.containsKey(type))
+                    members = u.structs.get(type);
+            if (members == null || !e.getValue()[1].isEmpty() || members.isEmpty())
+                throw new TranslateException(Stage.VERTEX, 0, "varying " + e.getKey() + " of type " + type + e.getValue()[1] + " (only non-array structs of plain members are split)");
+            for (Std140.Member m : members)
+                if (m.array() != 0 || !(Std140.isScalarOrVector(m.type()) || m.type().matches("mat[234](x[234])?")))
+                    throw new TranslateException(Stage.VERTEX, 0, "struct varying " + e.getKey() + " has member " + m.name() + " of type " + m.type() + " (not split)");
+            structVaryings.put(e.getKey(), members);
+            all.remove(e.getKey());
+            for (Std140.Member m : members)
+                all.put("iroh_sv_" + e.getKey() + "_" + m.name(), new String[]{m.type(), "", "struct:" + e.getKey()});
+        }
         Map<String, Integer> varyingLoc = new HashMap<>();
         int loc = 0;
         for (Map.Entry<String, String[]> e : all.entrySet()) {
@@ -1088,6 +1114,7 @@ public final class PackGlsl {
         String blockText = blockCode(r);
         for (Unit u : units.values()) {
             Gen g = new Gen(u, r, blockText, varyingLoc, vInLoc, all, samplerMap, imageMap, bufMap, fragDataSize, privateUniforms);
+            g.structVaryings = structVaryings;
             String out = g.emit();
             r.glsl.put(u.stage, out);
             r.headerLines.put(u.stage, g.headerLines);
@@ -1141,6 +1168,7 @@ public final class PackGlsl {
         final int fragDataSize;
         final Map<String, Set<String>> privateUniforms;
         final Map<String, String> renames = new HashMap<>();
+        Map<String, List<Std140.Member>> structVaryings = Map.of();
         int headerLines;
 
         Gen(Unit u, Result r, String block, Map<String, Integer> varyingLoc, Map<String, Integer> vInLoc,
@@ -1286,7 +1314,9 @@ public final class PackGlsl {
             String id = t.text();
             String r2 = renames.get(id);
             if (r2 != null) {
-                // only rename "texture" when it is the pack's variable, never the 4.60 function call
+                // "texture" is renamed only where it is the pack's variable, never at a call of the 4.60 function
+                if (id.equals("texture") && ti + 1 < u.toks.size() && u.toks.get(ti + 1).is("("))
+                    return id;
                 return r2;
             }
             if (NEW_KEYWORDS.contains(id) && usedAsName(ti) && !id.equals("texture"))
@@ -1402,24 +1432,39 @@ public final class PackGlsl {
                         sb.append(' ').append(d.name).append(d.array);
                     return sb.append("; ").toString();
                 }
-                case "in": {
-                    if (u.stage == Stage.VERTEX) {
-                        Integer l = vInLoc.get(d.name);
-                        return "layout(location = " + l + ") in " + d.type + " " + name + d.array + "; ";
-                    }
-                    if (u.stage == Stage.FRAGMENT) {
-                        String flat = isIntegerType(d.type) && !d.quals.contains("flat") ? "flat " : "";
-                        return "layout(location = " + varyingLoc.get(d.name) + ") " + flat + interp(d) + "in " + d.type + " " + name + d.array + "; ";
-                    }
-                    throw new TranslateException(u.stage, d.line, "'in' variable " + d.name + " in a " + u.stage.key + " stage");
-                }
-                case "out": {
-                    if (u.stage == Stage.VERTEX)
-                        return "layout(location = " + varyingLoc.get(d.name) + ") " + interp(d) + "out " + d.type + " " + name + d.array + "; ";
-                    if (u.stage == Stage.FRAGMENT)
-                        return "layout(location = " + d.location + ") out " + d.type + " " + name + d.array + "; ";
-                    throw new TranslateException(u.stage, d.line, "'out' variable " + d.name + " in a " + u.stage.key + " stage");
-                }
+                case "in":
+                case "out":
+                    if (structVaryings.containsKey(d.name) && u.stage != Stage.COMPUTE
+                            && ((u.stage == Stage.FRAGMENT && d.kind.equals("in")) || (u.stage == Stage.VERTEX && d.kind.equals("out"))))
+                        return d.type + " " + name + "; ";
+                    if (d.kind.equals("out"))
+                        return outText(d, name);
+                    return inText(d, name);
+                default:
+                    return otherText(d, name, nonConst);
+            }
+        }
+
+        String inText(Decl d, String name) {
+            if (u.stage == Stage.VERTEX)
+                return "layout(location = " + vInLoc.get(d.name) + ") in " + d.type + " " + name + d.array + "; ";
+            if (u.stage == Stage.FRAGMENT) {
+                String flat = isIntegerType(d.type) && !d.quals.contains("flat") ? "flat " : "";
+                return "layout(location = " + varyingLoc.get(d.name) + ") " + flat + interp(d) + "in " + d.type + " " + name + d.array + "; ";
+            }
+            throw new TranslateException(u.stage, d.line, "'in' variable " + d.name + " in a " + u.stage.key + " stage");
+        }
+
+        String outText(Decl d, String name) {
+            if (u.stage == Stage.VERTEX)
+                return "layout(location = " + varyingLoc.get(d.name) + ") " + interp(d) + "out " + d.type + " " + name + d.array + "; ";
+            if (u.stage == Stage.FRAGMENT)
+                return "layout(location = " + d.location + ") out " + d.type + " " + name + d.array + "; ";
+            throw new TranslateException(u.stage, d.line, "'out' variable " + d.name + " in a " + u.stage.key + " stage");
+        }
+
+        String otherText(Decl d, String name, Set<String> nonConst) {
+            switch (d.kind) {
                 case "shared":
                     return "shared " + d.type + " " + name + d.array + "; ";
                 case "const": {
@@ -1495,7 +1540,7 @@ public final class PackGlsl {
                 // compat + owed varyings
                 for (Map.Entry<String, String[]> e : allVaryings.entrySet()) {
                     String from = e.getValue()[2];
-                    if (from.equals("compat") || from.equals("owed-by-vertex")) {
+                    if (from.equals("compat") || from.equals("owed-by-vertex") || from.startsWith("struct:")) {
                         String flat = isIntegerType(e.getValue()[0]) ? "flat " : "";
                         sb.append("layout(location = ").append(varyingLoc.get(e.getKey())).append(") ").append(flat).append("out ")
                                 .append(e.getValue()[0]).append(' ').append(e.getKey()).append(e.getValue()[1]).append(";\n");
@@ -1510,8 +1555,9 @@ public final class PackGlsl {
                 sb.append("invariant gl_Position;\n");
             } else if (u.stage == Stage.FRAGMENT) {
                 for (Map.Entry<String, String[]> e : allVaryings.entrySet())
-                    if (e.getValue()[2].equals("compat"))
-                        sb.append("layout(location = ").append(varyingLoc.get(e.getKey())).append(") in ")
+                    if (e.getValue()[2].equals("compat") || e.getValue()[2].startsWith("struct:"))
+                        sb.append("layout(location = ").append(varyingLoc.get(e.getKey())).append(") ")
+                                .append(isIntegerType(e.getValue()[0]) ? "flat " : "").append("in ")
                                 .append(e.getValue()[0]).append(' ').append(e.getKey()).append(e.getValue()[1]).append(";\n");
                 if (u.uses("gl_FragData"))
                     sb.append("layout(location = 0) out vec4 iroh_FragData[").append(fragDataSize).append("];\n");
@@ -1558,9 +1604,19 @@ public final class PackGlsl {
             }
             for (String p : prologue)
                 sb.append("    ").append(p).append('\n');
+            if (u.stage == Stage.FRAGMENT)
+                structVaryings.forEach((n, ms) -> {
+                    for (Std140.Member m : ms)
+                        sb.append("    ").append(n).append('.').append(m.name()).append(" = iroh_sv_").append(n).append('_').append(m.name()).append(";\n");
+                });
             sb.append("    iroh_pack_main();\n");
-            if (u.stage == Stage.VERTEX)
+            if (u.stage == Stage.VERTEX) {
+                structVaryings.forEach((n, ms) -> {
+                    for (Std140.Member m : ms)
+                        sb.append("    iroh_sv_").append(n).append('_').append(m.name()).append(" = ").append(n).append('.').append(m.name()).append(";\n");
+                });
                 sb.append("    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n");
+            }
             sb.append("}\n");
             return sb.toString();
         }

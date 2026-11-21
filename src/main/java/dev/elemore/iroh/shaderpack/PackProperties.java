@@ -61,6 +61,8 @@ public final class PackProperties implements Json.Dumpable {
             String k = e.key();
             if (k.equals("sliders")) {
                 pp.sliders.addAll(words(e.value()));
+            } else if (k.equals("screen.columns")) {
+                pp.screenColumns.put("", e.value()); // main screen
             } else if (k.equals("screen") || (k.startsWith("screen.") && !k.endsWith(".columns"))) {
                 pp.screens.put(k.equals("screen") ? "" : k.substring(7), words(e.value()));
             } else if (k.startsWith("screen.") && k.endsWith(".columns")) {

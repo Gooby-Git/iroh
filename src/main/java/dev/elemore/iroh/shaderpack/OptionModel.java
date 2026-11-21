@@ -16,7 +16,8 @@ import java.util.regex.Pattern;
  * Stage (iii): the pack's options, discovered from source lines (OptiFine rules, shaders.properties doc):
  * <ul>
  *   <li>boolean: {@code #define NAME} (on) or {@code // #define NAME} (off), recognised only when some file of the
- *       pack tests the name ({@code #ifdef NAME}, {@code #ifndef NAME}, {@code defined NAME}, {@code defined(NAME)});
+ *       pack tests the name with a bare {@code #ifdef NAME} / {@code #ifndef NAME} ({@code defined NAME} inside
+ *       an {@code #if} does not count, as observed in Iris);
  *       Iris behaviour, looser than OptiFine's documented same-file rule;</li>
  *   <li>value: {@code #define NAME value // comment [v1 v2 ...]}; a trailing {@code //} comment is required
  *       (Iris rule: a bare {@code #define PI 3.14} is not an option); the default is added to the value list;</li>
@@ -106,7 +107,9 @@ public final class OptionModel {
 
     private static Set<String> testedNames(String text) {
         Set<String> s = new java.util.HashSet<>();
-        Matcher m = Pattern.compile("(?:#\\s*ifn?def\\s+|defined\\s*\\(?\\s*)([A-Za-z_]\\w*)").matcher(text);
+        // only a bare #ifdef / #ifndef registers a boolean: "#if defined A && defined NAME" alone leaves Iris's
+        // menu button unresolved (owner's note from Iris's latest.log, memory project_navidson_shader)
+        Matcher m = Pattern.compile("#\\s*ifn?def\\s+([A-Za-z_]\\w*)").matcher(text);
         while (m.find())
             s.add(m.group(1));
         return s;

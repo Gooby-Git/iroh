@@ -12,8 +12,8 @@ import java.util.Set;
  * <ul>
  *   <li>{@code MC_VERSION 12101}, {@code MC_GL_VERSION 460}, {@code MC_GLSL_VERSION 460}: what the translated
  *       code really is (GLSL 4.60 semantics through SPIR-V).</li>
- *   <li>{@code IS_IRIS} and {@code IRIS_VERSION 10800}: packs (Complementary) refuse to run or show "install
- *       Iris" overlays without them, and select Iris-only code paths (Iris 1.8 is what the OpenGL pack runs).
+ *   <li>{@code IS_IRIS} and {@code IRIS_VERSION 10814}: packs (Complementary) refuse to run or show "install
+ *       Iris" overlays without them, and select Iris-only code paths (Iris 1.8.14 is what the OpenGL pack runs).
  *       Iroh behaves as Iris does for every pack-visible contract, so claiming Iris is accurate in effect.</li>
  *   <li>{@code IRIS_FEATURE_*} only for features Iroh will serve (see {@link #SERVED_FEATURES}); a feature
  *       flag defined but not served sends every program down a branch that cannot work.</li>
@@ -80,8 +80,8 @@ public final class StandardMacros {
         for (int i = 0; i < RENDER_STAGES.size(); i++)
             m.put("MC_RENDER_STAGE_" + RENDER_STAGES.get(i), String.valueOf(i));
         m.put("IS_IRIS", "");
-        m.put("IRIS_VERSION", "10800");
-        for (String f : env.features())
+        m.put("IRIS_VERSION", "10814"); // the Iris the OpenGL pack runs: iris-fabric-1.8.14-beta.1+mc1.21.1
+        for (String f : new java.util.TreeSet<>(env.features())) // sorted: Set.of order is random per JVM
             m.put("IRIS_FEATURE_" + f, "");
         // Distant Horizons material classes (DH public API enum order, UNVERIFIED against Iris): Navidson's
         // dh_* and vista_* programs compare against them; Vista writes them in its vertex half.

@@ -66,7 +66,7 @@ public final class FrontEnd {
         void fail(String stage, String cls, String msg) {
             if (failStage == null) {
                 failStage = stage;
-                failClass = cls;
+                failClass = (enabled ? "" : "[off] ") + cls;
                 failMessage = msg;
             }
         }
@@ -99,6 +99,8 @@ public final class FrontEnd {
             return "Distant Horizons program (DH is unsupported under Iroh, DECISIONS #13; its dhMaterialId etc. are DH's)";
         if (program.startsWith("voxy_"))
             return "Voxy program (Voxy is unsupported under Iroh, DECISIONS #13)";
+        if (ProgramSet.family(program) == ProgramSet.Family.EXTRA)
+            return "not an Iris program name: drawn only if another mod registers it (e.g. Photon 1.4 gbuffers_voxels)";
         return null;
     }
 

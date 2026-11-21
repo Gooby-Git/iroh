@@ -85,9 +85,9 @@ public final class ProgramSet implements Json.Dumpable {
     }
 
     public static Family family(String name) {
-        if (name.equals("shadow") || name.startsWith("shadow_"))
+        if (name.equals("shadow") || (name.startsWith("shadow_") && GBUFFERS.contains(name)))
             return Family.SHADOW;
-        if (name.startsWith("gbuffers_"))
+        if (name.startsWith("gbuffers_") && GBUFFERS.contains(name))
             return Family.GBUFFERS;
         if (name.startsWith("dh_") || name.startsWith("vista_") || name.startsWith("voxy_"))
             return Family.LOD;

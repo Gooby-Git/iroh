@@ -76,7 +76,16 @@ public final class PackHarness {
             }
             Path dir = out.resolve(safe(name));
             deleteTree(dir);
-            FrontEnd.PackResult r = FrontEnd.run(src, new FrontEnd.Config(env, saved, true, dir));
+            FrontEnd.PackResult r;
+            try {
+                r = FrontEnd.run(src, new FrontEnd.Config(env, saved, true, dir));
+            } catch (RuntimeException e) {
+                StackTraceElement[] st = e.getStackTrace();
+                System.out.println("FAIL " + name + " pack: front end crashed: " + e + (st.length > 0 ? " at " + st[0] : ""));
+                totalFail++;
+                summaries.add("# pack " + name + ": front end crashed (" + e + ")");
+                continue;
+            }
             System.out.println("# pack " + name + (saved != null ? " (options " + optFile.getFileName() + ", "
                     + r.options.savedApplied().size() + " applied, " + r.options.savedUnknown().size() + " unknown)" : " (default options)"));
             for (String e : r.packErrors)
