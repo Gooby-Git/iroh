@@ -133,6 +133,16 @@ tasks.register('shaderHarness', JavaExec) {
 	args a
 }
 
+// P1-6b api internals that need no game (leaf-culling rule, per-position random). ./gradlew apiTest ; last line
+// "# api PASS n/n".
+tasks.register('apiTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the api leaf-culling rule and position random headless'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.apitest.ApiTest'
+}
+
 // GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).
 // ./gradlew glNetTest ; last line "# glnet PASS n/n". A JVM abort means the net failed.
 tasks.register('glNetTest', JavaExec) {
