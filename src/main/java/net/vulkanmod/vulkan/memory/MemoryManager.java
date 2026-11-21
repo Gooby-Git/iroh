@@ -183,7 +183,8 @@ public class MemoryManager {
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack);
             allocationInfo.requiredFlags(properties);
 
-            int result = vmaCreateBuffer(ALLOCATOR, bufferInfo, allocationInfo, pBuffer, pBufferMemory, null);
+            dev.elemore.iroh.memory.MemoryGuard.beforeAllocation("buffer " + size + " B"); // rc8: never ask the driver again after an OOM
+            int result = dev.elemore.iroh.memory.MemoryGuard.check(vmaCreateBuffer(ALLOCATOR, bufferInfo, allocationInfo, pBuffer, pBufferMemory, null), "vmaCreateBuffer " + size + " B");
             if (result != VK_SUCCESS) {
                 Initializer.LOGGER.info(String.format("Failed to create buffer with size: %.3f MB", ((float) size / BYTES_IN_MB)));
                 Initializer.LOGGER.info(String.format("Tracked Device Memory used: %d/%d MB", getAllocatedDeviceMemoryMB(), getDeviceMemoryMB()));
@@ -256,7 +257,8 @@ public class MemoryManager {
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack);
             allocationInfo.requiredFlags(memProperties);
 
-            int result = vmaCreateImage(ALLOCATOR, imageInfo, allocationInfo, pTextureImage, pTextureImageMemory, null);
+            dev.elemore.iroh.memory.MemoryGuard.beforeAllocation("image " + width + "x" + height);
+            int result = dev.elemore.iroh.memory.MemoryGuard.check(vmaCreateImage(ALLOCATOR, imageInfo, allocationInfo, pTextureImage, pTextureImageMemory, null), "vmaCreateImage " + width + "x" + height);
             if (result != VK_SUCCESS) {
                 Initializer.LOGGER.info(String.format("Failed to create image with size: %dx%d", width, height));
 

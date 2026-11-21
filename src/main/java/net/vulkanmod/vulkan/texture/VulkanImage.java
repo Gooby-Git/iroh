@@ -231,7 +231,7 @@ public class VulkanImage {
 
             LongBuffer pImageView = stack.mallocLong(1);
 
-            if (vkCreateImageView(DEVICE, viewInfo, null, pImageView) != VK_SUCCESS) {
+            if (dev.elemore.iroh.memory.MemoryGuard.check(vkCreateImageView(DEVICE, viewInfo, null, pImageView), "vkCreateImageView") != VK_SUCCESS) {
                 throw new RuntimeException("Failed to create texture image view");
             }
 

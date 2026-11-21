@@ -21,6 +21,8 @@ public class Config {
     public boolean uniqueOpaqueLayer = true;
     public boolean entityCulling = true;
     public int device = -1;
+    /** rc8: Iroh's own device-memory cap in MiB; 0 = automatic (min(60% of the largest VRAM heap, 8 GiB)). */
+    public int maxDeviceMemoryMiB = 0;
 
     public int ambientOcclusion = 1;
     public int frameQueueSize = 2;

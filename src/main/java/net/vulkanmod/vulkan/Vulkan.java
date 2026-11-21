@@ -386,6 +386,7 @@ public class Vulkan {
     }
 
     public static void checkResult(int result, String errorMessage) {
+        dev.elemore.iroh.memory.MemoryGuard.check(result, errorMessage); // rc8: out-of-memory -> guard (log, trim, leave the world), never a retry
         if (result != VK_SUCCESS) {
             throw new RuntimeException(String.format("%s: %s", errorMessage, VkResult.decode(result)));
         }

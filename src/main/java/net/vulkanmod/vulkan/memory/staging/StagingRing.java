@@ -244,6 +244,18 @@ public final class StagingRing {
         return n;
     }
 
+    /** rc8: destroys every pooled (idle) block; returns the bytes released. Memory guard trim. */
+    public synchronized long trimPool() {
+        long freed = 0;
+        while (!pool.isEmpty()) {
+            Slot s = pool.pollLast();
+            totalBytes -= s.block.size();
+            freed += s.block.size();
+            factory.destroy(s.block);
+        }
+        return freed;
+    }
+
     /** Destroys every block (shutdown, after the device is idle). */
     public synchronized void destroyAll() {
         for (Slot s : live) factory.destroy(s.block);

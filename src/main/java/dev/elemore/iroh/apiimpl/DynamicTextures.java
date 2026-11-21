@@ -76,6 +76,8 @@ public final class DynamicTextures {
             if (x < 0 || y < 0 || uw <= 0 || uh <= 0 || x + uw > w || y + uh > h)
                 throw new IllegalArgumentException("region " + x + "," + y + " " + uw + "x" + uh + " outside " + w + "x" + h);
             if (rgba.remaining() < uw * uh * 4) throw new IllegalArgumentException("need " + (uw * uh * 4) + " bytes");
+            if (texture == null && !dev.elemore.iroh.memory.MemoryGuard.allowOptional((long) w * h * 4))
+                return; // rc8: at the graphics-memory cap an optional texture is not created
             if (texture == null) {
                 texture = new DynamicTexture(w, h, true);
                 Minecraft.getInstance().getTextureManager().register(id, texture);

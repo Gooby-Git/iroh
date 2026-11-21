@@ -258,6 +258,16 @@ tasks.register('glRegistryTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc8: device-memory policy state machine. ./gradlew memoryBudgetTest; last line "# memorybudget PASS n/n".
+tasks.register('memoryBudgetTest', JavaExec) {
+	group = 'verification'
+	description = 'Memory cap policy: auto/configured cap, driver budget bound, warn, capped, OOM sticky'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.MemoryBudgetTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'

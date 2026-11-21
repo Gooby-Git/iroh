@@ -58,6 +58,7 @@ public final class MemStats {
                 }
             }
         }
+        sb.append("\n  memory guard: ").append(dev.elemore.iroh.memory.MemoryGuard.statsLine());
         sb.append("\n  iroh objects: ").append(net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
         var wr = net.vulkanmod.render.chunk.WorldRenderer.getInstance();
         if (wr != null && wr.getChunkAreaManager() != null)

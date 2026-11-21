@@ -265,6 +265,7 @@ public class Renderer {
     private void beginFrame0() {
         dev.elemore.iroh.diag.RenderWatchdog.heartbeat(); // rc3r2 (td-3bc9d5): stall diagnostics
         dev.elemore.iroh.diag.LoadWatch.tick(); // rc5 (td-30c049): evidence if a world load hangs
+        dev.elemore.iroh.memory.MemoryGuard.tick(); // rc8: device-memory cap / out-of-memory exit
         if (dev.elemore.iroh.diag.MemStats.ON) dev.elemore.iroh.diag.MemStats.frame(); // rc7
         Profiler p = Profiler.getMainProfiler();
         p.pop();
@@ -323,8 +324,8 @@ public class Renderer {
 
             IntBuffer pImageIndex = stack.mallocInt(1);
 
-            int vkResult = vkAcquireNextImageKHR(device, swapChain.getId(), VUtil.UINT64_MAX,
-                                                 imageAvailableSemaphores.get(currentFrame), VK_NULL_HANDLE, pImageIndex);
+            int vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkAcquireNextImageKHR(device, swapChain.getId(), VUtil.UINT64_MAX,
+                                                 imageAvailableSemaphores.get(currentFrame), VK_NULL_HANDLE, pImageIndex), "vkAcquireNextImageKHR");
 
             if (vkResult == VK_SUBOPTIMAL_KHR || vkResult == VK_ERROR_OUT_OF_DATE_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
@@ -459,7 +460,7 @@ public class Renderer {
 
             vkResetFences(device, inFlightFences.get(currentFrame));
 
-            if ((vkResult = vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame))) != VK_SUCCESS) {
+            if ((vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame)), "frame vkQueueSubmit")) != VK_SUCCESS) {
                 vkResetFences(device, inFlightFences.get(currentFrame));
                 throw new RuntimeException("Failed to submit draw command buffer: %s".formatted(VkResult.decode(vkResult)));
             }
@@ -476,7 +477,7 @@ public class Renderer {
 
             presentInfo.pImageIndices(stack.ints(imageIndex));
 
-            vkResult = vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo);
+            vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo), "vkQueuePresentKHR");
 
             if (vkResult == VK_ERROR_OUT_OF_DATE_KHR || vkResult == VK_SUBOPTIMAL_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
@@ -513,7 +514,7 @@ public class Renderer {
 
             waitFences();
 
-            if ((vkResult = vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame))) != VK_SUCCESS) {
+            if ((vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame)), "frame vkQueueSubmit")) != VK_SUCCESS) {
                 vkResetFences(device, inFlightFences.get(currentFrame));
                 throw new RuntimeException("Failed to submit draw command buffer: %s".formatted(VkResult.decode(vkResult)));
             }
@@ -600,7 +601,7 @@ public class Renderer {
                                             .pWaitSemaphores(stack.longs(imageAvailableSemaphores.get(currentFrame)))
                                             .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
 
-            vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), info, inFlightFences.get(currentFrame));
+            dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), info, inFlightFences.get(currentFrame)), "vkQueueSubmit (unsignal)");
             vkWaitForFences(device, inFlightFences.get(currentFrame), true, -1);
         }
     }
