@@ -90,12 +90,17 @@ public class BlockRenderer extends AbstractBlockRenderContext {
         bufferQuad(terrainBuilder, this.pos, quad, this.quadLightData);
     }
 
+    /** Iroh (P1-6b FRAPI): the layer the current quad goes to (its material's blend mode, else the block's layer). */
+    private TerrainRenderType quadRenderType;
+
     private TerrainBuilder getBufferBuilder(BlendMode blendMode) {
         if (blendMode == BlendMode.DEFAULT) {
+            this.quadRenderType = this.renderType;
             return this.terrainBuilder;
         } else {
             TerrainRenderType renderType = TerrainRenderType.get(blendMode.blockRenderLayer);
             renderType = TerrainRenderType.getRemapped(renderType);
+            this.quadRenderType = renderType;
             TerrainBuilder bufferBuilder = this.resources.builderPack.builder(renderType);
             bufferBuilder.setBlockAttributes(this.blockState);
 
@@ -106,7 +111,12 @@ public class BlockRenderer extends AbstractBlockRenderContext {
     public void bufferQuad(TerrainBuilder terrainBuilder, Vector3f pos, ModelQuadView quad, QuadLightData quadLightData) {
         QuadFacing quadFacing = quad.getQuadFacing();
 
-        if (renderType == TerrainRenderType.TRANSLUCENT || !this.backFaceCulling) {
+        // Iroh (P1-6b FRAPI): test the layer the quad is written to, not the block's layer. A BlendMode.TRANSLUCENT
+        // material on a solid/cutout block (Polaris' chisel paint coat) went to a per-facing bucket of the translucent
+        // builder, which only sorts and indexes the UNDEFINED bucket (TerrainBuilder.setupQuadSortingPoints): the
+        // quads were left unsorted or not drawn at all.
+        TerrainRenderType target = this.quadRenderType != null ? this.quadRenderType : this.renderType;
+        if (target == TerrainRenderType.TRANSLUCENT || !this.backFaceCulling) {
             quadFacing = QuadFacing.UNDEFINED;
         }
 
