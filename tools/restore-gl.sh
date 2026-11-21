@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Undoes tools/disable-gl.sh: moves every jar listed in disabledmods/.iroh-moved.txt back to mods/, and moves
 # the Iroh jar out of mods/ into disabledmods/ (never deletes). The instance is then the stock OpenGL pack
-# (Sodium + Iris; its wrapperCommand still runs it on Zink). Refuses while the Vulkan instance game is running.
+# (Sodium + Iris; wrapperCommand restored from .iroh-wrapperCommand.orig so it runs on Zink again). Refuses while the Vulkan instance game is running.
 set -euo pipefail
 INSTANCE="$HOME/.local/share/atlauncher/instances/Vulkan"
 MODS="$INSTANCE/mods"; OFF="$INSTANCE/disabledmods"; LIST="$OFF/.iroh-moved.txt"
@@ -17,5 +17,10 @@ while IFS= read -r b; do
 done < "$LIST"
 shopt -s nullglob
 for f in "$MODS"/iroh-*.jar; do mv -f "$f" "$OFF/$(basename "$f")"; echo "moved out $(basename "$f")"; done
+ORIG="$INSTANCE/.iroh-wrapperCommand.orig"
+if [ -f "$ORIG" ] && grep -q '"wrapperCommand": ""' "$INSTANCE/instance.json"; then
+  sed -i "s|\"wrapperCommand\": \"\"|\"wrapperCommand\": \"$(cat "$ORIG")\"|" "$INSTANCE/instance.json"
+  echo "wrapperCommand restored: $(cat "$ORIG")"
+fi
 mv "$LIST" "$LIST.restored-$(date +%Y%m%d-%H%M%S)"
 echo "done: Sodium/Iris pack restored"
