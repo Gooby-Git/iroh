@@ -39,7 +39,7 @@ public final class GeometryNeeds {
             new Field("tangent", 20, 4, "snorm8 x3 tangent + snorm8 handedness (at_tangent.w)", "at_tangent",
                     "per-quad from positions and uvs (mesher)"),
             new Field("midTexCoord", 24, 4, "unorm16 x2, sprite centre", "mc_midTexCoord", "sprite bounds"),
-            new Field("midBlock", 28, 4, "snorm8 x3 = (block centre - vertex) x 64 (+-2 blocks), uint8 light emission",
+            new Field("midBlock", 28, 4, "int8 x3 = round((block centre - vertex) x 64), read unnormalised (+-1.98 blocks; Iris's x64 scale), uint8 light emission",
                     "at_midBlock (.w = emission, IRIS_FEATURE_BLOCK_EMISSION_ATTRIBUTE)", "unsnapped float position, BlockState.getLightEmission"),
             new Field("entity", 32, 4, "uint16 block id from block.properties, uint8 render type (Iris mc_Entity.y), uint8 pad",
                     "mc_Entity.xy", "block.properties id map, resolved per BlockState at pack load into a table the mesher reads"));
@@ -77,7 +77,8 @@ public final class GeometryNeeds {
                     }
             }
         g.notes.add("wide terrain vertex " + WIDE_TERRAIN_BYTES + " B vs 16 B today: x2.25 section vertex memory and upload bytes while PACK/RT is active; "
-                + "a quad costs 144 B instead of 64 B. The staging ring's ~1 ms per frame section budget then moves 2.25x fewer vertices per frame.");
+                + "a quad costs 144 B instead of 64 B; a dense section of 2000 visible quads is 288 KiB instead of 128 KiB (the index buffer is shared and unchanged). "
+                + "The staging ring's ~1 ms per frame section budget then moves 2.25x fewer vertices per frame, and section uploads take 2.25x more 16 MiB staging blocks.");
         g.notes.add("PlaneSnap is unchanged (same 1/2048 grid); midBlock is computed from the UNSNAPPED float position so voxelisation "
                 + "(Navidson shadow pass writes voxel_img from at_midBlock) lands in the right block.");
         g.notes.add("Raster keeps the 16 B format (RQ-5 triage); the mesher writes one format per section build, chosen by the active path; "
