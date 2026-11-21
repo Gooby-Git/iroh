@@ -11,7 +11,8 @@
     "gl.GL33CM",
     "gl.GLM",
     "reload.LoadingOverlayM",
-    "compat.watermedia.GLEngineM"
+    "compat.watermedia.GLEngineM",
+    "compat.satin.RenderTargetSatinM"
   ],
   "injectors": {
     "defaultRequire": 1
