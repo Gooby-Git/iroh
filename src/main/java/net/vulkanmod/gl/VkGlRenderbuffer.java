@@ -57,6 +57,7 @@ public class VkGlRenderbuffer {
         VkGlRenderbuffer rb = map.remove(i);
         if (rb == null)
             return;
+        VkGlFramebuffer.onAttachmentDeleted(i, true); // rc12
         if (bound == rb) {
             bound = null;
             boundId = 0;

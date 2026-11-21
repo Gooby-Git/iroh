@@ -622,6 +622,7 @@ public class Renderer {
     private void recreateSwapChain() {
         waitFences();
         Vulkan.waitIdle();
+        Synchronization.INSTANCE.deviceIdle(); // rc12: submitted frames are done: complete their epochs
 
         commandBuffers.forEach(commandBuffer -> vkResetCommandBuffer(commandBuffer, 0));
         recordingCmds = false;

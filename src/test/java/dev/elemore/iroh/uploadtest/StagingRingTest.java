@@ -156,6 +156,22 @@ public final class StagingRingTest {
         for (var p2 : pinnedByWorkers) r7.cancel(p2);
         check("after the worker reservations end, workers may reserve again", r7.reserveForWorker(256 * 1024, 4) != null);
 
+        // rc12 (td-7799fa): with the device idle in the middle of a frame, only blocks no frame command buffer reads are
+        // reused; a block read by the open frame waits for that frame's epoch
+        StagingRing r8 = ring(1 * MB, 8 * MB);
+        var upl = r8.reserve(900_000, 4);   // upload-only block
+        var frm = r8.reserve(900_000, 4);   // second block, read by the frame
+        r8.consumed(upl);
+        r8.consumedByFrame(frm);
+        r8.reserve(900_000, 4);             // retires the frame block too
+        long open = r8.epoch();
+        r8.uploadsCompleted(open);
+        check("device idle mid-frame: the upload-only block is reused, the frame-read block is kept",
+                !r8.isLiveBlock(upl.bufferId) && r8.isLiveBlock(frm.bufferId));
+        r8.endEpoch();
+        r8.completed(open);
+        check("the frame-read block is released once its epoch (frame) completed", !r8.isLiveBlock(frm.bufferId));
+
         // 6. concurrent workers
         StagingRing r6 = ring(2 * MB, 64 * MB);
         ConcurrentLinkedQueue<StagingRing.Alloc> ready = new ConcurrentLinkedQueue<>();

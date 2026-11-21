@@ -325,7 +325,7 @@ public class VulkanImage {
         var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
         long bufferId = alloc.bufferId;
         long srcOffset = alloc.offset;
-        StagingBuffer.ring().consumed(alloc); // read by this frame's command buffer: released after the frame
+        StagingBuffer.ring().consumedByFrame(alloc); // read by this frame's command buffer: released after the frame
 
         Framebuffer boundFb = Renderer.getInstance().getBoundFramebuffer();
         if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {

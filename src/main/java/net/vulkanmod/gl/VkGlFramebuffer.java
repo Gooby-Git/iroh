@@ -322,6 +322,42 @@ public class VkGlFramebuffer {
     }
 
     /** Re-resolves attachments by GL name; rebuilds the Vulkan framebuffer when an attached image was replaced. */
+    /**
+     * rc12 (td-7799fa): a deleted texture or renderbuffer is detached from every framebuffer that names it, and their
+     * Vulkan framebuffers (which hold its image view) are cleaned up now (destroyed after the frames that used them,
+     * MemoryManager frame ops). A render pass already open on it stays valid until the end of the frame: the image itself
+     * is freed through the deferred, epoch-gated path, so nothing it references is destroyed while recorded work may run.
+     */
+    public static void onAttachmentDeleted(int name, boolean renderbuffer) {
+        if (name == 0)
+            return;
+        for (VkGlFramebuffer fb : map.values()) {
+            boolean hit = false;
+            if (fb.colorName == name && fb.colorIsRenderbuffer == renderbuffer) {
+                fb.colorName = 0;
+                fb.colorAttachment = null;
+                hit = true;
+            }
+            if (fb.depthName == name && fb.depthIsRenderbuffer == renderbuffer) {
+                fb.depthName = 0;
+                fb.depthAttachment = null;
+                hit = true;
+            }
+            if (hit && fb.framebuffer != null) {
+                fb.cleanUp(false);
+                fb.framebuffer = null;
+                if (fb.colorAttachment != null)
+                    fb.createAndBind();
+            }
+        }
+    }
+
+    /** rc12: for the offline lifetime test. */
+    public static boolean attaches(int fbId, int name) {
+        VkGlFramebuffer fb = map.get(fbId);
+        return fb != null && (fb.colorName == name || fb.depthName == name);
+    }
+
     void refreshAttachments() {
         VulkanImage c = resolve(this.colorName, this.colorIsRenderbuffer, this.colorAttachment);
         VulkanImage d = resolve(this.depthName, this.depthIsRenderbuffer, this.depthAttachment);

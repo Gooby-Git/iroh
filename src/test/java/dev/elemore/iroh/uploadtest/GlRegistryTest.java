@@ -111,6 +111,22 @@ public final class GlRegistryTest {
         boolean once = created.stream().allMatch(img -> freed.getOrDefault(img, 0) <= 1);
         check("10,000 re-specifications of one id: " + created.size() + " images created, " + live + " live at the end (1 expected)", live == 1 && once);
         check("same size + same format re-specification reuses the image (" + sameSizeAllocs + " needless reallocations)", sameSizeAllocs == 0);
+        // rc12: the same size every frame for 1000 frames (GPUBooster / Satin respecifying their targets) is a no-op
+        int before1000 = created.size();
+        for (int frame = 0; frame < 1000; frame++)
+            VkGlTexture.specifyStorageForTest(tex, 0, 0x1902, 1280, 720);
+        int afterFirst = created.size();
+        for (int frame = 0; frame < 1000; frame++)
+            VkGlTexture.specifyStorageForTest(tex, 0, 0x1902, 1280, 720);
+        check("respecify 1280x720 depth every frame for 1000 frames: at most one new image (" + (afterFirst - before1000) + " then "
+                + (created.size() - afterFirst) + ")", afterFirst - before1000 <= 1 && created.size() == afterFirst);
+        int sizeChangeBefore = created.size();
+        VkGlTexture.specifyStorageForTest(tex, 0, 0x1902, 1920, 1080);
+        VulkanImage newest = created.get(created.size() - 1);
+        long liveNow = created.stream().filter(img -> !freed.containsKey(img)).count();
+        check("respecify with a new size: one new image, the old one freed exactly once (" + liveNow + " live)",
+                created.size() == sizeChangeBefore + 1 && liveNow == 1 && !freed.containsKey(newest)
+                        && created.stream().allMatch(img -> freed.getOrDefault(img, 0) <= 1));
         VkGlTexture.glDeleteTextures(tex);
         check("delete frees the last one: none live", created.stream().allMatch(img -> freed.getOrDefault(img, 0) == 1));
         VkGlTexture.FACTORY = null;
