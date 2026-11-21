@@ -135,7 +135,6 @@ public class Vulkan {
 
     private static long allocator;
 
-    private static StagingBuffer[] stagingBuffers;
 
     public static boolean use24BitsDepthFormat = true;
     private static int DEFAULT_DEPTH_FORMAT = 0;
@@ -156,17 +155,9 @@ public class Vulkan {
         Renderer.initRenderer();
     }
 
+    /** perf/uploads: the per-frame 64 MB staging buffers are replaced by the chained StagingRing (idempotent). */
     static void createStagingBuffers() {
-        if (stagingBuffers != null) {
-            freeStagingBuffers();
-        }
-
-        stagingBuffers = new StagingBuffer[Renderer.getFramesNum()];
-
-        for (int i = 0; i < stagingBuffers.length; ++i) {
-            stagingBuffers[i] = new StagingBuffer();
-            stagingBuffers[i].markShared();
-        }
+        StagingBuffer.initRing();
     }
 
     static void setupDepthFormat() {
@@ -205,7 +196,8 @@ public class Vulkan {
     }
 
     private static void freeStagingBuffers() {
-        Arrays.stream(stagingBuffers).forEach(Buffer::scheduleFree);
+        if (StagingBuffer.ring() != null)
+            StagingBuffer.ring().destroyAll();
     }
 
     private static void createInstance() {
@@ -419,19 +411,10 @@ public class Vulkan {
         return commandPool;
     }
 
-    /** Iroh (R-3): true when {@code bufferId} is one of the per-frame shared staging buffers. */
+    /** Iroh (R-3, perf/uploads): true when {@code bufferId} is a ring staging block. */
     public static boolean isSharedStagingBuffer(long bufferId) {
-        StagingBuffer[] arr = stagingBuffers;
-        if (arr == null || bufferId == 0L)
-            return false;
-        for (StagingBuffer b : arr)
-            if (b != null && b.getId() == bufferId)
-                return true;
-        return false;
-    }
-
-    public static StagingBuffer getStagingBuffer() {
-        return stagingBuffers[Renderer.getCurrentFrame()];
+        var ring = StagingBuffer.ring();
+        return ring != null && bufferId != 0L && ring.isRingBuffer(bufferId);
     }
 
     public static Device getDevice() {

@@ -32,7 +32,7 @@ public class TransferQueue extends Queue {
 
             vkCmdCopyBuffer(commandBuffer.getHandle(), srcBuffer, dstBuffer, copyRegion);
 
-            this.submitCommands(commandBuffer);
+            this.submitCommandsSignalling(commandBuffer); // perf/uploads: the frame waits on the GPU, not the CPU
             Synchronization.INSTANCE.addCommandBuffer(commandBuffer);
 
             return commandBuffer.fence;

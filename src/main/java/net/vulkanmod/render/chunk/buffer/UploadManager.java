@@ -34,7 +34,7 @@ public class UploadManager {
         if (this.commandBuffer == null)
             return;
 
-        this.queue.submitCommands(this.commandBuffer);
+        this.queue.submitCommandsSignalling(this.commandBuffer); // perf/uploads: the frame waits on the GPU
 
         Synchronization.INSTANCE.addCommandBuffer(this.commandBuffer);
 
@@ -43,8 +43,19 @@ public class UploadManager {
     }
 
     public void recordUpload(Buffer buffer, long dstOffset, long bufferSize, ByteBuffer src) {
-        StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
-        stagingBuffer.copyBuffer((int) bufferSize, src);
+        // perf/uploads: mesh data a worker already wrote into ring staging is copied from there (no render-thread memcpy);
+        // anything else is staged now. Never a mid-frame fence wait (unless the staging budget is exhausted).
+        long t0 = dev.elemore.iroh.diag.UploadStats.ON ? System.nanoTime() : 0;
+        var ring = StagingBuffer.ring();
+        long addr = org.lwjgl.system.MemoryUtil.memAddress(src);
+        var staged = ring.tracked(addr);
+        if (staged != null && staged.size < bufferSize)
+            staged = null;
+        var alloc = staged != null ? staged : StagingBuffer.stage(bufferSize, 4, addr);
+        if (dev.elemore.iroh.diag.UploadStats.ON) {
+            dev.elemore.iroh.diag.UploadStats.chunkBytes += bufferSize;
+            if (staged != null) dev.elemore.iroh.diag.UploadStats.workerStagedBytes += bufferSize;
+        }
 
         beginCommands();
         VkCommandBuffer commandBuffer = this.commandBuffer.getHandle();
@@ -67,7 +78,9 @@ public class UploadManager {
             this.dstBuffers.clear();
         }
 
-        TransferQueue.uploadBufferCmd(commandBuffer, stagingBuffer.getId(), stagingBuffer.getOffset(), buffer.getId(), dstOffset, bufferSize);
+        TransferQueue.uploadBufferCmd(commandBuffer, alloc.bufferId, alloc.offset, buffer.getId(), dstOffset, bufferSize);
+        ring.consumed(alloc);
+        if (t0 != 0) dev.elemore.iroh.diag.UploadStats.chunkUploadNs += System.nanoTime() - t0;
     }
 
     public void copyBuffer(Buffer src, Buffer dst) {

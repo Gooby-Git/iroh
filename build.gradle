@@ -238,6 +238,16 @@ tasks.register('uploadBoundsTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// perf/uploads: chained staging ring bookkeeping. ./gradlew stagingRingTest; last line "# stagingring PASS n/n".
+tasks.register('stagingRingTest', JavaExec) {
+	group = 'verification'
+	description = 'Staging ring: chain, budget, release after epoch, pinning, R-3 cases, concurrent workers'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.StagingRingTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'

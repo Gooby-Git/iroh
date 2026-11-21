@@ -85,6 +85,7 @@ public class MemoryManager {
         this.setCurrentFrame(frame);
         this.freeBuffers(frame);
         this.freeImages(frame);
+        this.freeEpochGated();
         this.doFrameOps(frame);
         this.freeSegments(frame);
     }
@@ -95,6 +96,12 @@ public class MemoryManager {
     }
 
     public void freeAllBuffers() {
+        // callers wait for the device first (shutdown, frame-count change): everything is done
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring != null) ring.completeAll();
+        synchronized (this) {
+            freeEpochGated();
+        }
         for (int frame = 0; frame < Frames; ++frame) {
             this.freeBuffers(frame);
             this.freeImages(frame);
@@ -117,6 +124,10 @@ public class MemoryManager {
             for (int i = 0; i < Frames; i++) {
                 pendingB += INSTANCE.freeableBuffers[i].size();
                 pendingI += INSTANCE.freeableImages[i].size();
+            }
+        if (INSTANCE != null) {
+            pendingB += INSTANCE.epochBuffers.size();
+            pendingI += INSTANCE.epochImages.size();
             }
         // rc6: per-owner breakdown (buffer class / image name with digits folded), top 8 each
         java.util.Map<String, Integer> b = new java.util.HashMap<>(), im = new java.util.HashMap<>();
@@ -305,11 +316,45 @@ public class MemoryManager {
         deviceMemory -= image.size;
     }
 
+    // perf/uploads: deferred frees gated by the upload EPOCH they were scheduled in. Upload command buffers are no longer
+    // waited at every frame end, so "the frame slot came round again" no longer implies "every copy reading this object
+    // finished" (an upload recorded between two frames belongs to the next epoch). An object scheduled while epoch E is
+    // open is freed once E completed (its upload command buffers and the frame recorded during E have finished).
+    private final ObjectArrayList<Buffer.BufferInfo> epochBuffers = new ObjectArrayList<>();
+    private final it.unimi.dsi.fastutil.longs.LongArrayList epochBufferTags = new it.unimi.dsi.fastutil.longs.LongArrayList();
+    private final ObjectArrayList<VulkanImage> epochImages = new ObjectArrayList<>();
+    private final it.unimi.dsi.fastutil.longs.LongArrayList epochImageTags = new it.unimi.dsi.fastutil.longs.LongArrayList();
+
+    private void freeEpochGated() {
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        long done = ring == null ? Long.MAX_VALUE : ring.completedEpoch();
+        int w = 0;
+        for (int i = 0; i < epochBuffers.size(); i++) {
+            if (epochBufferTags.getLong(i) <= done) freeBuffer(epochBuffers.get(i));
+            else { epochBuffers.set(w, epochBuffers.get(i)); epochBufferTags.set(w, epochBufferTags.getLong(i)); w++; }
+        }
+        epochBuffers.size(w);
+        epochBufferTags.size(w);
+        w = 0;
+        for (int i = 0; i < epochImages.size(); i++) {
+            if (epochImageTags.getLong(i) <= done) epochImages.get(i).doFree();
+            else { epochImages.set(w, epochImages.get(i)); epochImageTags.set(w, epochImageTags.getLong(i)); w++; }
+        }
+        epochImages.size(w);
+        epochImageTags.size(w);
+    }
+
     public synchronized void addToFreeable(Buffer buffer) {
         Buffer.BufferInfo bufferInfo = buffer.getBufferInfo();
 
         checkBuffer(bufferInfo);
 
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring != null) {
+            epochBuffers.add(bufferInfo);
+            epochBufferTags.add(ring.epoch());
+            return;
+        }
         freeableBuffers[currentFrame].add(bufferInfo);
 
         if (DEBUG)
@@ -317,6 +362,12 @@ public class MemoryManager {
     }
 
     public synchronized void addToFreeable(VulkanImage image) {
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring != null) {
+            epochImages.add(image);
+            epochImageTags.add(ring.epoch());
+            return;
+        }
         freeableImages[currentFrame].add(image);
     }
 
