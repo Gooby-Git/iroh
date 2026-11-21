@@ -14,6 +14,7 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 MVP;
     vec3 Light0_Direction;
     vec3 Light1_Direction;
+    int FogShape;
 };
 
 layout(binding = 3) uniform sampler2D Sampler1;
@@ -28,7 +29,7 @@ layout(location = 4) out float vertexDistance;
 void main() {
     gl_Position = MVP * vec4(Position, 1.0);
 
-    vertexDistance = fog_distance(Position.xyz, 0);
+    vertexDistance = fog_distance(Position.xyz, FogShape);
     vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);
     lightMapColor = texelFetch(Sampler2, UV2 / 16, 0);
     overlayColor = texelFetch(Sampler1, UV1, 0);

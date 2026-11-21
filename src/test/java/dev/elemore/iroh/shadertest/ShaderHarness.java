@@ -146,6 +146,10 @@ public final class ShaderHarness {
         if (!mode.equals("legacy"))
             lines.addAll(SelfCases.run(show, detail));
         if (!mode.equals("legacy"))
+            lines.addAll(CoreParity.run(layers.get(0).files));
+        if (!mode.equals("legacy"))
+            lines.addAll(CoreParity.runOwn());
+        if (!mode.equals("legacy"))
             lines.addAll(GlProgramCases.run(mods, opt.get("programs"), show, detail));
         lines.sort(null);
 
