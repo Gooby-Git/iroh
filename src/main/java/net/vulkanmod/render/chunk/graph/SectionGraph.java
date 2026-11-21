@@ -192,6 +192,8 @@ public class SectionGraph {
             if (renderSection.directionChanges > maxDirectionsChanges)
                 continue;
 
+            renderSection.lastVisibleFrame = this.lastFrame; // Iroh P1-6b: IrohApi.isSectionVisible
+
             if (!renderSection.isCompletelyEmpty()) {
                 renderSection.getChunkArea().sectionQueue.add(renderSection);
                 this.chunkAreaQueue.add(renderSection.getChunkArea());
@@ -323,6 +325,8 @@ public class SectionGraph {
 
             if (notInFrustum(renderSection))
                 continue;
+
+            renderSection.lastVisibleFrame = this.lastFrame; // Iroh P1-6b: IrohApi.isSectionVisible
 
             if (!renderSection.isCompletelyEmpty()) {
                 renderSection.getChunkArea().sectionQueue.add(renderSection);

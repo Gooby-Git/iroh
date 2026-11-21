@@ -45,6 +45,12 @@ public class RenderSection {
 
     public long visibility;
 
+    /**
+     * Iroh (P1-6b api): the graph frame (SectionGraph.lastFrame) in which this section was reached AND passed the
+     * frustum test, i.e. it is in this frame's visible set. Read by dev.elemore.iroh.api.IrohApi.isSectionVisible.
+     */
+    public short lastVisibleFrame = -1;
+
     public int xOffset, yOffset, zOffset;
 
     // Graph-info
@@ -382,6 +388,7 @@ public class RenderSection {
         this.dirty = true;
         this.visibility = 0;
         this.completelyEmpty = true;
+        this.lastVisibleFrame = -1;
 
         this.resetDrawParameters();
     }
