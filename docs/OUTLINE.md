@@ -165,6 +165,18 @@ clouds). The Iris buffer-sweep throttle needs nothing unless Iroh adds batched e
 Then elemore-core gets an `IrohBridge` beside `SodiumBridge`. **Accept** each feature has a
 Proctor scenario that passes on OpenGL (frozen clone) and on Iroh.
 
+**P1-13 [S audit, O/S ports] Owner mods native on Iroh (owner rule 2026-11-20).** No owner mod may
+reach the screen through the GL shim or a Sodium/Iris stand-in. Audit every owner mod (static scan
+for org.lwjgl.opengl / GlStateManager / RenderSystem raw state / BufferUploader / custom
+ShaderInstance / RenderTarget / Sodium / Iris use, plus the `Iroh GL shim` call log by mod from a
+pack run) and port each rendering path to `dev.elemore.iroh.api`, extending the api where needed
+(immediate geometry submission, custom pipelines from GLSL/SPIR-V, off-screen targets, compute,
+per-frame uniforms, texture upload). Vista's renderer is the big one and stays in Phase 9 as a
+native Vulkan renderer, not a GL translation; Tempest clouds/funnel, elemore-core HUD/world
+overlays, Polaris, citadels, jumper, grind, bosses and pad effects are Phase 1 if they draw in
+Raster mode. The OpenGL path of each mod stays for the owner's real pack. **Accept** the shim log
+shows zero calls from owner mods; each ported feature has a Proctor scene matching OpenGL.
+
 **P1-7 [P] Parity sweep.** Run every baseline scene and every `mods/*` scenario; file one td bug
 per difference with the two screenshots; loop with P1-5 owners until clean. Also the full existing
 Proctor smoke suite (bosses, cooking, menus, character creation) to prove gameplay did not change.
@@ -384,7 +396,20 @@ lighting approximations. **P9-3 [P]** Vista perf bench (`vperf` recipe) on both 
 unattended playthrough segment. **P10-2 [S] Windows build check** (compiles, native libs build via
 cross toolchain or CI; untested at runtime, stated in README). **P10-3 [S] Packaging**: README,
 NOTICE audit against every copied file, licence headers, GitHub repo, Modrinth draft (owner
-publishes), pack `SESSION_CHANGES.md` entry. **P10-4 [F] Owner walkthrough**: what is tested, on
+publishes), pack `SESSION_CHANGES.md` entry. **P10-5 [O] Navidson for Vulkan (the final pass; owner request 2026-11-20).** Optimise the
+owner's Navidson pack for Vulkan and for Iroh's shader-pack pipeline, on the owner-written files
+plus an Iroh-specific profile: measure each pass on the 9070 XT (per-pass GPU time from Iroh's
+profiler), then cut cost without changing the look: merge or drop passes, right-size render target
+formats and half-resolution passes, move the voxel light volume update to a compute path Iroh
+schedules well, replace work the pack does itself with data Iroh can supply natively (motion
+vectors, previous-frame matrices, depth pyramids, the Vista far-terrain contract, held-light and
+Tempest textures), remove GL-era workarounds that cost on Vulkan (dependent texture reads,
+branch-heavy fallbacks, redundant clears and copies), and wire the upscaler cut point. Complementary
+base files stay under their own licence: changes there ship only as part of Navidson, never in
+Iroh. **Accept** same look by the perceptual gate against the pre-optimisation Navidson-on-Iroh
+shots, measured frame-time gain recorded per change, no new validation messages.
+
+**P10-4 [F] Owner walkthrough**: what is tested, on
 what hardware, what is not.
 
 ---
