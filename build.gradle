@@ -215,6 +215,19 @@ tasks.register('builtinShaderTest', JavaExec) {
 	workingDir = projectDir
 }
 
+// rc3r2 (td-c8876c): AsyncParticles' references into net.vulkanmod resolve in the built Iroh jar (exact owner/name/desc,
+// static-ness, access, its compat mixins). Reads the jar from the instance at test time. ./gradlew asyncParticlesLinkTest
+// [-Pmods=dir] [-Piroh=jar]; last line "# aplink PASS n/n". Needs ./build.sh first.
+tasks.register('asyncParticlesLinkTest', JavaExec) {
+	group = 'verification'
+	description = 'Link-check AsyncParticles against the built Iroh jar'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.compattest.AsyncParticlesLinkTest'
+	workingDir = projectDir
+	args((project.findProperty('mods') ?: '') as String, (project.findProperty('iroh') ?: '') as String)
+}
+
 // GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).
 // ./gradlew glNetTest ; last line "# glnet PASS n/n". A JVM abort means the net failed.
 tasks.register('glNetTest', JavaExec) {
