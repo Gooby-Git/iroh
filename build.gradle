@@ -93,6 +93,13 @@ java {
 	targetCompatibility = JavaVersion.VERSION_21
 }
 
+// P1-11: a jar hash identifies a commit. No file timestamps, fixed entry order, for every archive task
+// (jar, sourcesJar, and Loom's remapJar / remapSourcesJar which copy those settings from the source archive).
+tasks.withType(AbstractArchiveTask).configureEach {
+	preserveFileTimestamps = false
+	reproducibleFileOrder = true
+}
+
 jar {
 	from("LICENSE") {
 		rename { "${it}_${project.base.archivesName.get()}"}
@@ -119,6 +126,7 @@ publishing {
 
 // Offline shader regression suite (P1-2a): converts and compiles every mod / vanilla shader in a mod folder
 // with the code the game runs. ./gradlew shaderHarness [-Pmods=dir] [-Pmode=legacy] [-Pshader=id] [-Pout=file]
+// -Ppack=dir[,dir] instead reports which shaders a resource pack's assets/*/shaders overrides would convert (RQ-14 test bed)
 tasks.register('shaderHarness', JavaExec) {
 	group = 'verification'
 	description = 'Convert and compile every core/post shader of the Vulkan instance offline'
@@ -127,7 +135,7 @@ tasks.register('shaderHarness', JavaExec) {
 	mainClass = 'dev.elemore.iroh.shadertest.ShaderHarness'
 	jvmArgs '-Xmx2g'
 	def a = []
-	['mods', 'mode', 'shader', 'out', 'instance', 'programs'].each { k ->
+	['mods', 'mode', 'shader', 'out', 'instance', 'programs', 'pack'].each { k ->
 		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
 	}
 	args a
@@ -175,4 +183,14 @@ tasks.register('glNetTest', JavaExec) {
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.gltest.GlNetTest'
 	jvmArgs '-Diroh.glnet.anythread=true' // no Minecraft render thread in the test
+}
+
+// Headless test of the chunk build defer mode machinery (P1-11): importance rule, wait set, latch contract.
+// ./gradlew chunkDeferTest ; last line "# chunkdefer PASS n/n"
+tasks.register('chunkDeferTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the chunk build defer policy, the bounded wait set and the task latch contract'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
 }

@@ -212,6 +212,15 @@ public final class IrohOptions {
         return reg(o);
     }
 
+    /** A vanilla 0..1 slider shown as a percentage in steps of 5. */
+    private static Opt<Integer> percent(String id, int def, Supplier<net.minecraft.client.OptionInstance<Double>> inst, String nameKey) {
+        Opt<Integer> o = vanilla(id, Category.QUALITY, Integer.class, def,
+                () -> (int) Math.round(inst.get().get() * 100.0),
+                v -> inst.get().set(v * 0.01));
+        o.name(nameKey).range(0, 100, 5).label(v -> v == 0 ? Component.translatable("options.off") : Component.literal(v + "%"));
+        return o;
+    }
+
     private static <E extends Enum<E>> E parse(Class<E> type, String s, E def) {
         try {
             return Enum.valueOf(type, s);
@@ -265,6 +274,7 @@ public final class IrohOptions {
     public static final Opt<net.minecraft.client.CloudStatus> CLOUDS;
     public static final Opt<Boolean> ENTITY_SHADOWS;
     public static final Opt<Integer> ENTITY_DISTANCE_SCALING;
+    public static final Opt<Integer> DISTORTION_EFFECTS, FOV_EFFECTS, GLINT_SPEED, GLINT_STRENGTH, MENU_BLURRINESS;
     public static final Opt<Integer> BIOME_BLEND;
     public static final Opt<Integer> MIPMAPS;
 
@@ -353,8 +363,7 @@ public final class IrohOptions {
 
         CHUNK_BUILD_DEFER_MODE = enumOpt("chunkBuildDeferMode", Category.PERFORMANCE, DeferMode.class, DeferMode.ALWAYS,
                 c -> parse(DeferMode.class, c.chunkBuildDeferMode, DeferMode.ALWAYS), (c, v) -> c.chunkBuildDeferMode = v.name());
-        CHUNK_BUILD_DEFER_MODE.label(v -> Component.translatable("iroh.options.chunkBuildDeferMode." + v.name().toLowerCase()))
-                .note("iroh.note.schedulerHook");
+        CHUNK_BUILD_DEFER_MODE.label(v -> Component.translatable("iroh.options.chunkBuildDeferMode." + v.name().toLowerCase()));
 
         SHADER_PACK = stringOpt("shaderPack");
         SHADERS_ENABLED = bool("shadersEnabled", Category.SHADERS, false, c -> c.shadersEnabled, (c, v) -> c.shadersEnabled = v);
@@ -406,7 +415,9 @@ public final class IrohOptions {
                 net.minecraft.client.PrioritizeChunkUpdates.NONE,
                 () -> mc().options.prioritizeChunkUpdates().get(), v -> mc().options.prioritizeChunkUpdates().set(v));
         PRIORITIZE_CHUNK_UPDATES.name("options.prioritizeChunkUpdates").choices(net.minecraft.client.PrioritizeChunkUpdates.values())
-                .label(v -> Component.translatable(v.getKey()));
+                .label(v -> Component.translatable(v.getKey()))
+                // the defer mode is the master (ChunkDeferPolicy): under Always nothing is rebuilt inside the frame
+                .unavailable(() -> chunkBuildDeferMode() == DeferMode.ALWAYS ? Component.translatable("iroh.reason.deferAlways") : null);
         GRAPHICS = vanilla("graphics", Category.QUALITY, GraphicsStatus.class, GraphicsStatus.FANCY,
                 () -> mc().options.graphicsMode().get(), v -> { mc().options.graphicsMode().set(v); refreshLeaves(false); });
         GRAPHICS.name("options.graphics").choices(GraphicsStatus.FAST, GraphicsStatus.FANCY, GraphicsStatus.FABULOUS)
@@ -427,6 +438,16 @@ public final class IrohOptions {
                 v -> mc().options.entityDistanceScaling().set(v * 0.01));
         ENTITY_DISTANCE_SCALING.name("options.entityDistanceScaling").range(50, 500, 25)
                 .label(v -> Component.literal(v + "%"));
+        // P1-11 item 3: the rest of vanilla's Video Settings screen (they were missing from Iroh's screen; vanilla's own code
+        // honours them: GameRenderer, AbstractClientPlayer, RenderStateShard, GameRenderer.processBlurEffect)
+        DISTORTION_EFFECTS = percent("screenEffectScale", 100, () -> mc().options.screenEffectScale(), "options.screenEffectScale");
+        FOV_EFFECTS = percent("fovEffectScale", 100, () -> mc().options.fovEffectScale(), "options.fovEffectScale");
+        GLINT_SPEED = percent("glintSpeed", 50, () -> mc().options.glintSpeed(), "options.glintSpeed");
+        GLINT_STRENGTH = percent("glintStrength", 75, () -> mc().options.glintStrength(), "options.glintStrength");
+        MENU_BLURRINESS = vanilla("menuBackgroundBlurriness", Category.QUALITY, Integer.class, 5,
+                () -> mc().options.menuBackgroundBlurriness().get(), v -> mc().options.menuBackgroundBlurriness().set(v));
+        MENU_BLURRINESS.name("options.accessibility.menu_background_blurriness").range(0, 10, 1)
+                .label(v -> v == 0 ? Component.translatable("options.off") : Component.literal(String.valueOf(v)));
         BIOME_BLEND = vanilla("biomeBlendRadius", Category.QUALITY, Integer.class, 2,
                 () -> mc().options.biomeBlendRadius().get(),
                 v -> { mc().options.biomeBlendRadius().set(v); mc().levelRenderer.allChanged(); });
@@ -578,6 +599,19 @@ public final class IrohOptions {
             LOGGER.warn("Capability report failed: {}", t.toString());
         }
         if (LEAVES_QUALITY.get() != LeavesQuality.DEFAULT) refreshLeaves(false);
+        // P1-11: the meshers read vanilla's Smooth Lighting boolean (Minecraft.useAmbientOcclusion) for on/off and Iroh's
+        // ambientOcclusion for the sub-block mode. The screen shows iroh.json, so make the boolean agree with it at boot;
+        // before this a stale options.txt value could leave the screen on "On" with flat lighting.
+        try {
+            Minecraft m = Minecraft.getInstance();
+            if (m != null && m.options != null && m.options.ambientOcclusion().get() != (config.ambientOcclusion > 0)) {
+                LOGGER.info("Iroh: smooth lighting in options.txt ({}) disagreed with iroh.json ({}); iroh.json wins",
+                        m.options.ambientOcclusion().get(), config.ambientOcclusion);
+                m.options.ambientOcclusion().set(config.ambientOcclusion > 0);
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("smooth lighting sync skipped: {}", t.toString());
+        }
     }
 
     /** Re-applies the render-type switch for leaves (vanilla's ItemBlockRenderTypes.setFancy, filtered by our mixin). */

@@ -22,9 +22,13 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
+import dev.elemore.iroh.chunk.ChunkDeferPolicy;
+import dev.elemore.iroh.chunk.SyncWaitSet;
+import dev.elemore.iroh.config.IrohOptions;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.render.PipelineManager;
 import net.vulkanmod.render.chunk.buffer.DrawBuffers;
+import net.vulkanmod.render.chunk.buffer.UploadManager;
 import net.vulkanmod.render.chunk.build.RenderRegionBuilder;
 import net.vulkanmod.render.chunk.build.task.TaskDispatcher;
 import net.vulkanmod.render.chunk.build.task.ChunkTask;
@@ -189,6 +193,7 @@ public class WorldRenderer {
                 this.lastCamRotY = camera.getYRot();
 
                 this.sectionGraph.update(camera, frustum, spectator);
+                this.waitForImportantRebuilds(camera, frustum, spectator);
             }
         }
 
@@ -198,11 +203,73 @@ public class WorldRenderer {
         profiler.pop();
     }
 
+    private static final boolean DEFER_STATS = Boolean.getBoolean("iroh.deferStats");
+    private long deferStatsLast;
+
+    /**
+     * Chunk build defer mode, ZERO_FRAMES half (P1-11): the important rebuilds the graph update just queued finish before
+     * this frame is drawn. The render thread waits (bounded by {@link ChunkDeferPolicy#ZERO_FRAME_BUDGET_NS}), uploads what
+     * arrived, and reruns the graph update so a section that was empty and now has geometry is in this frame's draw queue.
+     * ONE_FRAME waits in {@link #uploadSections()} at the start of the next frame instead.
+     */
+    private void waitForImportantRebuilds(Camera camera, Frustum frustum, boolean spectator) {
+        if (IrohOptions.chunkBuildDeferMode() != IrohOptions.DeferMode.ZERO_FRAMES)
+            return;
+        SyncWaitSet set = this.sectionGraph.syncSet();
+        if (set.pending() == 0)
+            return;
+
+        this.minecraft.getProfiler().push("defer_zero_frames");
+        set.awaitAll(ChunkDeferPolicy.budgetNs(IrohOptions.DeferMode.ZERO_FRAMES));
+        boolean arrived;
+        try {
+            arrived = this.taskDispatcher.updateSections();
+            UploadManager.INSTANCE.submitUploads();
+        } catch (Exception e) {
+            Initializer.LOGGER.error(e.getMessage());
+            allChanged();
+            this.minecraft.getProfiler().pop();
+            return;
+        }
+        if (arrived) {
+            this.sectionGraph.setSyncAllowed(false);
+            try {
+                this.sectionGraph.update(camera, frustum, spectator);
+            } finally {
+                this.sectionGraph.setSyncAllowed(true);
+            }
+        }
+        this.logDeferStats();
+        this.minecraft.getProfiler().pop();
+    }
+
+    private void logDeferStats() {
+        if (!DEFER_STATS)
+            return;
+        long now = System.currentTimeMillis();
+        if (now - this.deferStatsLast > 5000 && this.sectionGraph != null) {
+            this.deferStatsLast = now;
+            Initializer.LOGGER.info("Iroh chunk defer: {}", this.sectionGraph.syncSet().stats());
+        }
+    }
+
     public void uploadSections() {
         this.minecraft.getProfiler().push("upload");
 
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Uploads");
+
+        // ONE_FRAME: the rebuilds queued as important in the previous frame finish before this one is presented.
+        if (this.sectionGraph != null) {
+            SyncWaitSet set = this.sectionGraph.syncSet();
+            IrohOptions.DeferMode mode = IrohOptions.chunkBuildDeferMode();
+            if (mode == IrohOptions.DeferMode.ONE_FRAME && set.pending() > 0) {
+                set.awaitAll(ChunkDeferPolicy.budgetNs(mode));
+                this.logDeferStats();
+            } else {
+                set.clear();
+            }
+        }
 
         try {
             if (this.taskDispatcher.updateSections())

@@ -94,6 +94,7 @@ public class TaskDispatcher {
                 task.runTask(builderResources);
             } finally {
                 this.pendingTasks.decrementAndGet();
+                task.finish();
             }
         }
     }
@@ -198,6 +199,7 @@ public class TaskDispatcher {
             if (chunkTask != null) {
                 chunkTask.cancel();
                 this.pendingTasks.decrementAndGet();
+                chunkTask.finish();
             }
         }
 
@@ -206,6 +208,7 @@ public class TaskDispatcher {
             if (chunkTask != null) {
                 chunkTask.cancel();
                 this.pendingTasks.decrementAndGet();
+                chunkTask.finish();
             }
         }
     }

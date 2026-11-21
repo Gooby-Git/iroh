@@ -1,5 +1,10 @@
 package net.vulkanmod.render.chunk.graph;
 
+import dev.elemore.iroh.chunk.ChunkDeferPolicy;
+import dev.elemore.iroh.chunk.SyncWaitSet;
+import dev.elemore.iroh.config.IrohOptions;
+import dev.elemore.iroh.config.IrohOptions.DeferMode;
+import net.minecraft.client.PrioritizeChunkUpdates;
 import com.google.common.collect.Lists;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -58,6 +63,7 @@ public class SectionGraph {
         Profiler profiler = Profiler.getMainProfiler();
 
         BlockPos blockpos = camera.getBlockPosition();
+        this.cameraBlock = blockpos;
 
         this.minecraft.getProfiler().popPush("update");
 
@@ -164,6 +170,14 @@ public class SectionGraph {
             renderSection.setDirty(false);
     }
 
+    private double distSqrToCamera(RenderSection section) {
+        // vanilla: section origin + (8, 8, 8) against the camera block position
+        double dx = section.xOffset() + 8 - this.cameraBlock.getX();
+        double dy = section.yOffset() + 8 - this.cameraBlock.getY();
+        double dz = section.zOffset() + 8 - this.cameraBlock.getZ();
+        return dx * dx + dy * dy + dz * dz;
+    }
+
     private void initUpdate() {
         this.unbuiltSections = 0;
         this.resetUpdateQueues();
@@ -231,12 +245,42 @@ public class SectionGraph {
         return this.deferredRebuilds;
     }
 
+    /** Camera block of the last update, for the vanilla "nearby" radius (P1-11). */
+    private BlockPos cameraBlock = BlockPos.ZERO;
+
+    /** Rebuilds the current frame decided to wait for (chunk build defer mode, P1-11); consumed by WorldRenderer. */
+    private final SyncWaitSet syncSet = new SyncWaitSet();
+    /** False for the repeat update WorldRenderer runs after a ZERO_FRAMES wait: it must not wait a second time. */
+    private boolean syncAllowed = true;
+
+    public SyncWaitSet syncSet() {
+        return this.syncSet;
+    }
+
+    public void setSyncAllowed(boolean allowed) {
+        this.syncAllowed = allowed;
+    }
+
     private void scheduleRebuilds() {
         boolean deferred = false;
+        DeferMode mode = this.syncAllowed ? IrohOptions.chunkBuildDeferMode() : DeferMode.ALWAYS;
+        boolean nearbyRule = mode != DeferMode.ALWAYS
+                && this.minecraft.options.prioritizeChunkUpdates().get() == PrioritizeChunkUpdates.NEARBY;
         for (int i = 0; i < this.rebuildQueue.size(); i++) {
             RenderSection section = this.rebuildQueue.get(i);
 
-            boolean scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
+            boolean scheduled;
+            if (mode != DeferMode.ALWAYS && ChunkDeferPolicy.isImportant(mode, nearbyRule, section.isDirtyFromPlayer(),
+                    this.distSqrToCamera(section))) {
+                if (this.syncSet.hasRoom())
+                    scheduled = section.rebuildChunkImportant(this.taskDispatcher, this.renderRegionCache, this.syncSet);
+                else {
+                    this.syncSet.noteOverCap();
+                    scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
+                }
+            } else {
+                scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
+            }
             if (scheduled || LEGACY_DROP) {
                 if (!scheduled && STATS) {
                     this.statsDropEvents++;
