@@ -10,6 +10,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FormattedCharSequence;
 import dev.elemore.iroh.config.IrohOptions;
+import dev.elemore.iroh.config.TooltipPlacer;
 import net.vulkanmod.Initializer;
 import org.lwjgl.glfw.GLFW;
 import net.vulkanmod.config.gui.widget.VAbstractWidget;
@@ -30,10 +31,6 @@ public class VOptionScreen extends Screen {
     private final List<OptionPage> optionPages;
 
     private int currentListIdx = 0;
-
-    private int tooltipX;
-    private int tooltipY;
-    private int tooltipWidth;
 
     private VButtonWidget aboutButton;
 
@@ -75,21 +72,6 @@ public class VOptionScreen extends Screen {
         int listHeight = this.height - top - bottom;
 
         this.buildLists(leftMargin, top, listWidth, listHeight, itemHeight);
-
-        int x = leftMargin + listWidth + 10;
-//        int width = Math.min(this.width - this.tooltipX - 10, 200);
-        int width = this.width - x - 10;
-        int y = 50;
-
-        if (width < 200) {
-            x = 100;
-            width = listWidth;
-            y = this.height - bottom + 10;
-        }
-
-        this.tooltipX = x;
-        this.tooltipY = y;
-        this.tooltipWidth = width;
 
         buildPage();
 
@@ -244,10 +226,7 @@ public class VOptionScreen extends Screen {
         currentList.renderWidget(mouseX, mouseY);
         renderButtons(mouseX, mouseY);
 
-        List<FormattedCharSequence> list = getHoveredButtonTooltip(currentList, mouseX, mouseY);
-        if (list != null) {
-            this.renderTooltip(list, this.tooltipX, this.tooltipY);
-        }
+        renderHoveredTooltip(currentList, mouseX, mouseY);
     }
 
     public void renderButtons(int mouseX, int mouseY) {
@@ -276,18 +255,47 @@ public class VOptionScreen extends Screen {
         }
     }
 
-    private List<FormattedCharSequence> getHoveredButtonTooltip(VOptionList buttonList, int mouseX, int mouseY) {
-        VAbstractWidget widget = buttonList.getHoveredWidget(mouseX, mouseY);
+    /** Tooltip of the hovered row (or the keyboard-selected one), placed by {@link TooltipPlacer} (td-7a78ea). */
+    private void renderHoveredTooltip(VOptionList list, int mouseX, int mouseY) {
+        VAbstractWidget widget = list.getHoveredWidget(mouseX, mouseY);
         if (widget == null)
-            widget = buttonList.selectedWidget();
-        if (widget != null) {
-            var tooltip = widget.getTooltip();
-            if (tooltip == null)
-                return null;
+            widget = list.selectedWidget();
+        if (widget == null)
+            return;
+        Component tooltip = widget.getTooltip();
+        if (tooltip == null)
+            return;
 
-            return this.font.split(tooltip, this.tooltipWidth);
+        TooltipPlacer.Rect listRect = rect(list.getX(), list.getY(), list.getWidth(), list.getHeight());
+        TooltipPlacer.Rect row = rect(widget.getX(), widget.getY(), widget.getWidth(), widget.getHeight());
+        // the row may be partly scrolled out of the list: only the visible part is "the row being hovered"
+        row = new TooltipPlacer.Rect(Math.max(row.x0(), listRect.x0()), Math.max(row.y0(), listRect.y0()),
+                Math.min(row.x1(), listRect.x1()), Math.min(row.y1(), listRect.y1()));
+
+        List<TooltipPlacer.Rect> bar = new ArrayList<>();
+        for (VButtonWidget b : new VButtonWidget[]{this.applyButton, this.doneButton, this.aboutButton})
+            bar.add(rect(b.getX(), b.getY(), b.getWidth(), b.getHeight()));
+        if (IrohOptions.restartPending())
+            bar.add(rect(100, this.height - 22, this.font.width(Component.translatable("iroh.screen.restartPending")), 10));
+        List<TooltipPlacer.Rect> chrome = new ArrayList<>();
+        for (VButtonWidget b : this.pageButtons)
+            chrome.add(rect(b.getX(), b.getY(), b.getWidth(), b.getHeight()));
+
+        final Component text = tooltip;
+        TooltipPlacer.Placement p = TooltipPlacer.place(this.width, this.height, listRect, row, bar, chrome, maxWidth -> {
+            List<FormattedCharSequence> lines = this.font.split(text, maxWidth);
+            return new TooltipPlacer.Wrapped(GuiRenderer.getMaxTextWidth(this.font, lines), lines.size());
+        });
+        List<FormattedCharSequence> lines = this.font.split(tooltip, p.wrapWidth());
+        if (p.truncated(lines.size())) { // taller than the room around the row on a small screen: cut, never overlap
+            lines = new ArrayList<>(lines.subList(0, Math.max(1, p.maxLines()) - 1));
+            lines.add(Component.literal("...").getVisualOrderText());
         }
-        return null;
+        this.renderTooltip(lines, p.box().x0() + TooltipPlacer.PAD, p.box().y0() + TooltipPlacer.PAD);
+    }
+
+    private static TooltipPlacer.Rect rect(int x, int y, int w, int h) {
+        return new TooltipPlacer.Rect(x, y, x + w, y + h);
     }
 
     private void updateState() {
