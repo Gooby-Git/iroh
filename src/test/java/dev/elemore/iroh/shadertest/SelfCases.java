@@ -177,6 +177,45 @@ final class SelfCases {
                     r.ok ? "" : " [" + r.stage + "] " + r.shortMessage()).stripTrailing());
         }
 
+        // rc8 (td-40ae94): a pack shader declaring the integer lightmap element as a float vector
+        {
+            Map<String, String> files = Map.of(
+                    "case:shaders/core/floatuv2.json", JSON_BASIC.formatted("case:floatuv2", "case:floatuv2"),
+                    "case:shaders/core/floatuv2.vsh", """
+                            #version 150
+                            in vec3 Position; in vec4 Color; in vec2 UV0; in vec2 UV2;
+                            uniform mat4 ModelViewMat; uniform mat4 ProjMat;
+                            uniform sampler2D Sampler2;
+                            out vec4 vertexColor; out vec2 texCoord0;
+                            void main() {
+                                gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
+                                vertexColor = Color * texture(Sampler2, clamp(UV2 / 256.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)));
+                                texCoord0 = UV0;
+                            }
+                            """,
+                    "case:shaders/core/floatuv2.fsh", """
+                            #version 150
+                            uniform sampler2D Sampler0; uniform vec4 ColorModulator;
+                            in vec4 vertexColor; in vec2 texCoord0; out vec4 fragColor;
+                            void main() { fragColor = texture(Sampler0, texCoord0) * vertexColor * ColorModulator; }
+                            """);
+            dev.elemore.iroh.shader.ShaderSources src2 = new dev.elemore.iroh.shader.ShaderSources() {
+                @Override public String read(String id) { return files.get(id); }
+                @Override public String packOf(String id) { return "selftest"; }
+            };
+            JsonObject json2 = JsonParser.parseString(files.get("case:shaders/core/floatuv2.json")).getAsJsonObject();
+            ShaderConversion.Result r = ShaderConversion.convert(ShaderConversion.Input.core("case:floatuv2", json2,
+                    List.of("Position", "Color", "UV0", "UV2")), src2, true);
+            boolean converted = r.ok && r.output != null && r.output.vertex().contains("layout(location = 3) in ivec2 iroh_int_UV2;")
+                    && r.output.vertex().contains("UV2 = vec2(iroh_int_UV2);");
+            if (show != null && show.equals("case:floatuv2") && r.output != null)
+                detail.append("\n===== case:floatuv2 vertex =====\n").append(r.output.vertex());
+            if (r.vertex != null) r.vertex.free();
+            if (r.fragment != null) r.fragment.free();
+            out.add(String.format("%s %-7s %-55s %-20s%s", converted ? "PASS" : "FAIL", "case", "case:floatuv2", "selftest",
+                    converted ? "" : " [" + r.stage + "] float UV2 not converted from the integer attribute " + r.shortMessage()).stripTrailing());
+        }
+
         try {
             ShaderConversion.Result f = ShaderConversion.fallback("selftest");
             f.vertex.free();

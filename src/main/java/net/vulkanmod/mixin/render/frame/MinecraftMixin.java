@@ -19,14 +19,34 @@ public class MinecraftMixin {
 
     @Inject(method = "runTick", at = @At(value = "HEAD"))
     private void preFrameOps(boolean bl, CallbackInfo ci) {
-        Renderer.getInstance().preInitFrame();
+        try {
+            Renderer.getInstance().preInitFrame();
+        } catch (dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory e) {
+            // rc8: logged by the guard; the world is closed at the next frame start. Never rethrown into a crash loop.
+        }
+    }
+
+    /** rc8: an out-of-memory inside the frame abandons that frame instead of crashing the game. */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(method = "runTick", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/GameRenderer;render(Lnet/minecraft/client/DeltaTracker;Z)V"))
+    private void iroh$guardRender(net.minecraft.client.renderer.GameRenderer instance, net.minecraft.client.DeltaTracker deltaTracker, boolean b,
+                                  com.llamalad7.mixinextras.injector.wrapoperation.Operation<Void> original) {
+        try {
+            original.call(instance, deltaTracker, b);
+        } catch (dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory e) {
+            // logged once by the guard; the frame is abandoned
+        }
     }
 
     // Main target (framebuffer) ops
     @Redirect(method = "runTick", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/RenderSystem;clear(IZ)V"))
     private void beginRender(int i, boolean bl) {
         RenderSystem.clear(i, bl);
-        Renderer.getInstance().beginFrame();
+        try {
+            Renderer.getInstance().beginFrame();
+        } catch (dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory e) {
+            // rc8: logged by the guard; see preFrameOps
+        }
     }
 
     @Inject(method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;Z)V", at = @At(value = "RETURN"))

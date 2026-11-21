@@ -46,15 +46,13 @@ public class StagingBuffer extends Buffer {
      * Cheap: one array scan of the frame-count shared buffers, only when the target is the frame command buffer.
      */
     public static void checkConsumer(org.lwjgl.vulkan.VkCommandBuffer commandBuffer, long srcBuffer) {
-        if (net.vulkanmod.vulkan.Renderer.getInstance() == null)
+        // perf/uploads: ring staging may be read by any command buffer of the current epoch (upload or frame: blocks are
+        // released only after both finished), but never once its block went back to the pool.
+        var ring = RING;
+        if (ring == null || srcBuffer == 0L)
             return;
-        org.lwjgl.vulkan.VkCommandBuffer frameCb = net.vulkanmod.vulkan.Renderer.getCommandBuffer();
-        if (frameCb == null || commandBuffer == null || commandBuffer.address() != frameCb.address())
-            return;
-        if (!net.vulkanmod.vulkan.Vulkan.isSharedStagingBuffer(srcBuffer))
-            return;
-        reportViolation("a copy from the shared per-frame staging buffer was recorded into the FRAME command buffer; "
-                + "the buffer is reset before that buffer executes (use a private StagingBuffer + scheduleFree)");
+        if (ring.isRingBuffer(srcBuffer) && !ring.isLiveBlock(srcBuffer))
+            reportViolation("a copy reads a staging block that was already released to the pool (use after release)");
     }
 
     static void reportViolation(String what) {
@@ -65,19 +63,87 @@ public class StagingBuffer extends Buffer {
         assert false : "Iroh R-3 staging invariant broken: " + what;
     }
 
-    /**
-     * Iroh (R-3): submits every upload command buffer that may still read the current shared staging buffer, waits
-     * for all of them, then resets it. The only legal way to reset a shared staging buffer.
-     */
-    public static void flushConsumersAndReset() {
-        if (dev.elemore.iroh.diag.UploadStats.ON) { dev.elemore.iroh.diag.UploadStats.frameFenceWaits++; dev.elemore.iroh.diag.UploadStats.frame(); }
-        submitAllConsumers();
-        Synchronization.INSTANCE.waitFences();
-        net.vulkanmod.vulkan.Vulkan.getStagingBuffer().reset();
-        ImageUploadHelper.INSTANCE.resetSpill(); // rc6: its readers (upload buffers) were just waited
+    // ---------------------------------------------------------------- perf/uploads: chained staging ring
+
+    private static net.vulkanmod.vulkan.memory.staging.StagingRing RING;
+    public static final long RING_BLOCK = Long.getLong("iroh.stagingBlockMB", 16L) << 20;
+    public static final long RING_BUDGET = Long.getLong("iroh.stagingBudgetMB", 256L) << 20;
+
+    private record RingBlock(StagingBuffer buffer) implements net.vulkanmod.vulkan.memory.staging.StagingRing.Block {
+        @Override public long bufferId() { return buffer.getId(); }
+        @Override public long address() { return buffer.dataPtr; }
+        @Override public long size() { return buffer.getBufferSize(); }
     }
 
-    private static void submitAllConsumers() {
+    public static net.vulkanmod.vulkan.memory.staging.StagingRing ring() {
+        return RING;
+    }
+
+    /** Creates the ring (device up). Blocks are host-visible, persistently mapped StagingBuffers. */
+    public static void initRing() {
+        if (RING != null) return;
+        RING = new net.vulkanmod.vulkan.memory.staging.StagingRing(new net.vulkanmod.vulkan.memory.staging.StagingRing.Factory() {
+            @Override
+            public net.vulkanmod.vulkan.memory.staging.StagingRing.Block create(long size) {
+                StagingBuffer b = new StagingBuffer(size);
+                b.markShared();
+                return new RingBlock(b);
+            }
+
+            @Override
+            public void destroy(net.vulkanmod.vulkan.memory.staging.StagingRing.Block block) {
+                ((RingBlock) block).buffer.scheduleFree(); // its readers finished; deferred free is the safe default
+            }
+        }, RING_BLOCK, RING_BUDGET);
+    }
+
+    /**
+     * Render thread: copies {@code size} bytes from {@code src} into ring staging and returns the reservation; the caller
+     * records the copy from {@code (bufferId, offset)} and then calls {@code ring().consumed(alloc)}. Never waits unless
+     * the staging budget is exhausted (then it submits the pending uploads and waits for the oldest epoch; counted).
+     */
+    public static net.vulkanmod.vulkan.memory.staging.StagingRing.Alloc stage(long size, int align, long src) {
+        var ring = RING;
+        var a = ring.reserve(size, align);
+        // rc8: bounded. Each round submits pending uploads and waits for the oldest in-flight epoch (fence waits time out,
+        // see Synchronization); if nothing in flight can free room, the request is refused (no unbounded allocation,
+        // no endless loop): the caller's frame is abandoned through the memory guard.
+        for (int round = 0; a == null; round++) {
+            if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.stagingOverflows++;
+            submitAllConsumers();
+            boolean waited = Synchronization.INSTANCE.waitOldest();
+            if (!waited) {
+                Synchronization.INSTANCE.waitFences();
+                ring.completeAll();
+            }
+            a = ring.reserve(size, align);
+            if (a == null && (round >= 8 || (!waited && ring.pendingReservations() == 0 && ring.liveBlocks() == 0))) {
+                dev.elemore.iroh.memory.MemoryGuard.outOfMemory("staging budget " + (RING_BUDGET >> 20) + " MB exhausted for a " + size
+                        + "-byte upload (" + ring.pendingReservations() + " reservations pinned)");
+                throw new dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory("staging budget exhausted");
+            }
+        }
+        nmemcpy(a.address, src, size);
+        return a;
+    }
+
+    /**
+     * End of frame (perf/uploads): submits every upload command buffer of this frame and closes the frame's epoch. No
+     * wait: the ring releases the blocks once those command buffers and the frame have finished.
+     */
+    public static void flushConsumers(int frameSlot) {
+        if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.frame();
+        submitAllConsumers();
+        Synchronization.INSTANCE.endEpoch(frameSlot);
+    }
+
+    /** Blocking variant for real synchronous needs (readback, swapchain recreation): submit and wait for everything. */
+    public static void flushConsumersAndReset() {
+        submitAllConsumers();
+        Synchronization.INSTANCE.waitFences();
+    }
+
+    public static void submitAllConsumers() {
         if (UploadManager.INSTANCE != null)
             UploadManager.INSTANCE.submitUploads();
         ImageUploadHelper.INSTANCE.submitCommands();
@@ -131,14 +197,6 @@ public class StagingBuffer extends Buffer {
 
     private void submitUploads() {
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.stagingOverflows++;
-        // rc6: the spill block's readers are submitted and waited here too
-        if (this.shared) {
-            submitAllConsumers();
-            Synchronization.INSTANCE.waitFences();
-            this.reset();
-            ImageUploadHelper.INSTANCE.resetSpill();
-            return;
-        }
         // Submit and wait all recorded uploads before resetting the buffer.
         // Iroh (R-3): includes IndirectBuffer's pending transfer buffer, which the base left unsubmitted here (its
         // copy would then read bytes the next writer had already overwritten).

@@ -98,6 +98,28 @@ public class ChunkStatusMap {
         return status == ALL_FLAGS;
     }
 
+    /**
+     * rc7: drop entries more than {@code radius} chunks from the camera chunk. A late light update for a chunk the client
+     * already forgot leaves a LIGHT_READY-only entry that nothing removes; along a long straight flight those accumulate.
+     * Render thread, called every few seconds; O(entries).
+     */
+    public int prune(int camChunkX, int camChunkZ, int radius) {
+        int before = map.size();
+        var it = map.long2ByteEntrySet().fastIterator();
+        while (it.hasNext()) {
+            long k = it.next().getLongKey();
+            int x = ChunkPos.getX(k), z = ChunkPos.getZ(k);
+            if (Math.abs(x - camChunkX) > radius || Math.abs(z - camChunkZ) > radius)
+                it.remove();
+        }
+        return before - map.size();
+    }
+
+    /** rc7: entries (for -Diroh.memStats). */
+    public int size() {
+        return map.size();
+    }
+
     public void reset() {
 
     }

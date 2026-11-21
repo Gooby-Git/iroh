@@ -245,6 +245,7 @@ public final class IrohOptions {
     public static final Opt<Integer> BUILDER_THREADS;
     public static final Opt<Integer> FRAME_QUEUE_SIZE;
     public static final Opt<Integer> DEVICE;
+    public static final Opt<Integer> MAX_DEVICE_MEMORY;
 
     // ---- the pack's Sodium / Sodium Extra / Iris / Cull Fewer Leaves settings ----
     public static final Opt<LeavesQuality> LEAVES_QUALITY;
@@ -332,6 +333,16 @@ public final class IrohOptions {
         DEVICE.reload(Reload.RESTART).loose();
         DEVICE.min = -1;
         DEVICE.max = 64;
+
+        // rc8 (SYSTEM SAFETY rule 9): Iroh's own graphics-memory cap
+        MAX_DEVICE_MEMORY = integer("maxDeviceMemoryMiB", Category.ADVANCED, 0, c -> c.maxDeviceMemoryMiB, (c, v) -> c.maxDeviceMemoryMiB = v)
+                .name("iroh.options.maxDeviceMemory").tooltip("iroh.options.maxDeviceMemory.tooltip");
+        MAX_DEVICE_MEMORY.range(0, 32768, 512)
+                .label(v -> v == 0 ? Component.translatable("iroh.options.maxDeviceMemory.auto") : Component.literal(v + " MiB"));
+        MAX_DEVICE_MEMORY.applier = v -> {
+            config.maxDeviceMemoryMiB = v;
+            dev.elemore.iroh.memory.MemoryGuard.configure(v);
+        };
 
         // ---- pack options ----
         LEAVES_QUALITY = enumOpt("leavesQuality", Category.QUALITY, LeavesQuality.class, LeavesQuality.DEFAULT,

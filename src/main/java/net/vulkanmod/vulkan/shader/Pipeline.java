@@ -510,7 +510,7 @@ public abstract class Pipeline {
 
             this.sets = MemoryUtil.memAllocLong(this.poolSize);
 
-            int result = vkAllocateDescriptorSets(DEVICE, allocInfo, this.sets);
+            int result = dev.elemore.iroh.memory.MemoryGuard.check(vkAllocateDescriptorSets(DEVICE, allocInfo, this.sets), "vkAllocateDescriptorSets");
             if (result != VK_SUCCESS) {
                 throw new RuntimeException("Failed to allocate descriptor sets. Result:" + result);
             }
@@ -542,7 +542,7 @@ public abstract class Pipeline {
 
             LongBuffer pDescriptorPool = stack.mallocLong(1);
 
-            if (vkCreateDescriptorPool(DEVICE, poolInfo, null, pDescriptorPool) != VK_SUCCESS) {
+            if (dev.elemore.iroh.memory.MemoryGuard.check(vkCreateDescriptorPool(DEVICE, poolInfo, null, pDescriptorPool), "vkCreateDescriptorPool") != VK_SUCCESS) {
                 throw new RuntimeException("Failed to create descriptor pool");
             }
 

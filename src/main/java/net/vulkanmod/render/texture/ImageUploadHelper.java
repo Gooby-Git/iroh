@@ -32,34 +32,11 @@ public class ImageUploadHelper {
     /** Upload copies recorded as vkCmdCopyBufferToImage calls (for -Diroh.uploadStats). */
     public long copyCommands;
 
-    private static final long SPILL_BLOCK = 32L << 20;
-    private net.vulkanmod.vulkan.memory.buffer.StagingBuffer spill;
-
-    /**
-     * rc6: staging memory for an async texture upload of {@code size} bytes, never triggering a flush: the shared per-frame
-     * staging buffer if it has room, else a spill block (32 MB, or larger for a larger upload) that lives until this
-     * frame's upload fence. The base submitted and waited for every consumer of the shared buffer when it overflowed
-     * (3 full stalls at a pack-world join). Render thread.
-     */
-    public net.vulkanmod.vulkan.memory.buffer.StagingBuffer stagingFor(long size, int alignment) {
-        var shared = net.vulkanmod.vulkan.Vulkan.getStagingBuffer();
-        if (shared.fits(size, alignment))
-            return shared;
-        if (spill == null || !spill.fits(size, alignment)) {
-            if (spill != null) {
-                flushPendingCopies(); // regions may point into the old spill block; record them before it is retired
-                spill.scheduleFree();
-            }
-            spill = new net.vulkanmod.vulkan.memory.buffer.StagingBuffer(Math.max(SPILL_BLOCK, size + alignment));
-            if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.spillBlocks++;
-        }
-        return spill;
-    }
-
-    /** rc6: called after the frame's upload fences were waited (StagingBuffer.flushConsumersAndReset): the spill block is free again. */
-    public void resetSpill() {
-        if (spill != null)
-            spill.reset();
+    /** rc7 / perf-uploads: region array capacity, touched images and the staging ring (for -Diroh.memStats). */
+    public String memSummary() {
+        var r = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        return "regions cap " + regions.capacity() + ", touched " + touched.size()
+                + (r == null ? "" : ", staging ring " + (r.totalBytes() >> 20) + " MB (" + r.liveBlocks() + " live, " + r.pooledBlocks() + " pooled, " + r.pendingReservations() + " pending)");
     }
 
     /**

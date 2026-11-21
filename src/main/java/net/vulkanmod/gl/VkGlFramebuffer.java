@@ -60,6 +60,14 @@ public class VkGlFramebuffer {
         }
 
         if (id == 0) {
+            // Iroh (rc7, Fabulous cost): binding the main target while its pass is already recording is a no-op in GL;
+            // the base ended and restarted the pass (a LOAD pass) on every bindWrite(main), which vanilla's Fabulous
+            // OUTPUT shards call after every batch. DefaultMainPass.rebindMainTarget already skips; the endRenderPass
+            // before it defeated that.
+            if (Renderer.isRecording() && Renderer.getInstance().getMainPass().isMainTargetBound()) {
+                boundFramebuffer = null;
+                return;
+            }
             Renderer.getInstance()
                     .endRenderPass();
 

@@ -53,6 +53,15 @@ public abstract class Queue {
         }
     }
 
+    /** perf/uploads: submit signalling the command buffer's semaphore (waited by the next frame submit). */
+    public synchronized long submitCommandsSignalling(CommandPool.CommandBuffer commandBuffer) {
+        try (MemoryStack stack = stackPush()) {
+            long fence = commandBuffer.submitCommands(stack, queue, true);
+            net.vulkanmod.vulkan.Synchronization.INSTANCE.addWaitSemaphore(commandBuffer);
+            return fence;
+        }
+    }
+
     public VkQueue queue() {
         return this.queue;
     }

@@ -265,6 +265,8 @@ public class Renderer {
     private void beginFrame0() {
         dev.elemore.iroh.diag.RenderWatchdog.heartbeat(); // rc3r2 (td-3bc9d5): stall diagnostics
         dev.elemore.iroh.diag.LoadWatch.tick(); // rc5 (td-30c049): evidence if a world load hangs
+        dev.elemore.iroh.memory.MemoryGuard.tick(); // rc8: device-memory cap / out-of-memory exit
+        if (dev.elemore.iroh.diag.MemStats.ON) dev.elemore.iroh.diag.MemStats.frame(); // rc7
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.push("Frame_fence");
@@ -296,7 +298,10 @@ public class Renderer {
         if (skipRendering || recordingCmds)
             return;
 
-        vkWaitForFences(device, inFlightFences.get(currentFrame), true, VUtil.UINT64_MAX);
+        waitFrameFence(); // rc8: bounded
+        // perf/uploads: the frame that last used this slot finished; complete finished upload epochs (no wait) and make
+        // sure everything submitted before that frame is done before the slot's deferred frees run below.
+        Synchronization.INSTANCE.frameSlotDone(currentFrame);
 
         // Iroh (rc5, td-08dc9f): the previous frame acquired a swapchain image but never submitted (an exception between
         // acquire and submit, e.g. the td-1cb256 OutOfMemoryError in endFrame). Its acquire semaphore is still signaled;
@@ -319,8 +324,8 @@ public class Renderer {
 
             IntBuffer pImageIndex = stack.mallocInt(1);
 
-            int vkResult = vkAcquireNextImageKHR(device, swapChain.getId(), VUtil.UINT64_MAX,
-                                                 imageAvailableSemaphores.get(currentFrame), VK_NULL_HANDLE, pImageIndex);
+            int vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkAcquireNextImageKHR(device, swapChain.getId(), VUtil.UINT64_MAX,
+                                                 imageAvailableSemaphores.get(currentFrame), VK_NULL_HANDLE, pImageIndex), "vkAcquireNextImageKHR");
 
             if (vkResult == VK_SUBOPTIMAL_KHR || vkResult == VK_ERROR_OUT_OF_DATE_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
@@ -377,6 +382,9 @@ public class Renderer {
         Profiler p = Profiler.getMainProfiler();
         p.push("End_rendering");
 
+        // perf/uploads: queued in-frame uploads are recorded before the frame command buffer ends
+        net.vulkanmod.vulkan.texture.VulkanImage.flushInFrame();
+
         // Iroh (rc3r2, td-7937f0): mainPass.end ends the command buffer; from here on nothing may record into it, even if
         // the submit below throws (device lost / out of date during a world teardown).
         try {
@@ -385,7 +393,8 @@ public class Renderer {
             recordingCmds = false;
         }
 
-        waitFences();
+        // perf/uploads: submit this frame's uploads and close its epoch; no CPU wait (was a full fence wait every frame)
+        StagingBuffer.flushConsumers(currentFrame);
 
         submitFrame();
 
@@ -395,6 +404,18 @@ public class Renderer {
 
         p.pop();
         p.push("Post_rendering");
+    }
+
+    /**
+     * rc8 (SYSTEM SAFETY): the frame fence is waited at most 10 s (-Diroh.fenceTimeoutS). A GPU that does not finish a
+     * frame in that time is hung or lost; the game stops with a clear error instead of freezing forever.
+     */
+    private void waitFrameFence() {
+        int r = vkWaitForFences(device, inFlightFences.get(currentFrame), true, Long.getLong("iroh.fenceTimeoutS", 10L) * 1_000_000_000L);
+        if (r == VK_TIMEOUT)
+            throw new IllegalStateException("Iroh: the GPU did not finish a frame within the fence timeout (hung or lost device)");
+        if (r != VK_SUCCESS)
+            throw new IllegalStateException("Iroh: vkWaitForFences failed: " + r + " (device lost?)");
     }
 
     /** Iroh (rc5): a swapchain image was acquired with imageAvailableSemaphores[currentFrame] and not yet submitted. */
@@ -431,19 +452,32 @@ public class Renderer {
             VkSubmitInfo submitInfo = VkSubmitInfo.calloc(stack);
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO);
 
-            submitInfo.waitSemaphoreCount(1);
-            submitInfo.pWaitSemaphores(stack.longs(imageAvailableSemaphores.get(currentFrame)));
-            submitInfo.pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT));
+            // perf/uploads: also wait (on the GPU) for the transfer-queue uploads submitted since the last frame
+            long[] uploadWaits = Synchronization.INSTANCE.takeWaitSemaphores();
+            java.nio.LongBuffer waits = stack.mallocLong(1 + uploadWaits.length);
+            java.nio.IntBuffer stages = stack.mallocInt(1 + uploadWaits.length);
+            waits.put(imageAvailableSemaphores.get(currentFrame));
+            stages.put(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            for (long w : uploadWaits) {
+                waits.put(w);
+                stages.put(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            }
+            waits.flip();
+            stages.flip();
+            submitInfo.waitSemaphoreCount(waits.remaining());
+            submitInfo.pWaitSemaphores(waits);
+            submitInfo.pWaitDstStageMask(stages);
             submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
             submitInfo.pCommandBuffers(stack.pointers(currentCmdBuffer));
 
             vkResetFences(device, inFlightFences.get(currentFrame));
 
-            if ((vkResult = vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame))) != VK_SUCCESS) {
+            if ((vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame)), "frame vkQueueSubmit")) != VK_SUCCESS) {
                 vkResetFences(device, inFlightFences.get(currentFrame));
                 throw new RuntimeException("Failed to submit draw command buffer: %s".formatted(VkResult.decode(vkResult)));
             }
             acquiredPending = false; // rc5: the submit waits the acquire semaphore
+            Synchronization.INSTANCE.afterFrameSubmit();
 
             VkPresentInfoKHR presentInfo = VkPresentInfoKHR.calloc(stack);
             presentInfo.sType(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
@@ -455,7 +489,7 @@ public class Renderer {
 
             presentInfo.pImageIndices(stack.ints(imageIndex));
 
-            vkResult = vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo);
+            vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo), "vkQueuePresentKHR");
 
             if (vkResult == VK_ERROR_OUT_OF_DATE_KHR || vkResult == VK_SUBOPTIMAL_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
@@ -474,6 +508,7 @@ public class Renderer {
     public void flushCmds() {
         if (!this.recordingCmds)
             return;
+        net.vulkanmod.vulkan.texture.VulkanImage.flushInFrame(); // perf/uploads
 
         try (MemoryStack stack = stackPush()) {
             int vkResult;
@@ -491,12 +526,12 @@ public class Renderer {
 
             waitFences();
 
-            if ((vkResult = vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame))) != VK_SUCCESS) {
+            if ((vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), submitInfo, inFlightFences.get(currentFrame)), "frame vkQueueSubmit")) != VK_SUCCESS) {
                 vkResetFences(device, inFlightFences.get(currentFrame));
                 throw new RuntimeException("Failed to submit draw command buffer: %s".formatted(VkResult.decode(vkResult)));
             }
 
-            vkWaitForFences(device, inFlightFences.get(currentFrame), true, VUtil.UINT64_MAX);
+            waitFrameFence(); // rc8: bounded
 
             this.beginRenderPass(stack);
         }
@@ -524,6 +559,9 @@ public class Renderer {
     public boolean beginRendering(RenderPass renderPass, Framebuffer framebuffer) {
         if (skipRendering || !recordingCmds)
             return false;
+        // perf/uploads: queued in-frame uploads go before an off-screen pass that may render into or sample them
+        if (this.boundFramebuffer != framebuffer && net.vulkanmod.vulkan.texture.VulkanImage.anyInFramePending())
+            net.vulkanmod.vulkan.texture.VulkanImage.flushInFrame();
 
         if (this.boundFramebuffer != framebuffer) {
             this.endRenderPass(currentCmdBuffer);
@@ -575,7 +613,7 @@ public class Renderer {
                                             .pWaitSemaphores(stack.longs(imageAvailableSemaphores.get(currentFrame)))
                                             .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
 
-            vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), info, inFlightFences.get(currentFrame));
+            dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(DeviceManager.getGraphicsQueue().queue(), info, inFlightFences.get(currentFrame)), "vkQueueSubmit (unsignal)");
             vkWaitForFences(device, inFlightFences.get(currentFrame), true, -1);
         }
     }

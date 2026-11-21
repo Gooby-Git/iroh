@@ -21,6 +21,11 @@ import static org.lwjgl.vulkan.VK10.*;
 public class VkGlTexture {
     private static int ID_COUNTER = 1;
     private static final Int2ReferenceOpenHashMap<VkGlTexture> map = new Int2ReferenceOpenHashMap<>();
+
+    /** rc8: live GL names (registry test, memStats). */
+    public static int liveCount() {
+        return map.size();
+    }
     private static int boundTextureId = 0;
     private static VkGlTexture boundTexture;
     private static int activeTexture = 0;
@@ -81,7 +86,7 @@ public class VkGlTexture {
         VkGlTexture glTexture = map.remove(i);
         VulkanImage image = glTexture != null ? glTexture.vulkanImage : null;
         if (image != null)
-            MemoryManager.getInstance().addToFreeable(image);
+            image.free(); // rc8: one free path (deferred, epoch-gated)
     }
 
     public static VkGlTexture getTexture(int id) {

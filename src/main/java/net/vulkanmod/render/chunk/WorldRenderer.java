@@ -136,6 +136,8 @@ public class WorldRenderer {
         BuildTimeProfiler.runBench(this.graphNeedsUpdate || !this.taskDispatcher.isIdle());
     }
 
+    private int pruneTick;
+
     public void setupRenderer(Camera camera, Frustum frustum, boolean isCapturedFrustum, boolean spectator) {
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Setup_Renderer");
@@ -143,6 +145,10 @@ public class WorldRenderer {
         benchCallback();
 
         this.cameraPos = camera.getPosition();
+        // rc7: prune chunk-status entries far outside the client chunk cache (radius renderDistance + 3) every 600 frames
+        if (++this.pruneTick % 600 == 0 && ChunkStatusMap.INSTANCE != null)
+            ChunkStatusMap.INSTANCE.prune(net.minecraft.core.SectionPos.blockToSectionCoord(this.cameraPos.x),
+                    net.minecraft.core.SectionPos.blockToSectionCoord(this.cameraPos.z), this.renderDistance + 8);
         if (this.minecraft.options.getEffectiveRenderDistance() != this.renderDistance) {
             this.allChanged();
         }
@@ -223,7 +229,7 @@ public class WorldRenderer {
         set.awaitAll(ChunkDeferPolicy.budgetNs(IrohOptions.DeferMode.ZERO_FRAMES));
         boolean arrived;
         try {
-            arrived = this.taskDispatcher.updateSections();
+            arrived = this.taskDispatcher.updateSections(true); // perf/uploads: waiting for these sections: no budget
             UploadManager.INSTANCE.submitUploads();
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
@@ -259,11 +265,13 @@ public class WorldRenderer {
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Uploads");
 
+        boolean waitedForSections = false;
         // ONE_FRAME: the rebuilds queued as important in the previous frame finish before this one is presented.
         if (this.sectionGraph != null) {
             SyncWaitSet set = this.sectionGraph.syncSet();
             IrohOptions.DeferMode mode = IrohOptions.chunkBuildDeferMode();
             if (mode == IrohOptions.DeferMode.ONE_FRAME && set.pending() > 0) {
+                waitedForSections = true;
                 set.awaitAll(ChunkDeferPolicy.budgetNs(mode));
                 this.logDeferStats();
             } else {
@@ -272,7 +280,7 @@ public class WorldRenderer {
         }
 
         try {
-            if (this.taskDispatcher.updateSections())
+            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections())
                 this.graphNeedsUpdate = true;
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
@@ -343,6 +351,7 @@ public class WorldRenderer {
             this.taskDispatcher.stopThreads();
             // rc5 (td-dcbf58): compare across join/quit/rejoin; steady growth per world is a real leak
             Initializer.LOGGER.info("Iroh: world unloaded; live Vulkan objects: {}", net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
+            dev.elemore.iroh.memory.MemoryGuard.worldUnloaded(); // rc8
             // rc6: again once this frame slot's deferred frees have run (section buffers are scheduled, not yet freed, above)
             net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(() -> Initializer.LOGGER.info(
                     "Iroh: world unloaded, after deferred frees: {}", net.vulkanmod.vulkan.memory.MemoryManager.liveSummary()));
@@ -557,7 +566,7 @@ public class WorldRenderer {
     }
 
     public ChunkAreaManager getChunkAreaManager() {
-        return this.sectionGrid.chunkAreaManager;
+        return this.sectionGrid != null ? this.sectionGrid.chunkAreaManager : null; // rc7: no NPE between worlds
     }
 
     public TaskDispatcher getTaskDispatcher() {

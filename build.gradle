@@ -238,6 +238,36 @@ tasks.register('uploadBoundsTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// perf/uploads: chained staging ring bookkeeping. ./gradlew stagingRingTest; last line "# stagingring PASS n/n".
+tasks.register('stagingRingTest', JavaExec) {
+	group = 'verification'
+	description = 'Staging ring: chain, budget, release after epoch, pinning, R-3 cases, concurrent workers'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.StagingRingTest'
+	jvmArgs '-ea'
+}
+
+// rc8: GL name -> VulkanImage registries return to baseline; every delete frees once. ./gradlew glRegistryTest
+tasks.register('glRegistryTest', JavaExec) {
+	group = 'verification'
+	description = 'GL texture/renderbuffer registries: create/delete/reuse cycles, one free per delete'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.GlRegistryTest'
+	jvmArgs '-ea'
+}
+
+// rc8: device-memory policy state machine. ./gradlew memoryBudgetTest; last line "# memorybudget PASS n/n".
+tasks.register('memoryBudgetTest', JavaExec) {
+	group = 'verification'
+	description = 'Memory cap policy: auto/configured cap, driver budget bound, warn, capped, OOM sticky'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.MemoryBudgetTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'

@@ -45,15 +45,15 @@ public class IndirectBuffer extends Buffer {
         } else {
             // Iroh (R-3): copy into staging first; an overflow there submits every pending consumer, this one's
             // command buffer included, so the command buffer is started afterwards (UploadManager's order).
-            StagingBuffer stagingBuffer = Vulkan.getStagingBuffer();
-            stagingBuffer.copyBuffer(size, byteBuffer);
+            var alloc = StagingBuffer.stage(size, 4, org.lwjgl.system.MemoryUtil.memAddress(byteBuffer)); // perf/uploads
 
             if (commandBuffer == null) {
                 commandBuffer = DeviceManager.getTransferQueue().beginCommands();
                 PENDING.add(this);
             }
 
-            TransferQueue.uploadBufferCmd(commandBuffer.getHandle(), stagingBuffer.id, stagingBuffer.offset, this.getId(), this.getUsedBytes(), size);
+            TransferQueue.uploadBufferCmd(commandBuffer.getHandle(), alloc.bufferId, alloc.offset, this.getId(), this.getUsedBytes(), size);
+            StagingBuffer.ring().consumed(alloc);
         }
 
         offset = usedBytes;
@@ -64,7 +64,7 @@ public class IndirectBuffer extends Buffer {
         if (commandBuffer == null)
             return;
 
-        DeviceManager.getTransferQueue().submitCommands(commandBuffer);
+        DeviceManager.getTransferQueue().submitCommandsSignalling(commandBuffer); // perf/uploads
         Synchronization.INSTANCE.addCommandBuffer(commandBuffer);
         commandBuffer = null;
         PENDING.remove(this);

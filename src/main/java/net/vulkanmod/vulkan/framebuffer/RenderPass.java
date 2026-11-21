@@ -126,7 +126,7 @@ public class RenderPass {
 
             LongBuffer pRenderPass = stack.mallocLong(1);
 
-            if (vkCreateRenderPass(Vulkan.getVkDevice(), renderPassInfo, null, pRenderPass) != VK_SUCCESS) {
+            if (dev.elemore.iroh.memory.MemoryGuard.check(vkCreateRenderPass(Vulkan.getVkDevice(), renderPassInfo, null, pRenderPass), "vkCreateRenderPass") != VK_SUCCESS) {
                 throw new RuntimeException("Failed to create render pass");
             }
 
