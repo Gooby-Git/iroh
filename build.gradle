@@ -278,6 +278,16 @@ tasks.register('facingMaskTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc10 (td-242adb): sub-step planes keep their side of block planes. ./gradlew planeSnapTest
+tasks.register('planeSnapTest', JavaExec) {
+	group = 'verification'
+	description = 'Terrain position quantisation: sub-step insets, on-grid exactness, monotonicity'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.chunktest.PlaneSnapTest'
+	jvmArgs '-ea'
+}
+
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
