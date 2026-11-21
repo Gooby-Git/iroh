@@ -355,9 +355,28 @@ public class WorldRenderer {
         this.onAllChangedCallbacks.clear();
     }
 
+    /** Diagnostic (td-242adb): {@code -Diroh.fogTrace=true} logs the fog inputs terrain is drawn with, once a second per layer. */
+    private static final boolean FOG_TRACE = Boolean.getBoolean("iroh.fogTrace");
+    private long fogTraceLast;
+
+    private void traceFog(RenderType renderType, double camX, double camY, double camZ) {
+        long now = System.currentTimeMillis();
+        if (now - this.fogTraceLast < 1000 || renderType != RenderType.solid())
+            return;
+        this.fogTraceLast = now;
+        var cam = this.minecraft.gameRenderer.getMainCamera();
+        var fc = VRenderSystem.getShaderFogColor();
+        Initializer.LOGGER.info("[iroh-fog] cam=({}, {}, {}) fluid={} start={} end={} shape={} fogColor=({}, {}, {}, {})",
+                String.format("%.2f", camX), String.format("%.2f", camY), String.format("%.2f", camZ), cam.getFluidInCamera(),
+                com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart(), com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd(),
+                com.mojang.blaze3d.systems.RenderSystem.getShaderFogShape(), fc.getFloat(0), fc.getFloat(4), fc.getFloat(8), fc.getFloat(12));
+    }
+
     public void renderSectionLayer(RenderType renderType, double camX, double camY, double camZ, Matrix4f modelView, Matrix4f projection) {
         TerrainRenderType terrainRenderType = TerrainRenderType.get(renderType);
         renderType.setupRenderState();
+        if (FOG_TRACE)
+            traceFog(renderType, camX, camY, camZ);
 
         this.sortTranslucentSections(camX, camY, camZ);
 
