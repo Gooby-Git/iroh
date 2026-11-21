@@ -1,0 +1,4 @@
+fail gbuffers_basic gbuffers_basic.vsh:3: compatibility built-in gl_LightSource
+fail gbuffers_textured geometry stage present
+fail gbuffers_line interface block 'out Data { }'
+fail gbuffers_skybasic gbuffers_skybasic.fsh:3: 'undefinedThing' : undeclared identifier

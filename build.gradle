@@ -143,3 +143,25 @@ tasks.register('glNetTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.gltest.GlNetTest'
 	jvmArgs '-Diroh.glnet.anythread=true' // no Minecraft render thread in the test
 }
+
+// Offline Iris-pack front end (P3-1): parse, preprocess, translate and compile every program of a shader pack.
+// ./gradlew packHarness [-Ppack=<pack dir|zip|shaderpacks dir>] [-Poptions=<file>] [-PallowFail] [-Pnovista] [-Pshow=<unit>]
+// Reads packs where they lie (never copied into the repo); writes build/packHarness/<pack>/.
+tasks.register('packHarness', JavaExec) {
+	group = 'verification'
+	description = 'Run the Iris-pack front end over shader packs offline (no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackHarness'
+	jvmArgs '-Xmx4g'
+	workingDir = projectDir
+	def a = []
+	['pack', 'options', 'out', 'show'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
+	}
+	['allowFail', 'novista'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}"
+	}
+	if (project.hasProperty('optimize')) systemProperty 'iroh.pack.optimize', 'true'
+	args a
+}

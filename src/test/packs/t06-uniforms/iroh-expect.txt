@@ -1,0 +1,13 @@
+pass composite
+json pack.json customUniforms[0].inferred = float
+json pack.json customUniforms[2].deps = ["dx"]
+json pack.json customUniforms[3].errors = []
+json pack.json customUniforms[5].inferred = float
+jsonhas pack.json customUniforms[6].errors '&&' on float and bool
+jsonhas pack.json customUniforms[7].errors dependency cycle
+json pack.json idMaps.block.ids.10002 = ["minecraft:wheat:age=7","mod:thing"]
+json pack.json idMaps.block.ids.10001[2] = minecraft:oak_log:axis=y
+json pack.json idMaps.block.ids.10003 = null
+jsonhas pack.json idMaps.block.conflicts stone in 10001 and 10004
+json pack.json idMaps.entity.ids.50[1] = minecraft:entity_shadow
+jsonhas programs/_root/composite.json reflection.uniformBlock.members "name":"rainFactor","type":"float","offset":64,"size":4,"class":"custom:uniform"

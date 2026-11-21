@@ -1,0 +1,7 @@
+pass world0/gbuffers_textured
+pass world-1/gbuffers_water
+json pack.json programs.dimensionProperties = false
+json pack.json programs.folders.world0.drawnBy.gbuffers_terrain = gbuffers_textured
+json pack.json programs.folders.world0.drawnBy.gbuffers_water = gbuffers_textured
+json pack.json programs.folders.world-1.drawnBy.gbuffers_water = gbuffers_water
+json pack.json programs.folders.world-1.drawnBy.gbuffers_basic = null

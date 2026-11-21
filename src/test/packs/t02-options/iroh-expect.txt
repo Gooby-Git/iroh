@@ -1,0 +1,13 @@
+pass composite
+json programs/_root/composite.json reflection.drawBuffers = [0,2]
+json pack.json options.options.BLOOM.value = true
+json pack.json options.options.BLOOM.default = false
+json pack.json options.options.SHADOW_RES.values = ["512","1024","2048"]
+json pack.json options.options.SHADOW_RES.value = 2048
+json pack.json options.options.sunPathRotation.kind = CONST
+json pack.json options.savedUnknown.NOT_AN_OPTION = 1
+json pack.json options.currentProfile = HIGH
+json pack.json programs.folders.<root>.programs.composite1.enabled = false
+json pack.json properties.flags.bloom|flag = on
+json pack.json properties.optionScreen.screens.MORE = ["SHADOW_RES","sunPathRotation"]
+glsl _root/composite.fragment.glsl * float( 2048 )

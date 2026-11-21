@@ -1,0 +1,15 @@
+pass gbuffers_terrain
+glsl _root/gbuffers_terrain.vertex.glsl float half_width = viewWidth * 0.5;
+glsl _root/gbuffers_terrain.vertex.glsl const float two = 2.0;
+glsl _root/gbuffers_terrain.vertex.glsl sample_iroh = half_width
+glsl _root/gbuffers_terrain.vertex.glsl neverWritten = vec3(0);
+glsl _root/gbuffers_terrain.fragment.glsl iroh_shadow2D(shadowtex0
+glsl _root/gbuffers_terrain.fragment.glsl struct IrohFogParameters
+json programs/_root/gbuffers_terrain.json reflection.drawBuffers = null
+json programs/_root/gbuffers_terrain.json reflection.fragmentOutputs[1].target = 1
+jsonhas programs/_root/gbuffers_terrain.json reflection.vertexInputs "name":"mc_Entity","type":"vec4","location":7
+jsonhas programs/_root/gbuffers_terrain.json reflection.vertexInputs "name":"at_tangent","type":"vec4","location":9
+jsonhas programs/_root/gbuffers_terrain.json reflection.uniformBlock.members "name":"cloudHeight","type":"float"
+jsonhas programs/_root/gbuffers_terrain.json reflection.uniformBlock.members "default":"192.0"
+jsonhas programs/_root/gbuffers_terrain.json reflection.varyings "name":"neverWritten","type":"vec3","location":5,"slots":1,"from":"owed-by-vertex"
+jsonhas programs/_root/gbuffers_terrain.json reflection.compatBuiltins gl_Fog

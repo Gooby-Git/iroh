@@ -1,0 +1,11 @@
+pass shadowcomp.csh
+pass composite.csh
+pass composite_b.csh
+json programs/_root/shadowcomp.csh.json reflection.localSize = [8,8,8]
+json programs/_root/shadowcomp.csh.json constDirectives.workGroups = ivec3(16, 8, 16)
+json programs/_root/shadowcomp.csh.json reflection.images[0].format = rgba16f
+json programs/_root/shadowcomp.csh.json reflection.buffers[0].set = 1
+json programs/_root/shadowcomp.csh.json reflection.buffers[0].binding = 2
+jsonhas pack.json programs.folders.<root>.programs.composite.notes composite_d.csh is not run
+json pack.json properties.images.light_img.size = [64.0,32.0,64.0]
+json pack.json properties.bufferObjects.2.bytes = 4096
