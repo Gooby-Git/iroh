@@ -340,3 +340,32 @@ tasks.register('packHarness', JavaExec) {
 	if (project.hasProperty('optimize')) systemProperty 'iroh.pack.optimize', 'true'
 	args a
 }
+
+// Offline pass graph (P3-2): front end dump -> frame plans, resource plan, uniform supply, geometry needs, upscaler cut.
+// ./gradlew packGraph [-Ppack=<pack dir|zip|shaderpacks dir>] [-Poptions=<file>] [-PallowFail]; writes build/packGraph/<pack>/
+tasks.register('packGraph', JavaExec) {
+	group = 'verification'
+	description = 'Build and validate the pass graph and resource plan of shader packs offline (no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackGraphHarness'
+	jvmArgs '-Xmx4g'
+	workingDir = projectDir
+	def a = []
+	['pack', 'options'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
+	}
+	if (project.hasProperty('allowFail')) a << "--allowFail"
+	args a
+}
+
+// Custom uniform evaluator (P3-2): hand-computed cases + Navidson's declarations over 120 synthetic frames.
+// ./gradlew customEvalTest ; last line "# customeval PASS n/n"
+tasks.register('customEvalTest', JavaExec) {
+	group = 'verification'
+	description = 'Evaluate pack custom uniform expressions against hand-computed values'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.CustomEvalTest'
+	workingDir = projectDir
+}

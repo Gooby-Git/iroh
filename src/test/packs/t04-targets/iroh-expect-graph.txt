@@ -1,0 +1,15 @@
+json graph.json folders.<root>.frame.passes[2].scale = [0.5]
+json graph.json folders.<root>.frame.passes[2].writes[0].target = colortex3
+json graph.json folders.<root>.frame.passes[2].writes[1].target = colortex18
+# flip.composite.colortex3=true: a flip directive keeps the pair
+json graph.json folders.<root>.frame.targets.colortex3.pairNeeded = true
+json graph.json folders.<root>.frame.targets.colortex3.clear = false
+json graph.json folders.<root>.frame.targets.colortex3.clearColor = vec4(0.0, 0.0, 0.0, 1.0)
+json graph.json folders.<root>.frame.targets.colortex18.pairNeeded = false
+json graph.json folders.<root>.frame.targets.colortex18.vkFormat = R8_UNORM
+json graph.json folders.<root>.frame.targets.colortex0.vkFormat = R16G16B16A16_SFLOAT
+jsonhas graph.json folders.<root>.frame.validation.warn render area = the smallest
+jsonhas graph.json folders.<root>.frame.validation.warn colortex0: read by [composite] but written by no pass
+json graph.json folders.<root>.resources.images[2].extent = render*0.5 x render*0.5
+json graph.json folders.<root>.resources.images[1].extent = 256x128
+json graph.json folders.<root>.resources.images[1].layers = 2

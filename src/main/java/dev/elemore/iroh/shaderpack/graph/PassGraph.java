@@ -575,6 +575,7 @@ public final class PassGraph {
                     tg.storage = true;
                     tg.writers.add(p.id);
                     p.writes.add(Json.obj("image", im.getKey(), "target", t, "half", c.readHalf(t), "format", im.getValue()));
+                    p.notes.add(im.getKey() + " stores into " + t + " in place, on the half later passes read (no flip; Iris rule UNVERIFIED)");
                 }
             }
             f.passes.add(p);
@@ -593,7 +594,7 @@ public final class PassGraph {
         p.unit = u.id;
         JsonObject scale = props.getAsJsonObject("scale");
         if (scale.has(prog))
-            p.scale = scale.get(prog);
+            p.scale = jsonValue(scale.get(prog));
         // mipmaps requested by this program's own directives, generated on the half it reads
         for (Map.Entry<String, String> e : u.constDirectives().entrySet()) {
             Matcher m = Pattern.compile("(colortex\\d+|gcolor|gdepth|gnormal|composite|gaux[1-4]|shadowcolor\\d*)MipmapEnabled").matcher(e.getKey());
@@ -714,7 +715,8 @@ public final class PassGraph {
 
     static Object jsonValue(JsonElement e) {
         if (e.isJsonPrimitive())
-            return e.getAsString();
+            return e.getAsJsonPrimitive().isNumber() ? (Object) e.getAsDouble()
+                    : e.getAsJsonPrimitive().isBoolean() ? (Object) e.getAsBoolean() : e.getAsString();
         if (e.isJsonArray()) {
             List<Object> l = new ArrayList<>();
             for (JsonElement x : e.getAsJsonArray())

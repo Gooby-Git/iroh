@@ -1,0 +1,11 @@
+json graph.json folders.<root>.frame.passes[0].id = shadowcomp.csh
+json graph.json folders.<root>.frame.passes[0].dispatch.groups = [16,8,16]
+json graph.json folders.<root>.frame.passes[0].dispatch.localSize = [8,8,8]
+json graph.json folders.<root>.frame.passes[3].id = composite.csh
+json graph.json folders.<root>.frame.passes[4].id = composite_a.csh
+json graph.json folders.<root>.frame.passes[5].id = composite_b.csh
+json graph.json folders.<root>.frame.passes[3].dispatch.rule = workGroupsRender
+json graph.json folders.<root>.frame.targets.colortex0.storage = true
+json graph.json folders.<root>.resources.images[3].name = light_img
+json graph.json folders.<root>.resources.images[3].extent = 64x32x64
+json graph.json folders.<root>.resources.buffers[0].bytes = 4096

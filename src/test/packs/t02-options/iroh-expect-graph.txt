@@ -1,0 +1,5 @@
+# program.composite1.enabled=BLOOM && !SSAO is false: composite1 is skipped and named
+jsonhas graph.json folders.<root>.frame.validation.info composite1: switched off
+json graph.json folders.<root>.frame.passes[2].id = composite
+json graph.json folders.<root>.frame.passes[2].writes[1].target = colortex2
+json graph.json folders.<root>.frame.passes[2].flipsAfter = ["colortex0","colortex2"]
