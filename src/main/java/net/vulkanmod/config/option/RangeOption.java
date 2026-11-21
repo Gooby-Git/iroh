@@ -39,6 +39,12 @@ public class RangeOption extends Option<Integer> {
         return (value - this.min) / (this.max - this.min);
     }
 
+    /** One step up or down (keyboard / controller), clamped to the range. */
+    public void stepBy(int dir) {
+        int v = Mth.clamp(this.getNewValue() + dir * this.step, this.min, this.max);
+        this.setNewValue(v);
+    }
+
     public void setValue(float f) {
         double n = Mth.lerp(f, min, max);
 
