@@ -215,21 +215,8 @@ tasks.register('builtinShaderTest', JavaExec) {
 	workingDir = projectDir
 }
 
-// rc3r2 (td-c8876c): AsyncParticles' references into net.vulkanmod resolve in the built Iroh jar (exact owner/name/desc,
-// static-ness, access, its compat mixins). Reads the jar from the instance at test time. ./gradlew asyncParticlesLinkTest
-// [-Pmods=dir] [-Piroh=jar]; last line "# aplink PASS n/n". Needs ./build.sh first.
-tasks.register('asyncParticlesLinkTest', JavaExec) {
-	group = 'verification'
-	description = 'Link-check AsyncParticles against the built Iroh jar'
-	dependsOn 'testClasses'
-	classpath = sourceSets.test.runtimeClasspath
-	mainClass = 'dev.elemore.iroh.compattest.AsyncParticlesLinkTest'
-	workingDir = projectDir
-	args((project.findProperty('mods') ?: '') as String, (project.findProperty('iroh') ?: '') as String)
-}
-
 // rc3r2: the api members elemore-core's and Polaris' IrohBridge look up exist in the built jar with exact descriptors.
-// ./gradlew bridgeLinkTest [-Piroh=jar]; last line "# bridgelink PASS n/n". Needs ./build.sh first.
+// Bridge jars read from build/p16b at test time. ./gradlew bridgeLinkTest [-Piroh=jar] [-Pbridges=dir]; last line "# bridgelink PASS n/n". Needs ./build.sh first.
 tasks.register('bridgeLinkTest', JavaExec) {
 	group = 'verification'
 	description = 'Check the IrohBridge MethodHandle targets in the built Iroh jar'
@@ -237,7 +224,7 @@ tasks.register('bridgeLinkTest', JavaExec) {
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.compattest.BridgeLinkTest'
 	workingDir = projectDir
-	args((project.findProperty('iroh') ?: '') as String)
+	args((project.findProperty('iroh') ?: '') as String, (project.findProperty('bridges') ?: '') as String)
 }
 
 // GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).

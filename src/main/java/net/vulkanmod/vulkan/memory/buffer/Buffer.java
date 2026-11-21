@@ -6,11 +6,6 @@ import net.vulkanmod.vulkan.memory.MemoryType;
 import java.nio.ByteBuffer;
 
 public class Buffer {
-    /**
-     * Iroh (rc3r2, td-c8876c): debug name, VulkanMod 0.6 API shape (upstream dev branch, LGPL-3.0 like Iroh): AsyncParticles'
-     * VulkanMod backend constructs {@code new Buffer(String, int, MemoryType)}. Null for Iroh's own buffers.
-     */
-    public final String name;
     public final MemoryType type;
     public final int usage;
 
@@ -24,23 +19,12 @@ public class Buffer {
     protected long dataPtr;
 
     public Buffer(int usage, MemoryType type) {
-        this(null, usage, type);
-    }
-
-    public Buffer(String name, int usage, MemoryType type) {
-        this.name = name;
         this.usage = usage;
         this.type = type;
     }
 
     public void createBuffer(long bufferSize) {
         this.type.createBuffer(this, bufferSize);
-
-        if (this.name != null && net.vulkanmod.vulkan.Vulkan.ENABLE_VALIDATION_LAYERS) {
-            try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
-                net.vulkanmod.vulkan.Vulkan.setDebugLabel(stack, org.lwjgl.vulkan.VK10.VK_OBJECT_TYPE_BUFFER, this.id, this.name);
-            }
-        }
 
         if (this.type.mappable()) {
             this.dataPtr = MemoryManager.getInstance().Map(this.allocation).get(0);

@@ -41,7 +41,7 @@ import static org.lwjgl.vulkan.VK10.*;
  * offset needs no sign change (depth is not affected by the viewport height sign); clip depth stays Vulkan [0, 1]
  * (projection matrices are Vulkan-corrected elsewhere, unchanged by this).
  * Paths that do not go through GlStateManager's cull state still take their cull from {@code PipelineState}
- * (terrain, clouds, particles incl. AsyncParticles' Vulkan backend via Drawer, GUI, FRAPI, post passes): every
+ * (terrain, clouds, particles, GUI, FRAPI, post passes): every
  * pipeline is built from {@code PipelineState.getAssemblyRasterState()}, which calls {@link #vkCullMode}.
  * Shader packs (P3-1 front end contract: GL clip-depth epilogue, no Y flip, CCW front faces, present-time flip) render
  * into the same GL-layout targets and get the same answers from this class.
