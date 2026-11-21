@@ -114,7 +114,9 @@ public class Renderer {
         if (INSTANCE.boundFramebuffer == null) {
             return;
         }
-        vkCmdSetLineWidth(INSTANCE.currentCmdBuffer, width);
+        VkCommandBuffer cb = recordingCommandBuffer("setLineWidth");
+        if (cb == null) return;
+        vkCmdSetLineWidth(cb, width);
     }
 
     private void init() {
@@ -318,12 +320,17 @@ public class Renderer {
         Profiler p = Profiler.getMainProfiler();
         p.push("End_rendering");
 
-        mainPass.end(currentCmdBuffer);
+        // Iroh (rc3r2, td-7937f0): mainPass.end ends the command buffer; from here on nothing may record into it, even if
+        // the submit below throws (device lost / out of date during a world teardown).
+        try {
+            mainPass.end(currentCmdBuffer);
+        } finally {
+            recordingCmds = false;
+        }
 
         waitFences();
 
         submitFrame();
-        recordingCmds = false;
 
         p.pop();
         p.push("Post_rendering");
@@ -387,6 +394,7 @@ public class Renderer {
 
             this.endRenderPass(currentCmdBuffer);
             vkEndCommandBuffer(currentCmdBuffer);
+            this.recordingCmds = false; // Iroh (rc3r2): ended; beginRenderPass below sets it again
 
             VkSubmitInfo submitInfo = VkSubmitInfo.calloc(stack);
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO);
@@ -493,6 +501,11 @@ public class Renderer {
 
         commandBuffers.forEach(commandBuffer -> vkResetCommandBuffer(commandBuffer, 0));
         recordingCmds = false;
+        // Iroh (rc3r2, td-7937f0): the reset command buffers hold no render pass any more: forget the bound target, so
+        // clears / viewport / scissor between here and the next frame do not record into a reset buffer.
+        this.boundFramebuffer = null;
+        this.boundRenderPass = null;
+        net.vulkanmod.gl.VkGlFramebuffer.resetBoundFramebuffer();
 
         swapChain.recreate();
 
@@ -551,7 +564,8 @@ public class Renderer {
     }
 
     public void bindGraphicsPipeline(GraphicsPipeline pipeline) {
-        VkCommandBuffer commandBuffer = currentCmdBuffer;
+        VkCommandBuffer commandBuffer = recordingCommandBuffer("bindGraphicsPipeline");
+        if (commandBuffer == null) return;
 
         PipelineState currentState = PipelineState.getCurrentPipelineState(boundRenderPass);
         final long handle = pipeline.getHandle(currentState);
@@ -567,12 +581,14 @@ public class Renderer {
     }
 
     public void uploadAndBindUBOs(Pipeline pipeline) {
-        VkCommandBuffer commandBuffer = currentCmdBuffer;
+        VkCommandBuffer commandBuffer = recordingCommandBuffer("uploadAndBindUBOs");
+        if (commandBuffer == null) return;
         pipeline.bindDescriptorSets(commandBuffer, currentFrame);
     }
 
     public void pushConstants(Pipeline pipeline) {
-        VkCommandBuffer commandBuffer = currentCmdBuffer;
+        VkCommandBuffer commandBuffer = recordingCommandBuffer("pushConstants");
+        if (commandBuffer == null) return;
 
         PushConstants pushConstants = pipeline.getPushConstants();
 
@@ -625,7 +641,8 @@ public class Renderer {
     }
 
     public static void setDepthBias(float constant, float slope) {
-        VkCommandBuffer commandBuffer = INSTANCE.currentCmdBuffer;
+        VkCommandBuffer commandBuffer = recordingCommandBuffer("setDepthBias");
+        if (commandBuffer == null) return;
 
         vkCmdSetDepthBias(commandBuffer, constant, 0.0f, slope);
     }
@@ -640,6 +657,9 @@ public class Renderer {
 
     public static void clearAttachments(int v, int width, int height) {
         if (skipRendering)
+            return;
+        VkCommandBuffer cb = recordingCommandBuffer("clearAttachments");
+        if (cb == null)
             return;
 
         try (MemoryStack stack = stackPush()) {
@@ -693,7 +713,7 @@ public class Renderer {
             pRect.baseArrayLayer(0);
             pRect.layerCount(1);
 
-            vkCmdClearAttachments(INSTANCE.currentCmdBuffer, pAttachments, pRect);
+            vkCmdClearAttachments(cb, pAttachments, pRect);
         }
     }
 
@@ -719,7 +739,7 @@ public class Renderer {
             viewport.height(height);
             viewport.minDepth(0.0f);
             viewport.maxDepth(1.0f);
-            vkCmdSetViewport(INSTANCE.currentCmdBuffer, 0, viewport);
+            { VkCommandBuffer cb = recordingCommandBuffer("setViewport"); if (cb != null) vkCmdSetViewport(cb, 0, viewport); }
         }
     }
 
@@ -731,7 +751,7 @@ public class Renderer {
             VkRect2D.Buffer scissor = VkRect2D.malloc(1, stack);
             scissor.offset().set(x, y);
             scissor.extent().set(width, height);
-            vkCmdSetScissor(INSTANCE.currentCmdBuffer, 0, scissor);
+            { VkCommandBuffer cb = recordingCommandBuffer("setScissor"); if (cb != null) vkCmdSetScissor(cb, 0, scissor); }
         }
     }
 
@@ -764,7 +784,7 @@ public class Renderer {
         viewport.minDepth(0.0f);
         viewport.maxDepth(1.0f);
 
-        vkCmdSetViewport(INSTANCE.currentCmdBuffer, 0, viewport);
+        { VkCommandBuffer cb = recordingCommandBuffer("setViewport"); if (cb != null) vkCmdSetViewport(cb, 0, viewport); }
     }
 
     public static void setScissor(int x, int y, int width, int height) {
@@ -780,7 +800,7 @@ public class Renderer {
             scissor.offset().set(x, framebufferHeight - (y + height));
             scissor.extent().set(width, height);
 
-            vkCmdSetScissor(INSTANCE.currentCmdBuffer, 0, scissor);
+            { VkCommandBuffer cb = recordingCommandBuffer("setScissor"); if (cb != null) vkCmdSetScissor(cb, 0, scissor); }
         }
     }
 
@@ -790,13 +810,14 @@ public class Renderer {
 
         try (MemoryStack stack = stackPush()) {
             VkRect2D.Buffer scissor = INSTANCE.boundFramebuffer.scissor(stack);
-            vkCmdSetScissor(INSTANCE.currentCmdBuffer, 0, scissor);
+            { VkCommandBuffer cb = recordingCommandBuffer("setScissor"); if (cb != null) vkCmdSetScissor(cb, 0, scissor); }
         }
     }
 
     public static void pushDebugSection(String s) {
         if (Vulkan.ENABLE_VALIDATION_LAYERS) {
-            VkCommandBuffer commandBuffer = INSTANCE.currentCmdBuffer;
+            VkCommandBuffer commandBuffer = recordingCommandBuffer("pushDebugSection");
+            if (commandBuffer == null) return;
 
             try (MemoryStack stack = stackPush()) {
                 VkDebugUtilsLabelEXT markerInfo = VkDebugUtilsLabelEXT.calloc(stack);
@@ -810,7 +831,8 @@ public class Renderer {
 
     public static void popDebugSection() {
         if (Vulkan.ENABLE_VALIDATION_LAYERS) {
-            VkCommandBuffer commandBuffer = INSTANCE.currentCmdBuffer;
+            VkCommandBuffer commandBuffer = recordingCommandBuffer("popDebugSection");
+            if (commandBuffer == null) return;
 
             vkCmdEndDebugUtilsLabelEXT(commandBuffer);
         }
@@ -827,6 +849,24 @@ public class Renderer {
 
     public static VkCommandBuffer getCommandBuffer() {
         return INSTANCE.currentCmdBuffer;
+    }
+
+    private static final java.util.Set<String> LOGGED_NOT_RECORDING = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Iroh (rc3r2, td-7937f0): THE check before recording into the frame command buffer. Returns it only while a frame
+     * is recording (begun, not yet ended / reset); otherwise null, and the first call per {@code what} logs where it came
+     * from. Every Renderer entry point that records goes through this, so a skipped frame, a swapchain recreate, a
+     * world teardown or a disconnect screen turns stray GL-emulation calls into no-ops instead of commands into a
+     * command buffer that is not recording (validation "vkBeginCommandBuffer() was not called", then a driver crash).
+     */
+    public static VkCommandBuffer recordingCommandBuffer(String what) {
+        Renderer r = INSTANCE;
+        if (r != null && r.recordingCmds && r.currentCmdBuffer != null)
+            return r.currentCmdBuffer;
+        if (LOGGED_NOT_RECORDING.add(what))
+            Initializer.LOGGER.warn("Iroh: {} outside a recording frame ignored (logged once)", what, new Throwable("called from"));
+        return null;
     }
 
     public static boolean isRecording() {

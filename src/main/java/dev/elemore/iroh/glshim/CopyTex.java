@@ -59,7 +59,8 @@ public final class CopyTex {
         final int fx = x, fy = y, fw = w, fh = h, fxo = xoff, fyo = yoff;
         VulkanImage.endPassRunResume(() -> {
             try (MemoryStack stack = MemoryStack.stackPush()) {
-                VkCommandBuffer cb = Renderer.getCommandBuffer();
+                VkCommandBuffer cb = Renderer.recordingCommandBuffer("glCopyTexSubImage2D");
+                if (cb == null) return;
                 src.transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 dst.transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 if (sameFormat) {

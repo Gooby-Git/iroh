@@ -127,7 +127,8 @@ public class Drawer {
     }
 
     public void drawIndexed(Buffer vertexBuffer, Buffer indexBuffer, int indexCount, int indexType) {
-        VkCommandBuffer commandBuffer = Renderer.getCommandBuffer();
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("drawIndexed"); // rc3r2: no frame, no draw
+        if (commandBuffer == null) return;
 
         VUtil.UNSAFE.putLong(pBuffers, vertexBuffer.getId());
         VUtil.UNSAFE.putLong(pOffsets, vertexBuffer.getOffset());
@@ -138,7 +139,8 @@ public class Drawer {
     }
 
     public void draw(VertexBuffer vertexBuffer, int vertexCount) {
-        VkCommandBuffer commandBuffer = Renderer.getCommandBuffer();
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("draw");
+        if (commandBuffer == null) return;
 
         VUtil.UNSAFE.putLong(pBuffers, vertexBuffer.getId());
         VUtil.UNSAFE.putLong(pOffsets, vertexBuffer.getOffset());

@@ -373,6 +373,8 @@ public class WorldRenderer {
     }
 
     public void renderSectionLayer(RenderType renderType, double camX, double camY, double camZ, Matrix4f modelView, Matrix4f projection) {
+        if (Renderer.recordingCommandBuffer("renderSectionLayer") == null) // rc3r2 (td-7937f0): no frame recording
+            return;
         TerrainRenderType terrainRenderType = TerrainRenderType.get(renderType);
         renderType.setupRenderState();
         if (FOG_TRACE)
