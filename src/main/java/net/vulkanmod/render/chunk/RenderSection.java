@@ -227,8 +227,23 @@ public class RenderSection {
         return true;
     }
 
-    // TODO: sync rebuild
-    public void rebuildChunkSync(TaskDispatcher dispatcher, RenderRegionBuilder renderRegionCache) {
+    /**
+     * Queues an "important" rebuild (P1-11): front of the queue, and its latch goes into {@code waitSet} so the frame can
+     * wait for it. Same readiness rule as {@link #rebuildChunkAsync(TaskDispatcher, RenderRegionBuilder)}.
+     */
+    public boolean rebuildChunkImportant(TaskDispatcher dispatcher, RenderRegionBuilder renderRegionCache,
+                                         dev.elemore.iroh.chunk.SyncWaitSet waitSet) {
+        BuildTask chunkCompileTask = this.createCompileTask(renderRegionCache);
+
+        if (chunkCompileTask == null)
+            return false;
+
+        chunkCompileTask.highPriority = true;
+        var latch = new java.util.concurrent.CountDownLatch(1);
+        chunkCompileTask.done = latch;
+        waitSet.add(latch);
+        dispatcher.schedule(chunkCompileTask);
+        return true;
     }
 
     public BuildTask createCompileTask(RenderRegionBuilder renderRegionCache) {

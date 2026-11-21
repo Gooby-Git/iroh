@@ -162,3 +162,13 @@ tasks.register('glNetTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.gltest.GlNetTest'
 	jvmArgs '-Diroh.glnet.anythread=true' // no Minecraft render thread in the test
 }
+
+// Headless test of the chunk build defer mode machinery (P1-11): importance rule, wait set, latch contract.
+// ./gradlew chunkDeferTest ; last line "# chunkdefer PASS n/n"
+tasks.register('chunkDeferTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the chunk build defer policy, the bounded wait set and the task latch contract'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
+}

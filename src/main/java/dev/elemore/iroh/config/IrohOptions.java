@@ -351,8 +351,7 @@ public final class IrohOptions {
 
         CHUNK_BUILD_DEFER_MODE = enumOpt("chunkBuildDeferMode", Category.PERFORMANCE, DeferMode.class, DeferMode.ALWAYS,
                 c -> parse(DeferMode.class, c.chunkBuildDeferMode, DeferMode.ALWAYS), (c, v) -> c.chunkBuildDeferMode = v.name());
-        CHUNK_BUILD_DEFER_MODE.label(v -> Component.translatable("iroh.options.chunkBuildDeferMode." + v.name().toLowerCase()))
-                .note("iroh.note.schedulerHook");
+        CHUNK_BUILD_DEFER_MODE.label(v -> Component.translatable("iroh.options.chunkBuildDeferMode." + v.name().toLowerCase()));
 
         SHADER_PACK = stringOpt("shaderPack");
         SHADERS_ENABLED = bool("shadersEnabled", Category.SHADERS, false, c -> c.shadersEnabled, (c, v) -> c.shadersEnabled = v);
@@ -404,7 +403,9 @@ public final class IrohOptions {
                 net.minecraft.client.PrioritizeChunkUpdates.NONE,
                 () -> mc().options.prioritizeChunkUpdates().get(), v -> mc().options.prioritizeChunkUpdates().set(v));
         PRIORITIZE_CHUNK_UPDATES.name("options.prioritizeChunkUpdates").choices(net.minecraft.client.PrioritizeChunkUpdates.values())
-                .label(v -> Component.translatable(v.getKey()));
+                .label(v -> Component.translatable(v.getKey()))
+                // the defer mode is the master (ChunkDeferPolicy): under Always nothing is rebuilt inside the frame
+                .unavailable(() -> chunkBuildDeferMode() == DeferMode.ALWAYS ? Component.translatable("iroh.reason.deferAlways") : null);
         GRAPHICS = vanilla("graphics", Category.QUALITY, GraphicsStatus.class, GraphicsStatus.FANCY,
                 () -> mc().options.graphicsMode().get(), v -> { mc().options.graphicsMode().set(v); refreshLeaves(false); });
         GRAPHICS.name("options.graphics").choices(GraphicsStatus.FAST, GraphicsStatus.FANCY, GraphicsStatus.FABULOUS)
