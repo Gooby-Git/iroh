@@ -624,6 +624,9 @@ public final class GlState {
         if (registered) return;
         registered = true;
 
+        // ---- query objects (timer queries: Reflex AntiLag), P1-10
+        GlQueries.register();
+
         // ---- errors, sync, hints
         on("glGetError", "I:", a -> 0);
         on("glFinish", "V:", a -> 0);

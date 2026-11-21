@@ -7,6 +7,8 @@
   "client": [
     "gl.GL11CM",
     "gl.GL15CM",
+    "gl.GL32CM",
+    "gl.GL33CM",
     "gl.GLM",
     "reload.LoadingOverlayM",
     "compat.watermedia.GLEngineM"
