@@ -129,6 +129,26 @@ public final class GlRegistryTest {
                         && created.stream().allMatch(img -> freed.getOrDefault(img, 0) <= 1));
         VkGlTexture.glDeleteTextures(tex);
         check("delete frees the last one: none live", created.stream().allMatch(img -> freed.getOrDefault(img, 0) == 1));
+        // rc12 (td-598433): a RenderTarget resize with a Satin-like injector (vanilla colour + depth, plus an extra
+        // still-depth texture created in createBuffers and released in destroyBuffers), 1000 resizes: live images constant
+        int baseTex = VkGlTexture.liveCount();
+        int[] target = new int[3];
+        long liveBefore = 0;
+        for (int r = 0; r < 1000; r++) {
+            if (r > 0) for (int id : target) VkGlTexture.glDeleteTextures(id); // destroyBuffers (+ Satin's delete inject)
+            int w = 1280 + (r % 2) * 640, h = 720 + (r % 2) * 360;
+            target[0] = VkGlTexture.genTextureId();
+            VkGlTexture.specifyStorageForTest(target[0], 0, 0x1908, w, h);
+            target[1] = VkGlTexture.genTextureId();
+            VkGlTexture.specifyStorageForTest(target[1], 0, 0x1902, w, h);
+            target[2] = VkGlTexture.genTextureId(); // Satin's still-depth texture
+            VkGlTexture.specifyStorageForTest(target[2], 0, 0x1902, w, h);
+            if (r == 0) liveBefore = created.stream().filter(img -> !freed.containsKey(img)).count();
+        }
+        long liveAfter = created.stream().filter(img -> !freed.containsKey(img)).count();
+        check("1000 Satin-like RenderTarget resizes: live images constant (" + liveBefore + " -> " + liveAfter + "), GL names "
+                + (VkGlTexture.liveCount() - baseTex), liveAfter == liveBefore && VkGlTexture.liveCount() - baseTex == 3);
+        for (int id : target) VkGlTexture.glDeleteTextures(id);
         VkGlTexture.FACTORY = null;
 
         System.out.println("# glregistry " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
