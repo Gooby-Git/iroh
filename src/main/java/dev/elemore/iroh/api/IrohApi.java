@@ -29,6 +29,9 @@ public final class IrohApi {
      */
     public static final int API_VERSION = 3;
 
+    /** Minor version within {@link #API_VERSION} (additions only). 3.1 = P1-13a follow-up: FrameStage.OVERLAY, FrameContext.guiGraphics(). */
+    public static final int API_MINOR = 1;
+
     private static final Set<Capability> CAPABILITIES = Collections.unmodifiableSet(
             EnumSet.of(Capability.SECTION_VISIBILITY, Capability.FACE_CULL_VETO, Capability.LEAF_CULLING,
                     Capability.FRAME_HOOKS, Capability.SKY_HOOKS, Capability.IMMEDIATE_DRAW, Capability.OWNER_SHADERS,
@@ -47,6 +50,11 @@ public final class IrohApi {
     /** The API version of the running Iroh (compare with the {@link #API_VERSION} you compiled against). Any thread. */
     public static int apiVersion() {
         return API_VERSION;
+    }
+
+    /** The minor api version of the running Iroh (api 3.1+; absent before, so look it up reflectively). Any thread. */
+    public static int apiMinor() {
+        return API_MINOR;
     }
 
     /** Iroh's mod version string, for logs. Any thread. */

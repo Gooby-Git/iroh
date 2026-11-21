@@ -42,6 +42,7 @@
     "render.BufferUploaderM",
     "render.GameRendererMixin",
     "render.IrohFrameStagesM",
+    "render.IrohOverlayStageM",
     "render.GlProgramManagerMixin",
     "render.GlStateManagerM",
     "render.MinecraftMixin",

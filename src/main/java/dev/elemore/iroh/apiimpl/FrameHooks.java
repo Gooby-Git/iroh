@@ -113,6 +113,7 @@ public final class FrameHooks {
             DrawImpl.insideHook = true;
             try {
                 e.hook.run(c);
+                if (c.gui != null) c.gui.flush();
             } catch (Throwable t) {
                 if (++e.failures >= 3) {
                     net.vulkanmod.Initializer.LOGGER.error("Iroh: frame hook {} at {} failed 3 times; removed", e.hook.getClass().getName(), stage, t);
@@ -133,6 +134,21 @@ public final class FrameHooks {
     static Matrix4f view() { return CONTEXT.view; }
 
     static Matrix4f projection() { return CONTEXT.projection; }
+
+    /** 2D stages: dispatch with the frame's GuiGraphics in the context (flushed before and after each hook). */
+    public static void dispatch2d(FrameStage stage, net.minecraft.client.gui.GuiGraphics gui) {
+        if (HOOKS[stage.ordinal()].length != 0) {
+            gui.flush();
+            CONTEXT.gui = gui;
+            try {
+                dispatch(stage);
+            } finally {
+                CONTEXT.gui = null;
+            }
+        } else if (FrameProfiler.ON) {
+            dispatch(stage);
+        }
+    }
 
     /** The context object (tests). */
     public static FrameContext context() {
@@ -159,5 +175,7 @@ public final class FrameHooks {
         @Override public int viewportHeight() { return height; }
         @Override public RenderPath renderPath() { return IrohApi.renderPath(); }
         @Override public boolean isShadowPass() { return false; }
+        net.minecraft.client.gui.GuiGraphics gui;
+        @Override public net.minecraft.client.gui.GuiGraphics guiGraphics() { return gui; }
     }
 }

@@ -31,7 +31,10 @@ final class ApiV3Checks {
     }
 
     static void run(BiConsumer<String, Boolean> check) {
-        check.accept("api version 3", IrohApi.API_VERSION == 3 && IrohApi.apiVersion() == 3);
+        check.accept("api version 3.1", IrohApi.API_VERSION == 3 && IrohApi.apiVersion() == 3 && IrohApi.apiMinor() == 1);
+        FrameStage[] all = FrameStage.values();
+        check.accept("FrameStage constants append-only: AFTER_PRESENT then OVERLAY last",
+                all[all.length - 2] == FrameStage.AFTER_PRESENT && all[all.length - 1] == FrameStage.OVERLAY);
         check.accept("capabilities: frame hooks, sky hooks, draw, shaders, dynamic textures present",
                 IrohApi.capabilities().containsAll(EnumSet.of(Capability.FRAME_HOOKS, Capability.SKY_HOOKS,
                         Capability.IMMEDIATE_DRAW, Capability.OWNER_SHADERS, Capability.DYNAMIC_TEXTURES)));
@@ -54,6 +57,7 @@ final class ApiV3Checks {
         check.accept("hooks run by priority then registration order, PACK-only hook skipped on RASTER: " + order,
                 order.equals(List.of("m3", "p0a", "p0b", "p5")));
         check.accept("context stage set during dispatch", FrameHooks.context().stage() == st);
+        check.accept("guiGraphics() null outside the 2D stages", FrameHooks.context().guiGraphics() == null);
         r2.close();
         order.clear();
         FrameHooks.dispatch(st);

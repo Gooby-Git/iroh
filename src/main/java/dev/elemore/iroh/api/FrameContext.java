@@ -39,4 +39,12 @@ public interface FrameContext {
 
     /** True while a shader pack's shadow pass is being drawn (never on RASTER). */
     boolean isShadowPass();
+
+    /**
+     * api 3.1: the frame's GuiGraphics (vanilla's, over the frame buffer source) in the 2D stages BEFORE_HUD, AFTER_HUD and
+     * OVERLAY; null in the others. Draw with it as in a Screen; Iroh flushes it after each hook (do not keep it).
+     */
+    default net.minecraft.client.gui.GuiGraphics guiGraphics() {
+        return null;
+    }
 }
