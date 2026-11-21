@@ -229,7 +229,7 @@ public class WorldRenderer {
         set.awaitAll(ChunkDeferPolicy.budgetNs(IrohOptions.DeferMode.ZERO_FRAMES));
         boolean arrived;
         try {
-            arrived = this.taskDispatcher.updateSections();
+            arrived = this.taskDispatcher.updateSections(true); // perf/uploads: waiting for these sections: no budget
             UploadManager.INSTANCE.submitUploads();
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
@@ -265,11 +265,13 @@ public class WorldRenderer {
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Uploads");
 
+        boolean waitedForSections = false;
         // ONE_FRAME: the rebuilds queued as important in the previous frame finish before this one is presented.
         if (this.sectionGraph != null) {
             SyncWaitSet set = this.sectionGraph.syncSet();
             IrohOptions.DeferMode mode = IrohOptions.chunkBuildDeferMode();
             if (mode == IrohOptions.DeferMode.ONE_FRAME && set.pending() > 0) {
+                waitedForSections = true;
                 set.awaitAll(ChunkDeferPolicy.budgetNs(mode));
                 this.logDeferStats();
             } else {
@@ -278,7 +280,7 @@ public class WorldRenderer {
         }
 
         try {
-            if (this.taskDispatcher.updateSections())
+            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections())
                 this.graphNeedsUpdate = true;
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
