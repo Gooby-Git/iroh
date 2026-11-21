@@ -298,7 +298,7 @@ public class Renderer {
         if (skipRendering || recordingCmds)
             return;
 
-        vkWaitForFences(device, inFlightFences.get(currentFrame), true, VUtil.UINT64_MAX);
+        waitFrameFence(); // rc8: bounded
         // perf/uploads: the frame that last used this slot finished; complete finished upload epochs (no wait) and make
         // sure everything submitted before that frame is done before the slot's deferred frees run below.
         Synchronization.INSTANCE.frameSlotDone(currentFrame);
@@ -404,6 +404,18 @@ public class Renderer {
 
         p.pop();
         p.push("Post_rendering");
+    }
+
+    /**
+     * rc8 (SYSTEM SAFETY): the frame fence is waited at most 10 s (-Diroh.fenceTimeoutS). A GPU that does not finish a
+     * frame in that time is hung or lost; the game stops with a clear error instead of freezing forever.
+     */
+    private void waitFrameFence() {
+        int r = vkWaitForFences(device, inFlightFences.get(currentFrame), true, Long.getLong("iroh.fenceTimeoutS", 10L) * 1_000_000_000L);
+        if (r == VK_TIMEOUT)
+            throw new IllegalStateException("Iroh: the GPU did not finish a frame within the fence timeout (hung or lost device)");
+        if (r != VK_SUCCESS)
+            throw new IllegalStateException("Iroh: vkWaitForFences failed: " + r + " (device lost?)");
     }
 
     /** Iroh (rc5): a swapchain image was acquired with imageAvailableSemaphores[currentFrame] and not yet submitted. */
@@ -519,7 +531,7 @@ public class Renderer {
                 throw new RuntimeException("Failed to submit draw command buffer: %s".formatted(VkResult.decode(vkResult)));
             }
 
-            vkWaitForFences(device, inFlightFences.get(currentFrame), true, VUtil.UINT64_MAX);
+            waitFrameFence(); // rc8: bounded
 
             this.beginRenderPass(stack);
         }

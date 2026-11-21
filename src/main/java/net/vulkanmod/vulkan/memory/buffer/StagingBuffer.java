@@ -105,14 +105,23 @@ public class StagingBuffer extends Buffer {
     public static net.vulkanmod.vulkan.memory.staging.StagingRing.Alloc stage(long size, int align, long src) {
         var ring = RING;
         var a = ring.reserve(size, align);
-        while (a == null) {
+        // rc8: bounded. Each round submits pending uploads and waits for the oldest in-flight epoch (fence waits time out,
+        // see Synchronization); if nothing in flight can free room, the request is refused (no unbounded allocation,
+        // no endless loop): the caller's frame is abandoned through the memory guard.
+        for (int round = 0; a == null; round++) {
             if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.stagingOverflows++;
             submitAllConsumers();
-            if (!Synchronization.INSTANCE.waitOldest())
+            boolean waited = Synchronization.INSTANCE.waitOldest();
+            if (!waited) {
                 Synchronization.INSTANCE.waitFences();
+                ring.completeAll();
+            }
             a = ring.reserve(size, align);
-            if (a == null && ring.liveBlocks() == 0)
-                throw new IllegalStateException("staging budget " + (RING_BUDGET >> 20) + " MB cannot hold a " + size + "-byte upload (-Diroh.stagingBudgetMB)");
+            if (a == null && (round >= 8 || (!waited && ring.pendingReservations() == 0 && ring.liveBlocks() == 0))) {
+                dev.elemore.iroh.memory.MemoryGuard.outOfMemory("staging budget " + (RING_BUDGET >> 20) + " MB exhausted for a " + size
+                        + "-byte upload (" + ring.pendingReservations() + " reservations pinned)");
+                throw new dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory("staging budget exhausted");
+            }
         }
         nmemcpy(a.address, src, size);
         return a;

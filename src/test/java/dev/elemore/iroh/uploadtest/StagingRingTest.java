@@ -145,6 +145,17 @@ public final class StagingRingTest {
         check("R-3: after release the block is pooled: reading it would be reported", !r5.isLiveBlock(c1.bufferId) && r5.isRingBuffer(c1.bufferId));
         check("R-3: an unrelated buffer is not ring staging", !r5.isRingBuffer(987654321L));
 
+        // 5b. rc8: workers may pin at most half the budget; the render thread still finds room
+        StagingRing r7 = ring(1 * MB, 8 * MB);
+        List<StagingRing.Alloc> pinnedByWorkers = new ArrayList<>();
+        StagingRing.Alloc wa;
+        while ((wa = r7.reserveForWorker(256 * 1024, 4)) != null) pinnedByWorkers.add(wa);
+        long pinnedBytes = pinnedByWorkers.size() * 256L * 1024;
+        check("workers pin at most half the budget (" + pinnedBytes / MB + " MB of 8)", pinnedBytes <= 4 * MB);
+        check("render thread still gets staging while workers are at their share", r7.reserve(1 * MB, 4) != null);
+        for (var p2 : pinnedByWorkers) r7.cancel(p2);
+        check("after the worker reservations end, workers may reserve again", r7.reserveForWorker(256 * 1024, 4) != null);
+
         // 6. concurrent workers
         StagingRing r6 = ring(2 * MB, 64 * MB);
         ConcurrentLinkedQueue<StagingRing.Alloc> ready = new ConcurrentLinkedQueue<>();

@@ -27,6 +27,7 @@ import static org.lwjgl.vulkan.VK10.*;
  */
 public class Synchronization {
     public static final Synchronization INSTANCE = new Synchronization();
+    private static final long FENCE_TIMEOUT_NS = Long.getLong("iroh.fenceTimeoutS", 10L) * 1_000_000_000L;
 
     private static final class Epoch {
         final ObjectArrayList<CommandPool.CommandBuffer> cbs = new ObjectArrayList<>();
@@ -163,7 +164,14 @@ public class Synchronization {
             LongBuffer fences = stack.mallocLong(cbs.size());
             for (CommandPool.CommandBuffer cb : cbs) fences.put(cb.getFence());
             fences.flip();
-            vkWaitForFences(Vulkan.getVkDevice(), fences, true, VUtil.UINT64_MAX);
+            // rc8: never wait forever. A fence that does not signal in 10 s means a hung or lost device: fail cleanly
+            // instead of freezing the render thread (and the desktop compositor behind a stuck GPU queue).
+            int r = vkWaitForFences(Vulkan.getVkDevice(), fences, true, FENCE_TIMEOUT_NS);
+            if (r == VK_TIMEOUT)
+                throw new IllegalStateException("Iroh: upload fences did not signal within " + FENCE_TIMEOUT_NS / 1_000_000_000L
+                        + " s (GPU hung or device lost); stopping instead of waiting forever");
+            if (r != VK_SUCCESS)
+                throw new IllegalStateException("Iroh: vkWaitForFences failed: " + r + " (device lost?)");
         }
         this.statFenceWaits++;
         this.statFenceWaitNs += System.nanoTime() - t0;

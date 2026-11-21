@@ -42,6 +42,7 @@ public final class StagingRing {
         public final long bufferId, offset, address, size;
         final Slot slot;
         volatile boolean done;
+        boolean worker;
 
         Alloc(Slot slot, long offset, long size) {
             this.slot = slot;
@@ -151,6 +152,7 @@ public final class StagingRing {
         a.done = true;
         a.slot.pending--;
         a.slot.lastEpoch = epoch;
+        workerDone(a);
         byAddress.remove(a.address);
     }
 
@@ -159,6 +161,7 @@ public final class StagingRing {
         if (a.done) return;
         a.done = true;
         a.slot.pending--;
+        workerDone(a);
         byAddress.remove(a.address);
         recycle();
     }
@@ -207,6 +210,27 @@ public final class StagingRing {
                 }
             }
         }
+    }
+
+    private long workerPendingBytes;
+
+    /**
+     * rc8: a reservation for a worker (mesh staged ahead of its upload). Workers may pin at most half the budget, so the
+     * render thread always finds room once in-flight epochs complete (results queued behind the per-frame upload budget
+     * would otherwise pin every block). Null: the worker keeps a heap copy.
+     */
+    public synchronized Alloc reserveForWorker(long size, int align) {
+        if (workerPendingBytes + size > budget / 2) { statBudgetMisses++; return null; }
+        Alloc a = reserve(size, align);
+        if (a != null) {
+            a.worker = true;
+            workerPendingBytes += a.size;
+        }
+        return a;
+    }
+
+    private void workerDone(Alloc a) {
+        if (a.worker) workerPendingBytes -= a.size;
     }
 
     /** Registers a reservation handed out as a raw address (worker-staged data); see {@link #byAddress}. */

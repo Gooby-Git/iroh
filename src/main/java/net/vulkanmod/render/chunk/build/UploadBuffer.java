@@ -29,7 +29,7 @@ public class UploadBuffer {
         var ring = WORKER_STAGING ? net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring() : null;
         int size = src.remaining();
         if (ring != null && size > 0) {
-            var a = ring.reserve(size, 4);
+            var a = ring.reserveForWorker(size, 4); // rc8: workers may pin at most half the staging budget
             if (a != null) {
                 MemoryUtil.memCopy(MemoryUtil.memAddress(src), a.address, size);
                 ring.track(a);
