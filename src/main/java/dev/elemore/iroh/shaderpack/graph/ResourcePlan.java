@@ -296,6 +296,9 @@ public final class ResourcePlan {
         rp.descriptorLayout.put("note", "one pack-wide layout (P3-1 binding table) shared by every program of the folder; a program binds "
                 + "only what it references; a name sampled as sampler2DShadow in one program and sampler2D in another keeps one "
                 + "binding (same descriptor type) with a compare sampler or a plain one per program");
+        rp.notes.add("every image is cleared to zero once at creation and after a resize: OpenGL drivers hand out zeroed "
+                + "texture memory and packs read never-written, never-cleared targets (Navidson world-1 deferred1 reads colortex11); "
+                + "Vulkan memory is undefined until written");
         rp.budget = rp.budgetCheck();
         return rp;
     }
