@@ -204,6 +204,17 @@ tasks.register('tooltipLayoutTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.configtest.TooltipLayoutTest'
 }
 
+// rc3: Iroh's own built-in shaders compile, and include/fog.glsl equals vanilla's fog functions.
+// ./gradlew builtinShaderTest ; last line "# builtin PASS n/n".
+tasks.register('builtinShaderTest', JavaExec) {
+	group = 'verification'
+	description = 'Compile every Iroh built-in shader; fog.glsl parity with vanilla'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shadertest.BuiltinShaderTest'
+	workingDir = projectDir
+}
+
 // GL safety net proof (P1-2): calls real LWJGL GL natives on threads without a GL context (headless, no Vulkan).
 // ./gradlew glNetTest ; last line "# glnet PASS n/n". A JVM abort means the net failed.
 tasks.register('glNetTest', JavaExec) {
