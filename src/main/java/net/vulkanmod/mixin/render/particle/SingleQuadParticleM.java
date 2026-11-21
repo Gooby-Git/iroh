@@ -47,6 +47,13 @@ public abstract class SingleQuadParticleM extends Particle {
     /**
      * @author
      * @reason
+     * Iroh (P1-10 item 4c): voxelparticles 0.2.0 HEAD-injects here (priority 900, cancellable) and survives this
+     * overwrite (injectors are applied after all overwrites); when it voxelizes it writes straight into the
+     * BufferBuilder through accessors of vanilla fields (buffer, format, vertices, vertexPointer, elementsToFill,
+     * building), which BufferBuilderM leaves untouched, and PARTICLE stays the vanilla 28-byte layout its fast path
+     * checks for. Its second hook (HEAD of vanilla renderRotatedQuad) is not reached from this body; it only matters
+     * for particles whose render() was not voxelized by the first hook. AsyncParticles' GPU path skips render() for
+     * plain particles in the OpenGL pack too, so voxelparticles sees the same particles under Iroh.
      */
     @Overwrite
     public void render(VertexConsumer vertexConsumer, Camera camera, float f) {
