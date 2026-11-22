@@ -232,6 +232,9 @@ final class PackRuntimeImpl {
         lc = null;
         lastFolder = null;
         log("disabled: pack images, pipelines and buffers freed (deferred)");
+        if (dev.elemore.iroh.diag.ImageTrace.ON) // the frees land when the frame slots come round: report then
+            net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(() -> net.vulkanmod.vulkan.memory.MemoryManager.getInstance()
+                    .addFrameOp(() -> log("after disable: " + dev.elemore.iroh.diag.ImageTrace.report())));
     }
 
     // ------------------------------------------------------------------------------------------------ capture

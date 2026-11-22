@@ -505,3 +505,14 @@ tasks.register('passResumeTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.packtest.PassResumeTest'
 	workingDir = projectDir
 }
+
+// G1 fix 2: -Diroh.imageTrace=pack: follows pack render targets. ./gradlew imageTracePackTest
+tasks.register('imageTracePackTest', JavaExec) {
+	group = 'verification'
+	description = 'Image trace covers pack images'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.ImageTracePackTest'
+	jvmArgs '-Diroh.imageTrace=pack:'
+	workingDir = projectDir
+}

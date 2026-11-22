@@ -136,6 +136,8 @@ public final class IrohVkBackend extends VkPackBackend {
             VulkanImage vi = VulkanImage.builder(d.width(), d.height()).setName(d.name()).setOwner("pack").setFormat(fmt)
                     .setUsage(usage).setMipLevels(d.mips()).setLinearFiltering(true).setClamp(true).createVulkanImage();
             vi.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL); // createImage records UNDEFINED -> GENERAL next
+            if (dev.elemore.iroh.diag.ImageTrace.ON)
+                dev.elemore.iroh.diag.ImageTrace.createdImage(vi); // -Diroh.imageTrace=pack: follows pack targets
             // depth: VulkanImage's own view of a D24S8 image has DEPTH|STENCIL aspects, which cannot be sampled; the base
             // class makes depth-only views instead (destroyed by releaseImage)
             boolean depth = (vi.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
