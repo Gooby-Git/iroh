@@ -356,27 +356,63 @@ public abstract class VkPackBackend implements GpuBackend {
 
     /** a render pass for a list of colour formats: LOAD / STORE, GENERAL in and out (compatible for every draw with these formats) */
     private long renderPass(int[] formats) {
+        return renderPass(formats, 0);
+    }
+
+    /** colour formats + optional depth format (0 = none); every attachment LOAD/STORE in GENERAL */
+    private long renderPass(int[] formats, int depthFormat) {
         StringBuilder key = new StringBuilder();
         for (int f : formats)
             key.append(f).append(',');
+        key.append("d").append(depthFormat);
         return renderPasses.computeIfAbsent(key.toString(), k -> {
             try (MemoryStack s = stackPush()) {
-                VkAttachmentDescription.Buffer att = VkAttachmentDescription.calloc(formats.length, s);
-                VkAttachmentReference.Buffer refs = VkAttachmentReference.calloc(formats.length, s);
-                for (int i = 0; i < formats.length; i++) {
-                    att.get(i).format(formats[i]).samples(VK_SAMPLE_COUNT_1_BIT).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD)
-                            .storeOp(VK_ATTACHMENT_STORE_OP_STORE).stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
-                            .stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(VK_IMAGE_LAYOUT_GENERAL).finalLayout(VK_IMAGE_LAYOUT_GENERAL);
-                    refs.get(i).attachment(i).layout(VK_IMAGE_LAYOUT_GENERAL);
+                int n = formats.length, total = n + (depthFormat != 0 ? 1 : 0);
+                VkAttachmentDescription.Buffer att = VkAttachmentDescription.calloc(total, s);
+                VkAttachmentReference.Buffer refs = VkAttachmentReference.calloc(n, s);
+                for (int i = 0; i < total; i++) {
+                    int f = i < n ? formats[i] : depthFormat;
+                    att.get(i).format(f).samples(VK_SAMPLE_COUNT_1_BIT).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD)
+                            .storeOp(VK_ATTACHMENT_STORE_OP_STORE).stencilLoadOp(i < n ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD)
+                            .stencilStoreOp(i < n ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE)
+                            .initialLayout(VK_IMAGE_LAYOUT_GENERAL).finalLayout(VK_IMAGE_LAYOUT_GENERAL);
+                    if (i < n)
+                        refs.get(i).attachment(i).layout(VK_IMAGE_LAYOUT_GENERAL);
                 }
                 VkSubpassDescription.Buffer sub = VkSubpassDescription.calloc(1, s).pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS)
-                        .colorAttachmentCount(formats.length).pColorAttachments(refs);
+                        .colorAttachmentCount(n).pColorAttachments(refs);
+                if (depthFormat != 0)
+                    sub.pDepthStencilAttachment(VkAttachmentReference.calloc(s).attachment(n).layout(VK_IMAGE_LAYOUT_GENERAL));
                 LongBuffer lb = s.mallocLong(1);
                 check(vkCreateRenderPass(device(), VkRenderPassCreateInfo.calloc(s).sType$Default().pAttachments(att).pSubpasses(sub), null, lb),
                         "render pass");
                 return lb.get(0);
             }
         });
+    }
+
+    /**
+     * The 36-byte WideTerrainVertex (P3-2 GeometryNeeds.WIDE_TERRAIN) as vertex attributes, by Iris attribute
+     * location. Scaled formats keep raw integers (positions are decoded in the shader by iroh_VertexDecode; light
+     * 0..240 goes through gl_TextureMatrix[1] as in Iris). An input this layout has no data for reads the zero pad byte
+     * at +35. Only formats Vulkan requires for vertex buffers are used.
+     */
+    static int[] wideAttribute(int location, String type) {
+        boolean sint = type.startsWith("i"), uint = type.startsWith("u");
+        if (sint || uint)
+            return new int[]{35, uint ? VK_FORMAT_R8_UINT : VK_FORMAT_R8_SINT};
+        return switch (location) {
+            case 0 -> new int[]{0, VK_FORMAT_R16G16B16A16_SSCALED};
+            case 1 -> new int[]{12, VK_FORMAT_R8G8B8A8_UNORM};
+            case 2 -> new int[]{8, VK_FORMAT_R16G16_UNORM};
+            case 3, 4 -> new int[]{6, VK_FORMAT_R8G8_USCALED};
+            case 6 -> new int[]{16, VK_FORMAT_R8G8B8A8_SNORM};
+            case 7 -> new int[]{32, VK_FORMAT_R16G16_USCALED};
+            case 8 -> new int[]{24, VK_FORMAT_R16G16_UNORM};
+            case 9 -> new int[]{20, VK_FORMAT_R8G8B8A8_SNORM};
+            case 10 -> new int[]{28, VK_FORMAT_R8G8B8A8_SSCALED};
+            default -> new int[]{35, VK_FORMAT_R8_UNORM};
+        };
     }
 
     @Override
@@ -401,11 +437,19 @@ public abstract class VkPackBackend implements GpuBackend {
             VkPipelineShaderStageCreateInfo.Buffer st = VkPipelineShaderStageCreateInfo.calloc(2, s);
             st.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vm).pName(main);
             st.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fm).pName(main);
+            Geo geo = d.geo();
+            boolean wide = geo != null && "wide-terrain".equals(geo.layout());
             VkVertexInputBindingDescription.Buffer vb = VkVertexInputBindingDescription.calloc(1, s);
-            vb.get(0).binding(0).stride(QUAD_STRIDE).inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
+            vb.get(0).binding(0).stride(wide ? dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.BYTES : QUAD_STRIDE)
+                    .inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
             VkVertexInputAttributeDescription.Buffer va = VkVertexInputAttributeDescription.calloc(d.inputs().size(), s);
             for (int i = 0; i < d.inputs().size(); i++) {
                 VertexInput in = d.inputs().get(i);
+                if (wide) {
+                    int[] a = wideAttribute(in.location(), in.type());
+                    va.get(i).location(in.location()).binding(0).offset(a[0]).format(a[1]);
+                    continue;
+                }
                 boolean sint = in.type().startsWith("i"), uint = in.type().startsWith("u");
                 int off = sint || uint ? 64 : switch (in.feed()) {
                     case "position" -> 0;
@@ -419,10 +463,15 @@ public abstract class VkPackBackend implements GpuBackend {
             VkPipelineVertexInputStateCreateInfo vis = VkPipelineVertexInputStateCreateInfo.calloc(s).sType$Default()
                     .pVertexBindingDescriptions(vb).pVertexAttributeDescriptions(va);
             VkPipelineInputAssemblyStateCreateInfo ia = VkPipelineInputAssemblyStateCreateInfo.calloc(s).sType$Default()
-                    .topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+                    .topology(geo != null ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
             VkPipelineViewportStateCreateInfo vp = VkPipelineViewportStateCreateInfo.calloc(s).sType$Default().viewportCount(1).scissorCount(1);
             VkPipelineRasterizationStateCreateInfo rs = VkPipelineRasterizationStateCreateInfo.calloc(s).sType$Default()
-                    .polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE).lineWidth(1f);
+                    .polygonMode(VK_POLYGON_MODE_FILL).cullMode(geo != null && geo.cullBack() ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_NONE) // RQ-16: GL_BACK -> VK FRONT (positive-height viewport mirrors y)
+                    .frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE).lineWidth(1f);
+            int depthFmt = geo != null && geo.depthFormat() != null ? vkFormat(geo.depthFormat()) : 0;
+            VkPipelineDepthStencilStateCreateInfo dss = VkPipelineDepthStencilStateCreateInfo.calloc(s).sType$Default()
+                    .depthTestEnable(depthFmt != 0 && geo.depthTest()).depthWriteEnable(depthFmt != 0 && geo.depthWrite())
+                    .depthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL);
             VkPipelineMultisampleStateCreateInfo ms = VkPipelineMultisampleStateCreateInfo.calloc(s).sType$Default()
                     .rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
             int n = d.colourFormats().size();
@@ -446,7 +495,9 @@ public abstract class VkPackBackend implements GpuBackend {
                     .pDynamicStates(s.ints(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR));
             VkGraphicsPipelineCreateInfo.Buffer ci = VkGraphicsPipelineCreateInfo.calloc(1, s).sType$Default()
                     .pStages(st).pVertexInputState(vis).pInputAssemblyState(ia).pViewportState(vp).pRasterizationState(rs)
-                    .pMultisampleState(ms).pColorBlendState(cbs).pDynamicState(dyn).layout(layout).renderPass(renderPass(formats)).subpass(0);
+                    .pMultisampleState(ms).pColorBlendState(cbs).pDynamicState(dyn).layout(layout).renderPass(renderPass(formats, depthFmt)).subpass(0);
+            if (depthFmt != 0)
+                ci.get(0).pDepthStencilState(dss);
             check(vkCreateGraphicsPipelines(device(), pipelineCache(), ci, null, lb), "graphics pipeline " + d.id());
             vkDestroyShaderModule(device(), vm, null);
             vkDestroyShaderModule(device(), fm, null);
@@ -630,15 +681,21 @@ public abstract class VkPackBackend implements GpuBackend {
     }
 
     private long framebuffer(long renderPass, int[] colour, int w, int h) {
+        return framebuffer(renderPass, colour, -1, w, h);
+    }
+
+    private long framebuffer(long renderPass, int[] colour, int depth, int w, int h) {
         StringBuilder key = new StringBuilder().append(renderPass).append(':').append(w).append('x').append(h);
         for (int c : colour)
             key.append(',').append(c);
+        key.append(",d").append(depth);
         long[] fb = framebuffers.computeIfAbsent(key.toString(), k -> {
             try (MemoryStack s = stackPush()) {
-                LongBuffer views = s.mallocLong(colour.length);
-                long[] rec = new long[1 + colour.length];
-                for (int i = 0; i < colour.length; i++) {
-                    Img im = img(colour[i]);
+                int n = colour.length + (depth >= 0 ? 1 : 0);
+                LongBuffer views = s.mallocLong(n);
+                long[] rec = new long[1 + n];
+                for (int i = 0; i < n; i++) {
+                    Img im = img(i < colour.length ? colour[i] : depth);
                     views.put(i, im.viewMip0);
                     rec[1 + i] = im.image;
                 }
@@ -685,6 +742,96 @@ public abstract class VkPackBackend implements GpuBackend {
         }
     }
 
+    private final List<HostBuf> vbufs = new ArrayList<>();
+    private HostBuf quadIndex;
+    private int quadIndexQuads;
+
+    @Override
+    public int createVertexBuffer(String name, ByteBuffer data) {
+        HostBuf b = hostBuffer(Math.max(16, data.remaining()), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        b.mapped().put(0, data, data.position(), data.remaining());
+        vbufs.add(b);
+        return vbufs.size() - 1;
+    }
+
+    @Override
+    public void freeBuffer(int buffer) {
+        HostBuf b = buffer >= 0 && buffer < vbufs.size() ? vbufs.get(buffer) : null;
+        if (b == null)
+            return;
+        vbufs.set(buffer, null);
+        freeHostBufferAfterFrame(b);
+    }
+
+    /** shared quad index buffer (0 1 2, 2 3 0 per quad), grown on demand */
+    private long quadIndices(int quads) {
+        if (quadIndex == null || quadIndexQuads < quads) {
+            if (quadIndex != null)
+                freeHostBufferAfterFrame(quadIndex);
+            int n = Math.max(quads, 4096);
+            quadIndex = hostBuffer(n * 6L * 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+            ByteBuffer m = quadIndex.mapped();
+            for (int q = 0; q < n; q++) {
+                int v = q * 4, o = q * 24;
+                m.putInt(o, v).putInt(o + 4, v + 1).putInt(o + 8, v + 2).putInt(o + 12, v + 2).putInt(o + 16, v + 3).putInt(o + 20, v);
+            }
+            quadIndexQuads = n;
+        }
+        return quadIndex.buffer();
+    }
+
+    @Override
+    public void drawGeometry(GeoDraw d) {
+        Pipe p = pipes.get(d.pipeline());
+        int maxQuads = 1;
+        for (GeoBatch gb : d.batches())
+            maxQuads = Math.max(maxQuads, gb.quads());
+        long[][] ds = new long[d.batches().size()][];
+        for (int i = 0; i < ds.length; i++)
+            ds[i] = sets(p, d.set0(), d.set1(), d.batches().get(i).uniforms());
+        long ib = quadIndices(maxQuads);
+        try (MemoryStack s = stackPush()) {
+            int n = d.colour().length;
+            int[] formats = new int[n];
+            int aw = Integer.MAX_VALUE, ah = Integer.MAX_VALUE;
+            for (int i = 0; i < n; i++) {
+                Img im = img(d.colour()[i]);
+                formats[i] = im.format;
+                aw = Math.min(aw, im.d.width());
+                ah = Math.min(ah, im.d.height());
+            }
+            int depthFmt = 0;
+            if (d.depth() >= 0) {
+                Img dm = img(d.depth());
+                depthFmt = dm.format;
+                aw = Math.min(aw, dm.d.width());
+                ah = Math.min(ah, dm.d.height());
+            }
+            long rp = renderPass(formats, depthFmt);
+            long fb = framebuffer(rp, d.colour(), d.depth(), aw, ah);
+            VkRenderPassBeginInfo bi = VkRenderPassBeginInfo.calloc(s).sType$Default().renderPass(rp).framebuffer(fb);
+            bi.renderArea().extent().width(aw).height(ah);
+            vkCmdBeginRenderPass(cmd(), bi, VK_SUBPASS_CONTENTS_INLINE);
+            int[] v = d.viewport();
+            vkCmdSetViewport(cmd(), 0, VkViewport.calloc(1, s).x(v[0]).y(v[1]).width(v[2]).height(v[3]).minDepth(0).maxDepth(1));
+            VkRect2D.Buffer sc = VkRect2D.calloc(1, s);
+            sc.get(0).offset().set(v[0], v[1]);
+            sc.get(0).extent().set(Math.min(v[2], aw), Math.min(v[3], ah));
+            vkCmdSetScissor(cmd(), 0, sc);
+            vkCmdBindPipeline(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline());
+            vkCmdBindIndexBuffer(cmd(), ib, 0, VK_INDEX_TYPE_UINT32);
+            for (int i = 0; i < ds.length; i++) {
+                GeoBatch gb = d.batches().get(i);
+                if (gb.quads() <= 0)
+                    continue;
+                vkCmdBindDescriptorSets(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout(), 0, s.longs(ds[i][0], ds[i][1]), null);
+                vkCmdBindVertexBuffers(cmd(), 0, s.longs(vbufs.get(gb.vertexBuffer()).buffer()), s.longs(0));
+                vkCmdDrawIndexed(cmd(), gb.quads() * 6, 1, 0, 0, 0);
+            }
+            vkCmdEndRenderPass(cmd());
+        }
+    }
+
     @Override
     public void dispatch(Dispatch d) {
         Pipe p = pipes.get(d.pipeline());
@@ -712,6 +859,14 @@ public abstract class VkPackBackend implements GpuBackend {
         List<Long> sm = new ArrayList<>(samplers.values());
         List<Long> rps = new ArrayList<>(renderPasses.values());
         List<HostBuf> bs = new ArrayList<>(bufs);
+        for (HostBuf vb : vbufs)
+            if (vb != null)
+                bs.add(vb);
+        vbufs.clear();
+        if (quadIndex != null)
+            bs.add(quadIndex);
+        quadIndex = null;
+        quadIndexQuads = 0;
         HostBuf q = quad;
         releaseLater(() -> {
             for (Pipe p : ps) {

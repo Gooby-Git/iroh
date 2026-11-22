@@ -168,7 +168,43 @@ public final class FrameExecutor {
         int st = STAGES.indexOf(p.stage);
         if (st < start)
             return false;
+        if (p.kind.equals("geometry"))
+            return !batchesFor(p, in).isEmpty();
         return p.kind.equals("fullscreen") || p.kind.equals("compute");
+    }
+
+    /** caster class -> the scene class whose batches it draws (the shadow pass reuses the main geometry) */
+    static String sceneClass(String geometryClass) {
+        return switch (geometryClass) {
+            case "shadow_terrain_solid" -> "terrain_solid";
+            case "shadow_terrain_cutout" -> "terrain_cutout";
+            case "shadow_translucent" -> "terrain_translucent";
+            case "shadow_entities" -> "entities";
+            case "shadow_block_entities" -> "block_entities";
+            case "shadow_lightning" -> "lightning";
+            default -> geometryClass;
+        };
+    }
+
+    List<PackFrameInputs.Geometry> batchesFor(PassGraph.Pass p, PackFrameInputs in) {
+        List<PackFrameInputs.Geometry> out = new ArrayList<>();
+        if (p.geometry == null || in.geometry().isEmpty())
+            return out;
+        Set<String> want = new HashSet<>();
+        for (String g : p.geometry) {
+            String c = sceneClass(g);
+            want.add(c);
+            if (c.equals("terrain_cutout"))
+                want.add("terrain_cutout_mipped");
+        }
+        for (PackFrameInputs.Geometry g : in.geometry())
+            if (want.contains(g.geometryClass()))
+                out.add(g);
+        return out;
+    }
+
+    boolean shadowPass(PassGraph.Pass p) {
+        return p.id.startsWith("shadow:");
     }
 
     private GpuBackend.PipelineDesc pipelineDesc(PassGraph.Pass p, PackData.Unit u) throws IOException {
@@ -213,7 +249,14 @@ public final class FrameExecutor {
             }
         if (p.kind.equals("compute"))
             return new GpuBackend.PipelineDesc(p.id, null, null, data.spirv(u, "compute"), inputs, formats, blend, slots);
-        return new GpuBackend.PipelineDesc(p.id, data.spirv(u, "vertex"), data.spirv(u, "fragment"), null, inputs, formats, blend, slots);
+        GpuBackend.Geo geo = null;
+        if (p.kind.equals("geometry")) {
+            boolean shadow = shadowPass(p);
+            Integer dh = images.get(shadow ? "shadowtex0" : "depthtex0");
+            String df = dh != null ? gpu.desc(dh).vkFormat() : "D32_SFLOAT";
+            geo = new GpuBackend.Geo("wide-terrain", df, true, true, !shadow, false);
+        }
+        return new GpuBackend.PipelineDesc(p.id, data.spirv(u, "vertex"), data.spirv(u, "fragment"), null, inputs, formats, blend, slots, geo);
     }
 
     private String formatOf(String target) {
@@ -298,6 +341,15 @@ public final class FrameExecutor {
                 gpu.clear(h, e.getValue());
                 trace.add("clear " + key + " (input value)");
             }
+        if (!in.geometry().isEmpty() && start <= STAGES.indexOf("shadow"))
+            for (String dk : new String[]{"depthtex0", "shadowtex0"}) {
+                Integer h = images.get(dk);
+                if (h == null)
+                    continue;
+                access(h, "TRANSFER_WRITE");
+                gpu.clear(h, new float[]{1, 0, 0, 0});
+                trace.add("clear " + dk + " 1.0 (geometry frame)");
+            }
         if (afterInputs != null)
             afterInputs.run();
         // passes
@@ -320,8 +372,16 @@ public final class FrameExecutor {
                     compute(p, in);
                     gpu.timeEnd(p.id);
                 }
-                case "geometry" -> trace.add("skip " + p.id + " (geometry: needs the game)");
-                case "capture" -> trace.add("skip " + p.id + " (depth capture: supplied)");
+                case "geometry" -> {
+                    if (batchesFor(p, in).isEmpty()) {
+                        trace.add("skip " + p.id + " (no geometry supplied)");
+                    } else {
+                        gpu.timeBegin(p.id);
+                        geometry(p, in);
+                        gpu.timeEnd(p.id);
+                    }
+                }
+                case "capture" -> capture(p, in);
                 case "flip" -> trace.add("flip " + p.id + " " + p.flipsAfter + " (frozen in the plan)");
                 default -> trace.add("skip " + p.id + " (" + p.kind + ")");
             }
@@ -390,6 +450,20 @@ public final class FrameExecutor {
         return r;
     }
 
+    /**
+     * one access per image of a program's bindings: an image bound both as a sampler and as storage counts once, as
+     * the storage access (a read-modify-write by that program), so the NEXT reader still sees a write and barriers
+     */
+    private void accessBinds(Map<Integer, GpuBackend.Bind> set0, String storageKind) {
+        Map<Integer, String> per = new LinkedHashMap<>();
+        for (GpuBackend.Bind b : set0.values())
+            if (b.image() >= 0) {
+                String k = "STORAGE".equals(b.sampler()) ? storageKind : "SAMPLED_READ";
+                per.merge(b.image(), k, (a, c) -> a.endsWith("WRITE") ? a : c.endsWith("WRITE") ? c : a.startsWith("STORAGE") ? a : c);
+            }
+        per.forEach(this::access);
+    }
+
     private void access(int image, String kind) {
         String last = lastAccess.get(image);
         boolean write = kind.endsWith("WRITE");
@@ -426,9 +500,7 @@ public final class FrameExecutor {
         }
         Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
         Map<Integer, GpuBackend.Bind> set1 = binds(p, u, 1);
-        for (GpuBackend.Bind b : set0.values())
-            if (b.image() >= 0)
-                access(b.image(), "STORAGE".equals(b.sampler()) ? "STORAGE_READ" : "SAMPLED_READ");
+        accessBinds(set0, "STORAGE_READ");
         int[] colour = new int[p.writes.size()];
         List<String> keys = new ArrayList<>();
         int aw = Integer.MAX_VALUE, ah = Integer.MAX_VALUE;
@@ -462,6 +534,170 @@ public final class FrameExecutor {
         }
     }
 
+    /** vertex buffers of the supplied geometry, created once per Geometry object (replay) */
+    private final Map<PackFrameInputs.Geometry, Integer> vertexBuffers = new java.util.IdentityHashMap<>();
+
+    /** the geometry textures (atlas, normals, specular) or Iris' defaults */
+    private Integer geoTexture(String res, PackFrameInputs in) {
+        String k = res.startsWith("atlas normals") ? "normals" : res.startsWith("atlas specular") ? "specular" : "tex";
+        String key = "geo:" + k;
+        Integer h = images.get(key);
+        if (h != null)
+            return h;
+        int[] ex = in.geometryTextures().contains(key) ? in.extent(key) : null;
+        float[] px = ex != null ? in.image(key) : null;
+        int w = ex != null ? ex[0] : 1, hh = ex != null ? ex[1] : 1;
+        if (px == null)
+            px = switch (k) {
+                case "normals" -> new float[]{0.5f, 0.5f, 1f, 1f};
+                case "specular" -> new float[]{0, 0, 0, 0};
+                default -> new float[]{1, 1, 1, 1};
+            };
+        h = gpu.createImage(new GpuBackend.ImageDesc("pack:" + key, "R8G8B8A8_UNORM", w, hh, 1, 1, Set.of("SAMPLED", "TRANSFER_DST")));
+        access(h, "TRANSFER_WRITE");
+        gpu.upload(h, px);
+        images.put(key, h);
+        return h;
+    }
+
+    /**
+     * One geometry pass (P3-5): every supplied batch of its classes in ONE render pass instance with depth. Main:
+     * gl_ModelViewMatrix = gbufferModelView, gl_ProjectionMatrix = gbufferProjection, depth = depthtex0; shadow:
+     * shadowModelView / shadowProjection, depth = shadowtex0. gl_Vertex = camera-relative position (decode folds the
+     * wide vertex's 1/2048 grid, its +4 offset and the section origin, as Iris' vaPosition + chunkOffset).
+     */
+    private void geometry(PassGraph.Pass p, PackFrameInputs in) {
+        Integer pipe = pipelines.get(p.id);
+        if (pipe == null) {
+            trace.add("skip " + p.id + " (no pipeline)");
+            return;
+        }
+        boolean shadow = shadowPass(p);
+        PackData.Unit u = data.units.get(p.unit);
+        mipped = Set.of();
+        geoIn = in;
+        Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
+        Map<Integer, GpuBackend.Bind> set1 = binds(p, u, 1);
+        geoIn = null;
+        // storage images in a geometry program are written (shadow voxelisation: imageStore from the shadow pass)
+        accessBinds(set0, "STORAGE_WRITE");
+        int[] colour = new int[p.writes.size()];
+        List<String> keys = new ArrayList<>();
+        for (int i = 0; i < colour.length; i++) {
+            Map<String, Object> w = p.writes.get(i);
+            Integer h = imageFor((String) w.get("target"), (String) w.get("half"));
+            if (h == null) {
+                problems.add(p.id + ": no image for " + w.get("target") + "/" + w.get("half"));
+                return;
+            }
+            colour[i] = h;
+            keys.add(w.get("target") + "#" + w.get("half"));
+            access(h, "ATTACHMENT_WRITE");
+        }
+        Integer depth = images.get(shadow ? "shadowtex0" : "depthtex0");
+        if (depth == null) {
+            problems.add(p.id + ": no depth image");
+            return;
+        }
+        access(depth, "ATTACHMENT_WRITE");
+        GpuBackend.ImageDesc dd = gpu.desc(depth);
+        int[] viewport = {0, 0, dd.width(), dd.height()};
+        Map<String, double[]> base = in.uniforms();
+        double[] view = shadow ? base.get("shadowModelView") : base.get("gbufferModelView");
+        double[] proj = shadow ? base.get("shadowProjection") : base.get("gbufferProjection");
+        if (view == null || proj == null) {
+            problems.add(p.id + ": no " + (shadow ? "shadow" : "gbuffer") + " matrices in the inputs");
+            return;
+        }
+        List<GpuBackend.GeoBatch> batches = new ArrayList<>();
+        int quads = 0;
+        for (PackFrameInputs.Geometry g : batchesFor(p, in)) {
+            Integer vb = vertexBuffers.get(g);
+            if (vb == null) {
+                vb = gpu.createVertexBuffer("pack:geo " + g.geometryClass(), g.vertices().duplicate());
+                vertexBuffers.put(g, vb);
+            }
+            Map<String, double[]> per = new HashMap<>();
+            double[] o = g.origin();
+            per.put("iroh_VertexDecode", new double[]{1.0 / 2048, 4 + o[0], 4 + o[1], 4 + o[2]});
+            per.put("chunkOffset", o);
+            per.put("iroh_ModelViewMatrix", view);
+            per.put("iroh_ModelViewMatrixInverse", Mat.invert(view));
+            per.put("iroh_ProjectionMatrix", proj);
+            per.put("iroh_ProjectionMatrixInverse", Mat.invert(proj));
+            per.put("iroh_ModelViewProjectionMatrix", Mat.mul(proj, view));
+            per.put("iroh_NormalMatrix", Mat.normal(view));
+            per.put("iroh_TextureMatrix", LIGHTMAP_TEXTURE_MATRICES);
+            per.put("blockEntityId", new double[]{-1});
+            per.put("entityId", new double[]{-1});
+            per.put("renderStage", new double[]{renderStage(g.geometryClass(), shadow)});
+            batches.add(new GpuBackend.GeoBatch(uniformBlock(u, overlay(in, per), false), vb, g.quads()));
+            quads += g.quads();
+        }
+        gpu.drawGeometry(new GpuBackend.GeoDraw(p.id, pipe, colour, depth, viewport, set0, set1, batches));
+        trace.add("geometry " + p.id + " -> " + keys + " + " + (shadow ? "shadowtex0" : "depthtex0") + " batches " + batches.size()
+                + " quads " + quads + " reads " + readKeys(p));
+        drawCount++;
+    }
+
+    /** gl_TextureMatrix[0] identity, [1] the lightmap matrix (0..240 raw light -> texel centres of the 16x16 lightmap) */
+    static final double[] LIGHTMAP_TEXTURE_MATRICES = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+            1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 8 / 256.0, 8 / 256.0, 8 / 256.0, 1};
+
+    /** Iris renderStage constants (MC_RENDER_STAGE_*) for the classes Iroh draws; 0 = none */
+    static int renderStage(String geometryClass, boolean shadow) {
+        return switch (geometryClass) {
+            case "sky_basic" -> 1;
+            case "sky_textured" -> 2; // sun/moon share; custom sky 3
+            case "terrain_solid" -> 6;
+            case "terrain_cutout_mipped" -> 7;
+            case "terrain_cutout" -> 8;
+            case "entities" -> 9;
+            case "block_entities" -> 10;
+            case "terrain_translucent" -> 12;
+            case "particles_opaque", "particles_translucent" -> 14;
+            case "clouds" -> 15;
+            case "weather" -> 17;
+            case "world_border" -> 18;
+            case "hand_solid", "hand_translucent" -> 19;
+            default -> 0;
+        };
+    }
+
+    private static PackFrameInputs overlay(PackFrameInputs in, Map<String, double[]> per) {
+        Map<String, double[]> m = new HashMap<>(in.uniforms());
+        m.putAll(per);
+        return new PackFrameInputs() {
+            public int width() { return in.width(); }
+            public int height() { return in.height(); }
+            public Map<String, double[]> uniforms() { return m; }
+            public Set<String> suppliedImages() { return in.suppliedImages(); }
+            public float[] image(String n) { return in.image(n); }
+            public int[] extent(String n) { return in.extent(n); }
+            public String startStage() { return in.startStage(); }
+            public double frameSeconds() { return in.frameSeconds(); }
+        };
+    }
+
+    /** depth captures: depthtex1 / depthtex2 := depthtex0 now, shadowtex1 := shadowtex0 now */
+    private void capture(PassGraph.Pass p, PackFrameInputs in) {
+        if (in.geometry().isEmpty()) {
+            trace.add("skip " + p.id + " (depth capture: supplied)");
+            return;
+        }
+        String dst = p.id.substring("capture:".length());
+        String src = dst.startsWith("shadowtex") ? "shadowtex0" : "depthtex0";
+        Integer a = images.get(src), b = images.get(dst);
+        if (a == null || b == null) {
+            trace.add("skip " + p.id + " (no image)");
+            return;
+        }
+        access(a, "TRANSFER_READ");
+        access(b, "TRANSFER_WRITE");
+        gpu.copy(a, b);
+        trace.add("capture " + dst + " := " + src);
+    }
+
     private void compute(PassGraph.Pass p, PackFrameInputs in) {
         mipped = Set.of();
         Integer pipe = pipelines.get(p.id);
@@ -471,9 +707,7 @@ public final class FrameExecutor {
         }
         PackData.Unit u = data.units.get(p.unit);
         Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
-        for (GpuBackend.Bind b : set0.values())
-            if (b.image() >= 0)
-                access(b.image(), "STORAGE".equals(b.sampler()) ? "STORAGE_WRITE" : "SAMPLED_READ");
+        accessBinds(set0, "STORAGE_WRITE");
         int[] groups = groups(p, u);
         gpu.dispatch(new GpuBackend.Dispatch(p.id, pipe, groups, set0, binds(p, u, 1), uniformBlock(u, in, false)));
         trace.add("dispatch " + p.id + " " + java.util.Arrays.toString(groups));
@@ -556,6 +790,8 @@ public final class FrameExecutor {
      * otherwise pick a stale or never-written mip (G1 artefact, 2026-11-22: dark texel outlines from composite7 FXAA).
      */
     private Set<String> mipped = Set.of();
+    /** the inputs of the geometry pass being bound (draw textures) */
+    private PackFrameInputs geoIn;
 
     private GpuBackend.Bind resolve(String name, String type, String fmt, boolean storage, Map<String, Object> read) {
         String sampler = storage ? "STORAGE" : type.contains("Shadow") ? "COMPARE"
@@ -580,6 +816,12 @@ public final class FrameExecutor {
                 case "noise" -> h = images.get("noisetex");
                 case "image" -> h = images.get(res);
                 case "custom", "dynamic" -> h = customTexture(name, res, kind);
+                case "geometry" -> {
+                    if (geoIn != null)
+                        h = geoTexture(res, geoIn);
+                    if (sampler.equals("LINEAR"))
+                        sampler = "NEAREST"; // the atlas: vanilla blocks sample NEAREST (mipmapped atlas later)
+                }
                 default -> {
                 }
             }
@@ -696,11 +938,14 @@ public final class FrameExecutor {
                  "modelViewMatrix", "modelViewMatrixInverse", "textureMatrix" -> IDENTITY;
             case "iroh_ProjectionMatrix", "iroh_ModelViewProjectionMatrix", "projectionMatrix" -> ORTHO01;
             case "iroh_NormalMatrix", "normalMatrix" -> new double[]{1, 0, 0, 0, 1, 0, 0, 0, 1};
+            case "iroh_VertexDecode" -> new double[]{1, 0, 0, 0};
             default -> null;
         };
     }
 
     static double[] defaults(String name, String type) {
+        if (name.equals("iroh_VertexDecode"))
+            return new double[]{1, 0, 0, 0};
         if (type.startsWith("mat4"))
             return IDENTITY;
         if (type.startsWith("mat3"))
@@ -769,6 +1014,9 @@ public final class FrameExecutor {
         for (Integer p : pipelines.values())
             gpu.freePipeline(p);
         pipelines.clear();
+        for (Integer vb : vertexBuffers.values())
+            gpu.freeBuffer(vb);
+        vertexBuffers.clear();
         lastAccess.clear();
         prepared = false;
         trace.add("closed");

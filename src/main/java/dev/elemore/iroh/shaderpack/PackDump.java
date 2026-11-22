@@ -143,8 +143,10 @@ public final class PackDump {
     }
 
     static String uniformClass(FrontEnd.PackResult r, String name, String source) {
-        if (source.startsWith("builtin:"))
-            return "compat:" + UniformCatalog.STANDARD.get(name).cost();
+        if (source.startsWith("builtin:")) {
+            UniformCatalog.Std b = UniformCatalog.STANDARD.get(name);
+            return "compat:" + (b != null ? b.cost() : "RENDERER"); // iroh_VertexDecode (P3-5): per draw
+        }
         for (CustomUniforms.Entry e : r.customUniforms.entries)
             if (e.decl.name().equals(name))
                 return "custom:" + e.decl.kind();

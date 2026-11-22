@@ -430,6 +430,7 @@ tasks.register('packReplay', JavaExec) {
 	}
 	if (project.hasProperty('dump')) a << "--dump"
 	if (project.hasProperty('post')) a << "--post"
+	if (project.hasProperty('full')) a << "--full"
 	args a
 	doFirst {
 		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
@@ -524,5 +525,16 @@ tasks.register('packGpuTimesTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.packtest.PackGpuTimesTest'
+	workingDir = projectDir
+}
+
+// P3-5 FULL mode (geometry + shadow + post) on the recording backend. ./gradlew packFullTest
+tasks.register('packFullTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack FULL mode frame on the recording backend'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackFullTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true', '-Ddebug=' + (project.findProperty('debug') ?: 'false')
 	workingDir = projectDir
 }

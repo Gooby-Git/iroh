@@ -29,7 +29,27 @@ public interface GpuBackend extends AutoCloseable {
     record Slot(int set, int binding, String kind, String glslType, String name) {}
 
     record PipelineDesc(String id, byte[] vertexSpirv, byte[] fragmentSpirv, byte[] computeSpirv, List<VertexInput> inputs,
-                        List<String> colourFormats, List<Object> blend, List<Slot> slots) {}
+                        List<String> colourFormats, List<Object> blend, List<Slot> slots, Geo geo) {
+        public PipelineDesc(String id, byte[] vertexSpirv, byte[] fragmentSpirv, byte[] computeSpirv, List<VertexInput> inputs,
+                            List<String> colourFormats, List<Object> blend, List<Slot> slots) {
+            this(id, vertexSpirv, fragmentSpirv, computeSpirv, inputs, colourFormats, blend, slots, null);
+        }
+    }
+
+    /**
+     * P3-5 geometry pipeline state (null = fullscreen quad). layout: {@code wide-terrain} (36-byte WideTerrainVertex,
+     * indexed quads) or {@code float-entity} (later). depthFormat: the depth attachment's VkFormat name (null = none).
+     */
+    record Geo(String layout, String depthFormat, boolean depthTest, boolean depthWrite, boolean cullBack, boolean alphaBlend) {}
+
+    /**
+     * One geometry pass: ONE render pass instance over the colour + depth attachments, one indexed-quad draw per batch
+     * (each with its own uniform block: model-view, vertex decode). Batches in one instance need no barriers between them.
+     */
+    record GeoDraw(String pass, int pipeline, int[] colour, int depth, int[] viewport, Map<Integer, Bind> set0,
+                   Map<Integer, Bind> set1, List<GeoBatch> batches) {}
+
+    record GeoBatch(byte[] uniforms, int vertexBuffer, int quads) {}
 
     /** what feeds one slot: an image (with a sampler kind LINEAR / NEAREST / COMPARE / STORAGE) or a buffer */
     record Bind(int image, String sampler, int buffer) {
@@ -55,6 +75,14 @@ public interface GpuBackend extends AutoCloseable {
     void upload(int image, float[] rgba);
 
     int createBuffer(String name, long bytes);
+
+    /** P3-5: a device vertex buffer filled with {@code data} (geometry replay; in game the section buffers are Iroh's) */
+    int createVertexBuffer(String name, java.nio.ByteBuffer data);
+
+    void freeBuffer(int buffer);
+
+    /** P3-5: records one geometry draw (render pass with depth, LOAD/STORE) */
+    void drawGeometry(GeoDraw d);
 
     int createPipeline(PipelineDesc d);
 

@@ -245,15 +245,82 @@ public final class RecordingBackend implements GpuBackend {
         calls.add("draw " + d.pass());
     }
 
+    /**
+     * One draw/dispatch's image accesses as a unit: an image bound both as storage and as a sampler in the same
+     * program (Navidson's voxel / floodfill volumes) is one read-modify-write by that program, i.e. a write; the
+     * executor's barrier before the draw covers it.
+     */
+    private void bindAccess(Map<Integer, Bind> set0, String pass, Set<Integer> attached) {
+        Set<Integer> stored = new HashSet<>();
+        for (Bind b : set0.values())
+            if (b.image() >= 0 && "STORAGE".equals(b.sampler()))
+                stored.add(b.image());
+        Set<Integer> done = new HashSet<>();
+        for (Bind b : set0.values()) {
+            if (b.image() < 0 || !done.add(b.image()))
+                continue;
+            if (attached.contains(b.image()))
+                violations.add(pass + " samples " + n(b.image()) + " while it is attached (feedback loop)");
+            if (stored.contains(b.image()))
+                write(b.image(), pass);
+            else
+                read(b.image(), pass);
+        }
+    }
+
+    public final List<GeoDraw> geoDraws = new ArrayList<>();
+    private int vertexBuffers;
+    public final Set<Integer> freedBuffers = new HashSet<>();
+
+    @Override
+    public int createVertexBuffer(String name, java.nio.ByteBuffer data) {
+        calls.add("createVertexBuffer " + name + " " + data.remaining());
+        return vertexBuffers++;
+    }
+
+    @Override
+    public void freeBuffer(int buffer) {
+        if (!freedBuffers.add(buffer))
+            violations.add("double free of buffer " + buffer);
+        calls.add("freeBuffer " + buffer);
+    }
+
+    public int liveVertexBuffers() {
+        return vertexBuffers - freedBuffers.size();
+    }
+
+    @Override
+    public void drawGeometry(GeoDraw d) {
+        if (!inFrame)
+            violations.add("geometry outside a frame");
+        Set<Integer> attached = new HashSet<>();
+        for (int c : d.colour())
+            attached.add(c);
+        if (d.depth() >= 0)
+            attached.add(d.depth());
+        bindAccess(d.set0(), d.pass(), attached);
+        for (int c : d.colour()) {
+            ImageDesc cd = imageDescs.get(c);
+            if (!cd.usage().contains("COLOR_ATTACHMENT"))
+                violations.add(d.pass() + " attaches " + cd.name() + " without COLOR_ATTACHMENT usage");
+            write(c, d.pass());
+        }
+        if (d.depth() >= 0) {
+            ImageDesc dd = imageDescs.get(d.depth());
+            if (dd == null || !dd.vkFormat().startsWith("D"))
+                violations.add(d.pass() + " depth attachment " + (dd == null ? "?" : dd.name()) + " is not a depth format");
+            write(d.depth(), d.pass());
+        }
+        for (GeoBatch gb : d.batches())
+            if (freedBuffers.contains(gb.vertexBuffer()) || gb.vertexBuffer() >= vertexBuffers)
+                violations.add(d.pass() + " draws from a freed or unknown vertex buffer " + gb.vertexBuffer());
+        geoDraws.add(d);
+        calls.add("geometry " + d.pass() + " batches " + d.batches().size());
+    }
+
     @Override
     public void dispatch(Dispatch d) {
-        for (Bind b : d.set0().values())
-            if (b.image() >= 0) {
-                if ("STORAGE".equals(b.sampler()))
-                    write(b.image(), d.pass());
-                else
-                    read(b.image(), d.pass());
-            }
+        bindAccess(d.set0(), d.pass(), Set.of());
         for (int g : d.groups())
             if (g <= 0)
                 violations.add(d.pass() + " dispatch with " + g + " groups");

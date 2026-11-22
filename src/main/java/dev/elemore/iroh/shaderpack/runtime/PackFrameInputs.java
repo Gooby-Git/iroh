@@ -34,6 +34,26 @@ public interface PackFrameInputs {
 
     double frameSeconds();
 
+    /**
+     * P3-5 geometry for FULL mode: one entry per draw batch. {@code geometryClass} names a PassGraph.GEOMETRY class
+     * (terrain_solid, terrain_cutout, terrain_translucent, entities, ...); the shadow pass draws the matching casters.
+     * {@code layout} "wide-terrain" = WideTerrainVertex quads; {@code origin} = section origin minus camera position
+     * (blocks, camera-relative, as Iris' chunkOffset).
+     */
+    record Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin) {}
+
+    default java.util.List<Geometry> geometry() {
+        return java.util.List.of();
+    }
+
+    /**
+     * Draw textures for geometry programs ("geo:tex" atlas, "geo:normals", "geo:specular"): pixels via {@link #image}
+     * and {@link #extent} under those names; absent = Iris defaults (normals flat (0.5, 0.5, 1, 1), specular 0).
+     */
+    default java.util.Set<String> geometryTextures() {
+        return java.util.Set.of();
+    }
+
     /** targets / depth images filled by a copy from a backend image (post mode: the raster scene colour and depth) */
     default Map<String, Integer> copySources() {
         return Map.of();

@@ -12,6 +12,7 @@ import dev.elemore.iroh.shaderpack.runtime.GpuBackend;
 import dev.elemore.iroh.shaderpack.runtime.HeadlessVkBackend;
 import dev.elemore.iroh.shaderpack.runtime.PackFrameInputs;
 import dev.elemore.iroh.shaderpack.runtime.SyntheticScene;
+import dev.elemore.iroh.shaderpack.runtime.SyntheticFullScene;
 import dev.elemore.iroh.shaderpack.runtime.TexelCodec;
 
 import javax.imageio.ImageIO;
@@ -74,6 +75,11 @@ public final class PackReplay {
             in = FrameCapture.read(Paths.get(opt.get("capture")));
             w = in.width();
             h = in.height();
+        } else if (opt.containsKey("full")) {
+            // P3-5 FULL mode: real geometry through the shadow pass and gbuffers programs
+            SyntheticFullScene fs = new SyntheticFullScene(data, plan.frames.get(folder), plan.resources.get(folder), w, h);
+            System.out.println("# full mode: " + fs.geometry().size() + " batches, " + fs.quads() + " quads");
+            in = fs;
         } else {
             in = new SyntheticScene(data, plan.frames.get(folder), plan.resources.get(folder), w, h);
             FrameCapture.of(in, name, folder, "synthetic", "SyntheticScene: grass plane, boxes, glowing block, water, sky; undistorted shadow map")
@@ -182,7 +188,7 @@ public final class PackReplay {
             // real captures (G1 capture1, 117 MB, kept OUT of the repo under ~/Projects/proctor) get their own golden by dir name
             String kind = opt.containsKey("capture")
                     ? "capture-" + PackHarness.safe(Paths.get(opt.get("capture")).getFileName().toString().replace(".irohframe", ""))
-                    : opt.containsKey("post") ? "synthetic-post" : "synthetic";
+                    : opt.containsKey("post") ? "synthetic-post" : opt.containsKey("full") ? "synthetic-full" : "synthetic";
             Path golden = Paths.get("src/test/replay").resolve(PackHarness.safe(name) + "-" + folder + "-" + w + "x" + h + "-" + kind + ".golden");
             String mode = opt.get("golden");
             if (mode != null) {

@@ -859,6 +859,10 @@ public final class PackGlsl {
                 block.put("iroh_ModelViewProjectionMatrix", new String[]{"mat4", "", "builtin:gl_ModelViewProjectionMatrix", null});
                 r.builtinsUsed.add("ftransform");
             }
+            if (u.stage == Stage.VERTEX && (u.uses("gl_Vertex") || u.uses("ftransform")))
+                // P3-5: gl_Vertex = raw.xyz * decode.x + decode.yzw (terrain: the wide vertex's int16 positions; float
+                // vertex formats: (1, 0, 0, 0))
+                block.put("iroh_VertexDecode", new String[]{"vec4", "", "builtin:iroh_VertexDecode", null});
         }
         int off = 0;
         for (Map.Entry<String, String[]> e : block.entrySet()) {
@@ -1534,7 +1538,11 @@ public final class PackGlsl {
                     sb.append(declText(d, new HashSet<>())).append('\n');
             if (u.stage == Stage.VERTEX) {
                 for (Map.Entry<String, String[]> e : VERTEX_BUILTIN_INPUTS.entrySet())
-                    if (u.uses(e.getKey()) || (e.getKey().equals("gl_Vertex") && u.uses("ftransform")))
+                    if (e.getKey().equals("gl_Vertex")) {
+                        if (u.uses("gl_Vertex") || u.uses("ftransform"))
+                            // P3-5: decoded in main() before the pack's code (see wrapper)
+                            sb.append("layout(location = 0) in vec4 iroh_InVertex;\nvec4 iris_Vertex;\n");
+                    } else if (u.uses(e.getKey()))
                         sb.append("layout(location = ").append(ATTRIBUTES.get(e.getValue()[0])).append(") in ")
                                 .append(e.getValue()[1]).append(' ').append(e.getValue()[0]).append(";\n");
                 // compat + owed varyings
@@ -1601,6 +1609,8 @@ public final class PackGlsl {
                         sb.append("    ").append(e.getKey()).append(" = ").append(zero(e.getValue()[0], e.getValue()[1])).append(";\n");
                 if (allVaryings.containsKey("iroh_FrontColor") && !u.uses("gl_FrontColor"))
                     sb.append("    iroh_FrontColor = vec4(1.0);\n");
+                if (u.uses("gl_Vertex") || u.uses("ftransform"))
+                    sb.append("    iris_Vertex = vec4(iroh_InVertex.xyz * iroh_VertexDecode.x + iroh_VertexDecode.yzw, 1.0);\n");
             }
             for (String p : prologue)
                 sb.append("    ").append(p).append('\n');
