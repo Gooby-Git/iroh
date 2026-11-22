@@ -249,10 +249,21 @@ public final class FsrReplay {
 
     record RunResult(float[][] outputs, long[] mem, String messages, String version) {}
 
+    /**
+     * P4-1b: when set, the motion vectors are NOT uploaded from the FrameSource: the hook records Iroh's velocity pass
+     * into {@code cmd} (depth already uploaded, SHADER_READ_ONLY; mv image created with STORAGE usage, UNDEFINED), leaves
+     * the mv image in SHADER_READ_ONLY, and the dispatch uses motionVectorScale = render size (Iroh's UV convention).
+     */
+    interface MvHook {
+        void record(int t, float jx, float jy, Img depth, Img mv);
+    }
+
+    static MvHook mvHook;
+
     static RunResult runFsr(int rw, int rh, int dw, int dh, int frames, FrameSource src, boolean zeroJitter, boolean want16, float near, float far, boolean hdr) {
         Img color = image(VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         Img depth = image(VK_FORMAT_D32_SFLOAT, rw, rh, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
-        Img mvI = image(VK_FORMAT_R16G16_SFLOAT, rw, rh, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        Img mvI = image(VK_FORMAT_R16G16_SFLOAT, rw, rh, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | (mvHook != null ? VK_IMAGE_USAGE_STORAGE_BIT : 0), VK_IMAGE_ASPECT_COLOR_BIT);
         Img out = image(VK_FORMAT_R16G16B16A16_SFLOAT, dw, dh, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         Buf bc = buffer((long) rw * rh * 8), bd = buffer((long) rw * rh * 4), bm = buffer((long) rw * rh * 4), bo = buffer((long) dw * dh * 8);
         int flags = FsrUpscaler.AUTO_EXPOSURE | FsrUpscaler.DEBUG_CHECKING | (hdr ? FsrUpscaler.HDR : 0);
@@ -275,7 +286,8 @@ public final class FsrReplay {
                 begin();
                 upload(color, bc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 upload(depth, bd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                upload(mvI, bm, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                if (mvHook != null) mvHook.record(t, j[0], j[1], depth, mvI);
+                else upload(mvI, bm, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 if (!outInit) { layout(out, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); outInit = true; }
                 UpscaleInputs in = new UpscaleInputs();
                 in.commandBuffer = cmd.address();
@@ -284,6 +296,7 @@ public final class FsrReplay {
                 in.motionVectors = new ImageRef(mvI.image(), mvI.format(), rw, rh, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, ImageRef.LAYOUT_SHADER_READ_ONLY);
                 in.output = new ImageRef(out.image(), out.format(), dw, dh, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, ImageRef.LAYOUT_GENERAL);
                 in.jitterX = j[0]; in.jitterY = j[1];
+                if (mvHook != null) { in.motionVectorScaleX = rw; in.motionVectorScaleY = rh; }
                 in.renderWidth = rw; in.renderHeight = rh; in.displayWidth = dw; in.displayHeight = dh;
                 in.frameTimeMs = 16.6f; in.cameraNear = near; in.cameraFar = far; in.cameraFovYRadians = (float) Math.toRadians(60);
                 in.reset = t == 0;
