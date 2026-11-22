@@ -27,13 +27,18 @@ public final class DeviceCaps {
     /** VK_FORMAT_R16G16_SFLOAT supports STORAGE_IMAGE with optimal tiling */
     public static boolean rg16fStorage;
 
-    /** decision taken before device creation (reads only system properties: no game state) */
+    /** P4-1b: set from iroh.json before the device is created (the upscaler setting is not Off) */
+    public static volatile boolean configRequested;
+
+    /** decision taken before device creation (system properties + {@link #configRequested}: no game state) */
     public static boolean shouldEnable() {
         String f = DebugSwitches.getOr(UpscaleSwitches.FEATURES, "auto");
         if (f.equals("on"))
             return true;
         if (f.equals("off"))
             return false;
+        if (configRequested)
+            return true;
         ScaleMode m = ScaleMode.parse(System.getProperty(UpscaleSwitches.MODE));
         return m != null && m.on();
     }

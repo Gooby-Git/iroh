@@ -178,20 +178,27 @@ public abstract class Options {
         };
     }
 
-    /** Placeholder section: every line is greyed with the reason its availability predicate gives. */
+    /**
+     * The Iroh section (owner decision "Settings UI", 2026-11-21): no shader selection screen. ONE look switch (ray
+     * tracing <-> Navidson; greyed until both exist), the upscaler rows (P4-1b: live, wired to the runtime switches by
+     * UpscaleSettings, unavailable choices name their reason) and frame generation (greyed until Phase 8). Navidson's
+     * own options get no screen.
+     */
     public static OptionBlock[] getShadersOpts() {
-        InfoOption pack = info("shaders.pack", () -> {
-            String p = IrohOptions.config().shaderPack;
-            return p.isEmpty() ? reasonOr(Availability.shaderPacks(), "iroh.shaders.available")
-                    : Component.translatable("iroh.shaders.pack.value", p);
-        }).setUnavailable(Availability::shaderPacks);
-        InfoOption upscaler = info("shaders.upscaler", () -> reasonOr(Availability.upscaler(), "iroh.shaders.available"))
-                .setUnavailable(Availability::upscaler);
-        InfoOption rt = info("shaders.rayTracing", () -> reasonOr(Availability.rayTracing(), "iroh.shaders.available"))
-                .setUnavailable(Availability::rayTracing);
+        InfoOption look = info("look", () -> reasonOr(lookReason(), "iroh.shaders.available"))
+                .setUnavailable(Options::lookReason);
         InfoOption fg = info("shaders.frameGeneration", () -> reasonOr(Availability.frameGeneration(), "iroh.shaders.available"))
                 .setUnavailable(Availability::frameGeneration);
-        return new OptionBlock[]{new OptionBlock("", new Option<?>[]{pack, upscaler, rt, fg})};
+        return new OptionBlock[]{
+                new OptionBlock("", new Option<?>[]{look}),
+                new OptionBlock("", new Option<?>[]{toOption(IrohOptions.UPSCALER), toOption(IrohOptions.UPSCALE_QUALITY),
+                        toOption(IrohOptions.UPSCALE_SHARPNESS), fg})};
+    }
+
+    /** RT <-> Navidson: needs the hardware for RT and both looks built; Navidson alone is not a choice yet either. */
+    static Component lookReason() {
+        Component rt = Availability.rayTracing();
+        return rt != null ? rt : Availability.shaderPacks();
     }
 
     public static OptionBlock[] getAdvancedOpts() {

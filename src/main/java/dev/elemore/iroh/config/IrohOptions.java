@@ -258,6 +258,9 @@ public final class IrohOptions {
     public static final Opt<DeferMode> CHUNK_BUILD_DEFER_MODE;
     public static final Opt<String> SHADER_PACK;
     public static final Opt<Boolean> SHADERS_ENABLED;
+    public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Upscaler> UPSCALER;
+    public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Quality> UPSCALE_QUALITY;
+    public static final Opt<Integer> UPSCALE_SHARPNESS;
 
     // ---- stored by vanilla, shown on the screen ----
     public static final Opt<Integer> FRAMERATE_LIMIT;
@@ -379,6 +382,38 @@ public final class IrohOptions {
         SHADER_PACK = stringOpt("shaderPack");
         SHADERS_ENABLED = bool("shadersEnabled", Category.SHADERS, false, c -> c.shadersEnabled, (c, v) -> c.shadersEnabled = v);
         SHADERS_ENABLED.storage = Storage.READ_ONLY;
+
+        // ---- P4-1b: the Iroh section (upscaler); wired to the runtime switches by UpscaleSettings ----
+        UPSCALER = enumOpt("upscaler", Category.SHADERS, dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.class,
+                dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.OFF,
+                c -> parse(dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.class, c.upscaler, dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.OFF),
+                (c, v) -> c.upscaler = v.name());
+        UPSCALER.name("iroh.options.upscaler").tooltip("iroh.options.upscaler.tooltip")
+                .label(v -> Component.translatable("iroh.options.upscaler." + v.name().toLowerCase()))
+                .choiceUnavailable(dev.elemore.iroh.temporal.UpscaleSettings::upscalerReason);
+        UPSCALER.applier = v -> {
+            config.upscaler = v.name();
+            dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
+        };
+        UPSCALE_QUALITY = enumOpt("upscaleQuality", Category.SHADERS, dev.elemore.iroh.temporal.UpscaleSettings.Quality.class,
+                dev.elemore.iroh.temporal.UpscaleSettings.Quality.QUALITY,
+                c -> parse(dev.elemore.iroh.temporal.UpscaleSettings.Quality.class, c.upscaleQuality, dev.elemore.iroh.temporal.UpscaleSettings.Quality.QUALITY),
+                (c, v) -> c.upscaleQuality = v.name());
+        UPSCALE_QUALITY.name("iroh.options.upscaleQuality").tooltip("iroh.options.upscaleQuality.tooltip")
+                .label(v -> Component.translatable("iroh.options.upscaleQuality." + v.name().toLowerCase()))
+                .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.qualityReason(config));
+        UPSCALE_QUALITY.applier = v -> {
+            config.upscaleQuality = v.name();
+            dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
+        };
+        UPSCALE_SHARPNESS = integer("upscaleSharpness", Category.SHADERS, 0, c -> c.upscaleSharpness, (c, v) -> c.upscaleSharpness = v);
+        UPSCALE_SHARPNESS.name("iroh.options.upscaleSharpness").tooltip("iroh.options.upscaleSharpness.tooltip").range(0, 100, 10)
+                .label(v -> v == 0 ? Component.translatable("options.off") : Component.literal(v + "%"))
+                .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.sharpnessReason(config));
+        UPSCALE_SHARPNESS.applier = v -> {
+            config.upscaleSharpness = v;
+            dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
+        };
 
         // ---- vanilla-backed ----
         FRAMERATE_LIMIT = vanilla("framerateLimit", Category.VIDEO, Integer.class, 120,
@@ -610,6 +645,7 @@ public final class IrohOptions {
             LOGGER.warn("Capability report failed: {}", t.toString());
         }
         if (LEAVES_QUALITY.get() != LeavesQuality.DEFAULT) refreshLeaves(false);
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(config); // P4-1b: no-op while the upscaler is Off
         // P1-11: the meshers read vanilla's Smooth Lighting boolean (Minecraft.useAmbientOcclusion) for on/off and Iroh's
         // ambientOcclusion for the sub-block mode. The screen shows iroh.json, so make the boolean agree with it at boot;
         // before this a stale options.txt value could leave the screen on "On" with flat lighting.
@@ -654,6 +690,8 @@ public final class IrohOptions {
         if (Files.isRegularFile(file)) {
             readFile(file, log);
             applyLeafCulling(false);
+            // P4-1b: the upscaler choice is known before the Vulkan device exists (device features are enabled at creation)
+            dev.elemore.iroh.temporal.DeviceCaps.configRequested = dev.elemore.iroh.temporal.UpscaleSettings.wantsDeviceFeatures(config);
             return log;
         }
         log.add("no " + FILE + ": first run");
