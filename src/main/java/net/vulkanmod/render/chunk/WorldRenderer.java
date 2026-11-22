@@ -72,9 +72,8 @@ public class WorldRenderer {
 
     private SectionGraph sectionGraph;
     private boolean graphNeedsUpdate;
-    /** perf/hitches (graph cache): uploaded / edited sections may have changed connectivity; see GraphRefresh. */
+    /** perf/hitches (graph cache): a full (non translucent-resort) section upload may have changed connectivity. */
     private boolean graphStructureDirty = true;
-    private long lastFullGraphNs = -1, lastPlayerEditNs = -1;
 
     private final Set<BlockEntity> globalBlockEntities = Sets.newHashSet();
 
@@ -206,15 +205,11 @@ public class WorldRenderer {
                     dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.GRAPH_UPDATES, 1);
                     dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.GRAPH_UPDATE);
                 }
-                long nowNs = System.nanoTime();
-                boolean refresh = !net.vulkanmod.render.chunk.graph.SectionGraph.CACHE
-                        || dev.elemore.iroh.perf.GraphRefresh.refreshNow(this.graphStructureDirty, nowNs, this.lastFullGraphNs, this.lastPlayerEditNs);
-                if (refresh) {
-                    this.graphStructureDirty = false;
-                    this.lastFullGraphNs = nowNs;
-                } else if (this.graphStructureDirty) {
-                    this.graphNeedsUpdate = true; // the walk is still owed: come back next frame
-                }
+                // hitches2 (block 7 verify: the 100 ms refresh throttle lost up to 229 visible sections): with the graph
+                // cache, ANY structural upload since the last walk forces a full walk, so a filter pass only ever runs
+                // on an unchanged graph and equals a fresh full walk by construction.
+                boolean refresh = !net.vulkanmod.render.chunk.graph.SectionGraph.CACHE || this.graphStructureDirty;
+                this.graphStructureDirty = false;
                 this.sectionGraph.update(camera, frustum, spectator, refresh);
                 this.waitForImportantRebuilds(camera, frustum, spectator);
                 if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.GRAPH_UPDATE);
@@ -302,7 +297,7 @@ public class WorldRenderer {
         try {
             if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections()) {
                 this.graphNeedsUpdate = true;
-                this.graphStructureDirty = true; // perf/hitches: connectivity may have changed
+                if (this.taskDispatcher.takeStructuralUpload()) this.graphStructureDirty = true; // connectivity may have changed
             }
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
@@ -599,7 +594,6 @@ public class WorldRenderer {
 
     public void setSectionDirty(int x, int y, int z, boolean flag) {
         if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK); // perf/hitches
-        if (flag) this.lastPlayerEditNs = System.nanoTime(); // perf/hitches: the player's edit shows without the refresh delay
         this.sectionGrid.setDirty(x, y, z, flag);
 
         this.renderRegionCache.remove(x, z);

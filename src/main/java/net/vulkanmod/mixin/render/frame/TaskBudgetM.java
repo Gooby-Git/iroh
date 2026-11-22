@@ -12,14 +12,33 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * perf/hitches: the per-frame task drain of Minecraft.runTick goes through {@link TaskBudget} (in order, time budgeted,
+ * perf/hitches (v2, OFF by default: -Diroh.tasks.budget=true): the per-frame task drain of Minecraft.runTick goes through {@link TaskBudget} (in order, time budgeted,
  * hard latency bound). Only this call site: every other runAllTasks caller (disconnect, managed blocks, loading) still
- * drains fully. Off with {@code -Diroh.tasks.budget=false}. Also times the drain for -Diroh.slowFrames.
+ * drains fully. Also times the drain for -Diroh.slowFrames.
  */
 @Mixin(value = Minecraft.class, priority = 900)
 public abstract class TaskBudgetM {
     @Unique private static TaskBudget iroh$budget;
-    @Unique private static long iroh$sleepStart;
+    @Unique private static long iroh$sleepStart, iroh$tickStart;
+    private static final String ADVANCE = "Lnet/minecraft/client/DeltaTracker$Timer;advanceTime(JZ)I";
+    private static final String TICK = "Lnet/minecraft/client/Minecraft;tick()V";
+
+    /** v2: the ticks this frame will run are known before the drain. */
+    @com.llamalad7.mixinextras.injector.ModifyExpressionValue(method = "runTick", at = @At(value = "INVOKE", target = ADVANCE), require = 0)
+    private int iroh$ticksPlanned(int ticks) {
+        if (TaskBudget.ENABLED && iroh$budget != null) iroh$budget.ticksPlanned(Math.min(ticks, 10));
+        return ticks;
+    }
+
+    @Inject(method = "runTick", at = @At(value = "INVOKE", target = TICK), require = 0)
+    private void iroh$tickIn(boolean tick, CallbackInfo ci) {
+        if (TaskBudget.ENABLED) iroh$tickStart = System.nanoTime();
+    }
+
+    @Inject(method = "runTick", at = @At(value = "INVOKE", target = TICK, shift = At.Shift.AFTER), require = 0)
+    private void iroh$tickOut(boolean tick, CallbackInfo ci) {
+        if (TaskBudget.ENABLED && iroh$budget != null) iroh$budget.tickDone(System.nanoTime() - iroh$tickStart);
+    }
     private static final String LIMIT = "Lcom/mojang/blaze3d/systems/RenderSystem;limitDisplayFPS(I)V";
 
     @Inject(method = "runTick", at = @At(value = "INVOKE", target = LIMIT), require = 0)

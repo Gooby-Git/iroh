@@ -131,9 +131,9 @@ public class RenderRegionBuilder {
      * sections around its section (27 PalettedContainer copies); neighbouring rebuilds copied the same sections again, up
      * to 27 times (block 6: 300-500 rebuilds pending, 17-36 MB allocated in a slow frame). A copy is read-only for the
      * builders, so one copy per section per batch is shared. The cache lives for one scheduling batch
-     * ({@link #beginBatch}) and is dropped whenever a block changes ({@link #remove}). Off: -Diroh.graph.cloneCache=false.
+     * ({@link #beginBatch}) and is dropped whenever a block changes ({@link #remove}). On: -Diroh.graph.cloneCache=true (default off).
      */
-    public static final boolean CLONE_CACHE = !"false".equals(System.getProperty("iroh.graph.cloneCache"));
+    public static final boolean CLONE_CACHE = Boolean.getBoolean("iroh.graph.cloneCache"); // hitches2: off by default
     private final it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap<PalettedContainer<BlockState>> clones =
             new it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap<>();
     public int clonesMade, clonesShared;

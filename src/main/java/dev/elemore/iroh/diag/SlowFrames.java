@@ -154,6 +154,7 @@ public final class SlowFrames {
         allocStart = ALLOC.getAsLong();
         frameStart = CLOCK.getAsLong();
         if (lastSummary == 0) lastSummary = frameStart;
+        if (SlowStacks.ON) SlowStacks.frameStart(System.nanoTime()); // hitches2
     }
 
     /** Minecraft.runTick RETURN. */
@@ -171,6 +172,7 @@ public final class SlowFrames {
         cpuNs[head] = CPU.getAsLong() - cpuStart;
         allocBytes[head] = ALLOC.getAsLong() - allocStart;
         if (wall > threshold()) slowFrame(head);
+        if (SlowStacks.ON) SlowStacks.frameEnd();
         if (now - lastSummary >= SUMMARY_EVERY_NS) {
             SINK.accept(summary("60 s"));
             lastSummary = now;
@@ -192,6 +194,7 @@ public final class SlowFrames {
         stackPhase[depth] = p.ordinal();
         stackChildren[depth] = 0;
         stackStart[depth++] = CLOCK.getAsLong();
+        if (SlowStacks.ON) SlowStacks.phase(p.ordinal());
     }
 
     /** Closes {@code p} (and anything opened inside it that was not closed). */
@@ -202,6 +205,7 @@ public final class SlowFrames {
         if (k < 0) return; // never entered (started before the frame): ignore
         long now = CLOCK.getAsLong();
         while (depth > k) exitTop(now);
+        if (SlowStacks.ON) SlowStacks.phase(depth > 0 ? stackPhase[depth - 1] : -1);
     }
 
     private static void exitTop(long now) {
@@ -358,6 +362,7 @@ public final class SlowFrames {
             }
         }
         if (slowestHook != null) b.append("; slowest hook ").append(name(slowestHook)).append(' ').append(ms(slowestHookNs));
+        if (SlowStacks.ON) b.append(SlowStacks.report()); // hitches2: what the render thread did / waited on
         SINK.accept(b.toString());
     }
 

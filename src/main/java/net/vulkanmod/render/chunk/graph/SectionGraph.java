@@ -62,7 +62,7 @@ public class SectionGraph {
     }
 
     /**
-     * perf/hitches: visibility cached per camera section (-Diroh.graph.cache, default on). A FULL update walks the
+     * perf/hitches: visibility cached per camera section (-Diroh.graph.cache=true, default off). A FULL update walks the
      * occlusion graph from the camera section without frustum pruning (in all directions) and keeps the visited list; any
      * other update only re-applies the frustum to that list (same per-section work: draw queues, block entities, dirty
      * sections). The walk itself does not depend on where the camera is inside its section or where it looks, so between
@@ -72,7 +72,7 @@ public class SectionGraph {
      * edited: connectivity may have changed). Turning, even 180 degrees, is a filter pass over a list that already
      * holds every direction: no hole, no frame of lag.
      */
-    public static final boolean CACHE = !"false".equals(System.getProperty("iroh.graph.cache"));
+    public static final boolean CACHE = Boolean.getBoolean("iroh.graph.cache"); // hitches2: off by default
     private boolean cacheValid;
     private int cacheSecX, cacheSecY, cacheSecZ;
     private boolean cacheSmartCull;
@@ -369,9 +369,9 @@ public class SectionGraph {
      * rebuild copies its 3x3x3 block data on the render thread NOW, so scheduling hundreds ahead of the builders cost
      * render-thread time and memory for copies that are often re-dirtied before a builder reaches them. Sections not
      * scheduled stay dirty and are picked up by the next update (nearest first: the queue is in graph order). Important
-     * (waited-for) rebuilds are never limited. Off: -Diroh.graph.rebuildBudget=false.
+     * (waited-for) rebuilds are never limited. On: -Diroh.graph.rebuildBudget=true (default off).
      */
-    static final boolean REBUILD_BUDGET = !"false".equals(System.getProperty("iroh.graph.rebuildBudget"));
+    static final boolean REBUILD_BUDGET = Boolean.getBoolean("iroh.graph.rebuildBudget"); // hitches2: off by default
 
     /** Pure rule (tested): how many more async rebuilds to schedule this update. */
     public static int rebuildAllowance(int pending, int activeBuilders) {

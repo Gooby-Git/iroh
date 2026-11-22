@@ -18,20 +18,23 @@ import java.util.concurrent.TimeUnit;
  * elemore-core's ThreadTuner keeps listed background threads off the highest physical core (the render thread's), but
  * its list has Sodium's "Chunk Render", not Iroh's "Builder-". Java thread priorities are no-ops on Linux.
  * <ul>
- *   <li>{@code -Diroh.threads.tune=false}: off (no renice, no affinity).</li>
+ *   <li>{@code -Diroh.threads.tune=true}: on (default off since block 7).</li>
  *   <li>Linux: each builder lowers itself with {@code renice -n <iroh.threads.builderNice, default 4>} (raising nice needs
  *       no privilege) and, with 4+ physical cores, stays off the highest-numbered physical core
  *       ({@code taskset -p -c <other cpus>}): the SAME core elemore-core reserves, picked by the same rule, so the two never
  *       disagree. Applied once per thread from a daemon ("iroh-threads"), never from the render thread.</li>
  *   <li>Builder count ({@link #baseBuilders}, {@link #maxBuilders}): base = the configured count, or (physical cores - 2) / 2
  *       (render + server keep a core each, the rest is shared with worldgen), at least 1. With
- *       {@code iroh.threads.adaptive} (default true) up to min(physical - 2, 6) builders run while the backlog is large
+ *       {@code iroh.threads.adaptive} (default false) up to min(physical - 2, 6) builders run while the backlog is large
  *       ({@link Adaptive}): 6C/12T -> 2 normally, 4 during flight backlogs.</li>
  * </ul>
  */
 public final class ThreadPolicy {
-    public static final boolean TUNE = !"false".equals(System.getProperty("iroh.threads.tune"));
-    public static final boolean ADAPTIVE = !"false".equals(System.getProperty("iroh.threads.adaptive"));
+    // hitches2: every switch OFF by default (block 7: unproven; the jar's default equals rc14). Enable one at a time.
+    public static final boolean TUNE = Boolean.getBoolean("iroh.threads.tune");
+    public static final boolean ADAPTIVE = Boolean.getBoolean("iroh.threads.adaptive");
+    /** Builder count from physical cores ((P-2)/2) instead of the base's (logical-1)/2 when the config says auto. */
+    public static final boolean PHYSICAL_COUNT = Boolean.getBoolean("iroh.threads.physicalCount");
     public static final boolean KEEP_OFF_RENDER_CORE = !"false".equals(System.getProperty("iroh.threads.keepOffRenderCore"));
     public static final int BUILDER_NICE = Integer.getInteger("iroh.threads.builderNice", 4);
     private static final boolean LINUX = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("linux");
@@ -44,6 +47,12 @@ public final class ThreadPolicy {
     public static int baseBuilders(int configured, int physicalCores) {
         if (configured > 0) return configured;
         return Math.max(1, (physicalCores - 2) / 2);
+    }
+
+    /** The base's rule (rc14): configured, else (logical cores - 1) / 2. */
+    public static int legacyBuilders(int configured, int logicalCores) {
+        if (configured > 0) return configured;
+        return Math.max((logicalCores - 1) / 2, 1);
     }
 
     /** Builders allowed while the backlog is large. */

@@ -77,7 +77,9 @@ public class TaskDispatcher {
         // perf/hitches: count from physical cores (ThreadPolicy), configured count = the base; adaptive extra builders
         // run only while the backlog is large
         int physical = dev.elemore.iroh.perf.ThreadPolicy.physicalCores();
-        int base = dev.elemore.iroh.perf.ThreadPolicy.baseBuilders(n, physical);
+        int base = dev.elemore.iroh.perf.ThreadPolicy.PHYSICAL_COUNT
+                ? dev.elemore.iroh.perf.ThreadPolicy.baseBuilders(n, physical)
+                : dev.elemore.iroh.perf.ThreadPolicy.legacyBuilders(n, Runtime.getRuntime().availableProcessors()); // rc14
         int max = dev.elemore.iroh.perf.ThreadPolicy.maxBuilders(base, physical, dev.elemore.iroh.perf.ThreadPolicy.ADAPTIVE);
         this.adaptive = max > base ? new dev.elemore.iroh.perf.ThreadPolicy.Adaptive(base, max) : null;
         this.activeLimit = base;
@@ -266,6 +268,15 @@ public class TaskDispatcher {
         return flag;
     }
 
+    private boolean structuralUpload;
+
+    /** perf/hitches: whether a full section result (not a translucent resort) was applied since the last call. */
+    public boolean takeStructuralUpload() {
+        boolean b = this.structuralUpload;
+        this.structuralUpload = false;
+        return b;
+    }
+
     /** Bytes of the results uploaded in the current updateSections call (budget). */
     private long approxBytes;
 
@@ -291,6 +302,7 @@ public class TaskDispatcher {
         }
 
         if(compileResult.fullUpdate) {
+            this.structuralUpload = true; // perf/hitches: visibility / emptiness may have changed (graph cache)
             var renderLayers = compileResult.renderedLayers;
             for(TerrainRenderType renderType : TerrainRenderType.VALUES) {
                 UploadBuffer uploadBuffer = renderLayers.get(renderType);

@@ -151,6 +151,31 @@ public final class SlowFramesTest {
         SlowFrames.quit();
         check("summary at quit", last().startsWith("[iroh-slow] summary (quit)"));
 
+        // 7. hitches2: the stack sampler names a lock wait and its owner (a "render" thread blocked 40 ms on a monitor)
+        Object lock = new Object();
+        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+        Thread owner = new Thread(() -> {
+            synchronized (lock) {
+                held.countDown();
+                try { Thread.sleep(60); } catch (InterruptedException ignored) {}
+            }
+        }, "light-engine-owner");
+        String[] rep = {""};
+        Thread renderT = new Thread(() -> {
+            try { held.await(); } catch (InterruptedException ignored) {}
+            SlowStacks.frameStart(System.nanoTime());
+            synchronized (lock) { /* blocked until the owner lets go */ }
+            rep[0] = SlowStacks.report();
+            SlowStacks.frameEnd();
+        }, "fake-render");
+        owner.start();
+        renderT.start();
+        renderT.join();
+        owner.join();
+        System.out.println("    " + rep[0]);
+        check("stack sampler: BLOCKED samples name the lock and its owner thread", rep[0].contains("BLOCKED") && rep[0].contains("owned by light-engine-owner"));
+        check("stack sampler: leaf / first non-JDK frames listed", rep[0].contains("; leaf:") && rep[0].contains("SlowFramesTest"));
+
         System.out.println("# slowframes " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
     }
