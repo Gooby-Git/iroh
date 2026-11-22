@@ -127,7 +127,7 @@ public final class RtEntityReplay {
         metric(String.format(Locale.ROOT, "(A) entity motion vectors: %d px, mean |mv| %.3f px, error mean %.4f px, max %.4f px (camera static: pure object motion)",
                 mvPixels, mvMean / Math.max(1, mvPixels), mvErrSum / Math.max(1, mvPixels), mvErrMax));
         check("(A) entities cast RT sun shadows every frame (" + totalEntShadow / WALK + " px/frame >= 30 at 160x90)", totalEntShadow / WALK >= 30);
-        check("(A) hard entity shadows equal the CPU reference (worst frame " + worstMismatch + " px <= 6)", worstMismatch <= 6);
+        check("(A) hard entity shadows equal the CPU reference (worst frame " + worstMismatch + " px <= 12 of 14400; the GPU lifts surfaces by viewZ*1e-4, RQ-P53-b)", worstMismatch <= 12);
         check("(A) RT G-buffer sees the posed parts where the CPU does (primary mismatches " + primMismatch + " <= 0.2%)", primMismatch <= 0.002 * WALK * gpu.N);
         check("(A) entity motion vectors follow the part poses (mean error " + f(mvErrSum / Math.max(1, mvPixels)) + " px <= 0.02)", mvPixels > 100 && mvErrSum / mvPixels <= 0.02);
         light.sunRadius = radius;

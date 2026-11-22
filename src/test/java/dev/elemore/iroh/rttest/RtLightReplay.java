@@ -83,10 +83,27 @@ public final class RtLightReplay {
                 metric(String.format(Locale.ROOT, "  diagnostic: CPU light-list estimator (power CDF + area sampling, 256 spp) vs CPU brute force: bias %+.4f; vs GPU reference: bias %+.4f",
                         RtImg.err(cpuPow, cpu, mask)[1], RtImg.err(cpuPow, refA, mask)[1]));
                 // Gate only where the CPU light-list estimator is usable (cave): the night's torches make its area-sampling tail
-                // explode (+93%), and the HALL shows an UNRESOLVED -11% GPU deficit against both CPU estimators (knowledge/rt-iroh.md)
+                // explode (+93%); the hall is gated per surface orientation below (RQ-P53-b)
                 if (s.name.contains("cave"))
                     check("(" + s.name + ") GPU RIS reference agrees with the CPU light-list estimator on the image mean (" + String.format(Locale.ROOT, "%+.4f", -RtImg.err(cpuPow, refA, mask)[1]) + " within 2%)", Math.abs(RtImg.err(cpuPow, refA, mask)[1]) <= 0.02);
-                if (s.name.equals("hall")) metric("  UNRESOLVED: in the hall the GPU block-light estimator (RIS and every reuse variant alike) is ~11% below BOTH CPU estimators; see knowledge/rt-iroh.md");
+                if (s.name.equals("hall")) {   // RQ-P53-b gate: per surface orientation against the CPU light-list estimator
+                    String[] nm = {"floor(+y)", "ceiling(-y)", "wall x", "wall z"};
+                    double[] rat = new double[4];
+                    for (int g = 0; g < 4; g++) {
+                        double a = 0, b = 0, c2 = 0; int n = 0;
+                        for (int i = 0; i < mask.length; i++) {
+                            if (!mask[i]) continue;
+                            double[] nn = prim[i].n;
+                            int grp = nn[1] > 0.5 ? 0 : nn[1] < -0.5 ? 1 : Math.abs(nn[0]) > 0.5 ? 2 : 3;
+                            if (grp != g) continue;
+                            a += RtImg.lum(refA, i); b += RtImg.lum(cpuPow, i); c2 += RtImg.lum(cpu, i); n++;
+                        }
+                        rat[g] = a / b;
+                        metric(String.format(Locale.ROOT, "  per orientation %-11s n=%5d GPU/CPU-lightlist %.3f GPU/CPU-brute %.3f", nm[g], n, a / b, a / c2));
+                    }
+                    check("(hall) GPU block light matches the CPU light-list estimator on floor and walls within 3% (RQ-P53-b: " + String.format(Locale.ROOT, "%.3f %.3f %.3f", rat[0], rat[2], rat[3])
+                            + "; ceiling pixels next to lamp faces are judged by the brute force: the light list's area-sampling tail spikes there)", Math.abs(rat[0] - 1) <= 0.03 && Math.abs(rat[2] - 1) <= 0.03 && Math.abs(rat[3] - 1) <= 0.03);
+                }
                 double[][] rows = new double[VARIANTS.size()][];
                 float[] lastRis = null, lastRestir = null;
                 for (int v = 0; v < VARIANTS.size(); v++) {

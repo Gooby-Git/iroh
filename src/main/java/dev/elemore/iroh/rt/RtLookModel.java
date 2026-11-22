@@ -195,7 +195,7 @@ public final class RtLookModel {
     }
 
     /** Calibrated day exposure (P5-2, measured: see autoExposure). */
-    public static final float EXPOSURE_DAY = 0.90f;
+    public static final float EXPOSURE_DAY = 0.80f;   // P5-3: 0.90 -> 0.80 after the RQ-P53-b self-shadowing fix brightened sunlit far terrain (calibration 1.129 -> back to ~1.0)
     /** Log-average luminance of the calibration day view at exposure 1 (P5-2 measurement). */
     public static final float LOGAVG_DAY = 0.21f;
     public static final float ADAPT_MIN = 0.85f, ADAPT_MAX = 1.6f;

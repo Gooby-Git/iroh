@@ -292,5 +292,9 @@ Surf surface(uvec2 px) {
     s.skyOpen = ((g.y >> 30) & 1u) != 0u;
     s.mv = unpackHalf2x16(g.w);
     s.pos = fr.camPos.xyz + s.dir * (s.viewZ / dot(s.dir, fr.camFwd.xyz));
+    // P5-3 (RQ-P53-b): the reconstructed position is off the surface by float error that grows with distance (invViewProj
+    // far-plane unprojection); past ~30 blocks it fell BEHIND walls, the EPS-offset shadow rays started inside the block and
+    // every light sample was occluded (hall: x=40/47 walls exactly 0, image -12%). Lift by a distance-scaled epsilon.
+    s.pos += s.n * (s.viewZ * 1e-4);
     return s;
 }
