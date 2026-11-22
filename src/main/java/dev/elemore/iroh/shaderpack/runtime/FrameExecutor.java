@@ -74,7 +74,28 @@ public final class FrameExecutor {
     /** image key (target#half, depthtex0, shadowtex1, noisetex, custom name, dummy:...) -> handle */
     public final Map<String, Integer> images = new TreeMap<>();
     private final Map<String, Integer> pipelines = new LinkedHashMap<>();
-    private final Map<Integer, String> lastAccess = new HashMap<>();
+    /** last access kind per backend image handle (P3-8: an array, not a map: no allocation per frame) */
+    private final LastAccess lastAccess = new LastAccess();
+
+    static final class LastAccess {
+        String[] kinds = new String[256];
+
+        String get(int i) {
+            return i >= 0 && i < kinds.length ? kinds[i] : null;
+        }
+
+        void put(int i, String k) {
+            if (i < 0)
+                return;
+            if (i >= kinds.length)
+                kinds = java.util.Arrays.copyOf(kinds, Math.max(i + 1, kinds.length * 2));
+            kinds[i] = k;
+        }
+
+        void clear() {
+            java.util.Arrays.fill(kinds, null);
+        }
+    }
     private final Map<String, Integer> uniformBuffers = new HashMap<>();
     private int width, height;
     private boolean prepared;
@@ -101,6 +122,8 @@ public final class FrameExecutor {
     public boolean reuseShadow;
     /** keep the trace across frames (offline tools only) */
     public boolean keepTrace;
+    /** record the trace at all (P3-8: the game turns it off; strings are not even built then) */
+    public boolean tracing = true;
     private boolean postCut;
     private int displayW, displayH;
     private final Set<String> displayKeys = new java.util.TreeSet<>();
@@ -267,6 +290,19 @@ public final class FrameExecutor {
         return out;
     }
 
+    /** P3-8: whether a geometry pass has batches, from a per-pass answer cached while the geometry list is the same object */
+    private final Map<PassGraph.Pass, Object[]> hasBatchesCache = new java.util.IdentityHashMap<>();
+
+    private boolean hasBatches(PassGraph.Pass p, PackFrameInputs in) {
+        List<PackFrameInputs.Geometry> all = in.geometry();
+        Object[] c = hasBatchesCache.get(p);
+        if (c == null || c[0] != all) {
+            c = new Object[]{all, !batchesFor(p, in).isEmpty()};
+            hasBatchesCache.put(p, c);
+        }
+        return (Boolean) c[1];
+    }
+
     boolean shadowPass(PassGraph.Pass p) {
         return p.id.startsWith("shadow:");
     }
@@ -341,44 +377,66 @@ public final class FrameExecutor {
         gpu.beginFrame();
         lastAccess.clear();
         postCut = false;
-        trace.add("frame start=" + in.startStage() + " size=" + width + "x" + height);
+        if (tracing) trace.add("frame start=" + in.startStage() + " size=" + width + "x" + height);
         int start = STAGES.indexOf(in.startStage());
 
         // halves at the start stage: flips of passes before it (begin/prepare) are replayed from the plan
-        Set<String> flippedBefore = new LinkedHashSet<>();
-        for (PassGraph.Pass p : frame.passes) {
-            if (STAGES.indexOf(p.stage) >= start)
-                break;
-            for (String t : p.flipsAfter)
-                if (!flippedBefore.remove(t))
-                    flippedBefore.add(t);
+        Set<String> flippedBefore = flippedCache.get(start);
+        if (flippedBefore == null) {
+            flippedBefore = new LinkedHashSet<>();
+            for (PassGraph.Pass p : frame.passes) {
+                if (STAGES.indexOf(p.stage) >= start)
+                    break;
+                for (String t : p.flipsAfter)
+                    if (!flippedBefore.remove(t))
+                        flippedBefore.add(t);
+            }
+            flippedCache.put(start, flippedBefore);
         }
-        // clears: targets with clear=true that the inputs do not supply (both halves)
-        JsonObject targets = targetsJson();
-        for (Map.Entry<String, PassGraph.Target> e : frame.targets.entrySet()) {
-            PassGraph.Target t = e.getValue();
-            if (!t.clear || in.suppliedImages().contains(t.name) || (t.writers.isEmpty() && t.readers.isEmpty()))
-                continue;
-            if (reuseShadow && t.name.startsWith("shadowcolor"))
-                continue;
-            float[] cc = clearColour(t, targets, in);
-            for (String key : keysOf(t.name)) {
-                Integer h = images.get(key);
-                if (h == null)
+        // clears: targets with clear=true that the inputs do not supply (both halves); planned once per inputs shape
+        Set<String> supplied = in.suppliedImages();
+        if (clearPlan == null || clearPlanSupplied != supplied || clearPlanReuse != reuseShadow) {
+            clearPlan = new ArrayList<>();
+            clearPlanSupplied = supplied;
+            clearPlanReuse = reuseShadow;
+            for (Map.Entry<String, PassGraph.Target> e : frame.targets.entrySet()) {
+                PassGraph.Target t = e.getValue();
+                if (!t.clear || supplied.contains(t.name) || (t.writers.isEmpty() && t.readers.isEmpty()))
                     continue;
-                access(h, "TRANSFER_WRITE");
-                gpu.clear(h, cc);
-                trace.add("clear " + key + " " + java.util.Arrays.toString(cc));
+                if (reuseShadow && t.name.startsWith("shadowcolor"))
+                    continue;
+                for (String key : keysOf(t.name)) {
+                    Integer h = images.get(key);
+                    if (h != null)
+                        clearPlan.add(new Object[]{h, clearColour(t, null, in), t.name.equals("colortex0") && t.clearColor == null});
+                }
             }
         }
+        for (int ci = 0; ci < clearPlan.size(); ci++) {
+            Object[] cp = clearPlan.get(ci);
+            float[] cc = (float[]) cp[1];
+            if ((Boolean) cp[2]) { // colortex0 without an explicit clear colour: this frame's fog colour
+                double[] fog = in.uniforms().get("fogColor");
+                if (fog != null) {
+                    cc[0] = (float) fog[0];
+                    cc[1] = (float) fog[1];
+                    cc[2] = (float) fog[2];
+                }
+            }
+            int h = (Integer) cp[0];
+            access(h, "TRANSFER_WRITE");
+            gpu.clear(h, cc);
+            if (tracing) trace.add("clear " + h + " " + java.util.Arrays.toString(cc));
+        }
         // supplied images: uploaded into the half the first replayed reader sees
-        for (String name : in.suppliedImages()) {
+        if (!supplied.isEmpty())
+        for (String name : supplied) {
             String key = name;
             if (images.containsKey(name + "#main"))
                 key = name + (flippedBefore.contains(name) ? "#alt" : "#main");
             Integer h = images.get(key);
             if (h == null) {
-                trace.add("supplied " + name + " has no plan image: ignored");
+                if (tracing) trace.add("supplied " + name + " has no plan image: ignored");
                 continue;
             }
             GpuBackend.ImageDesc d = gpu.desc(h);
@@ -389,42 +447,63 @@ public final class FrameExecutor {
             }
             access(h, "TRANSFER_WRITE");
             gpu.upload(h, in.image(name));
-            trace.add("upload " + key);
+            if (tracing) trace.add("upload " + key);
         }
         // copies from backend images (post mode) and forced clears
-        for (Map.Entry<String, Integer> e : in.copySources().entrySet()) {
-            String key = images.containsKey(e.getKey() + "#main") ? e.getKey() + (flippedBefore.contains(e.getKey()) ? "#alt" : "#main") : e.getKey();
-            Integer h = images.get(key);
+        Map<String, Integer> copySrc = in.copySources();
+        if (!copySrc.isEmpty())
+        for (Map.Entry<String, Integer> e : copySrc.entrySet()) {
+            Integer h = inputKeys.get(e.getKey());
+            if (h == null) {
+                String key = images.containsKey(e.getKey() + "#main") ? e.getKey() + (flippedBefore.contains(e.getKey()) ? "#alt" : "#main") : e.getKey();
+                h = images.get(key);
+                if (h != null)
+                    inputKeys.put(e.getKey(), h);
+            }
             if (h == null)
                 continue;
             access(e.getValue(), "TRANSFER_READ");
             access(h, "TRANSFER_WRITE");
             gpu.blit(e.getValue(), h);
-            trace.add("blit input -> " + key);
+            if (tracing) trace.add("blit input -> " + e.getKey());
         }
-        for (Map.Entry<String, float[]> e : in.clearValues().entrySet())
-            for (String key : keysOf(e.getKey())) {
-                Integer h = images.get(key);
-                if (h == null)
-                    continue;
+        Map<String, float[]> clearVals = in.clearValues();
+        if (!clearVals.isEmpty())
+        for (Map.Entry<String, float[]> e : clearVals.entrySet()) {
+            int[] hs = clearValueKeys.get(e.getKey());
+            if (hs == null) {
+                List<String> ks = keysOf(e.getKey());
+                int n = 0;
+                hs = new int[ks.size()];
+                for (String key : ks) {
+                    Integer h = images.get(key);
+                    if (h != null)
+                        hs[n++] = h;
+                }
+                hs = java.util.Arrays.copyOf(hs, n);
+                clearValueKeys.put(e.getKey(), hs);
+            }
+            for (int h : hs) {
                 access(h, "TRANSFER_WRITE");
                 gpu.clear(h, e.getValue());
-                trace.add("clear " + key + " (input value)");
+                if (tracing) trace.add("clear " + e.getKey() + " (input value)");
             }
+        }
         if (!in.geometry().isEmpty() && start <= STAGES.indexOf("shadow"))
-            for (String dk : reuseShadow ? new String[]{"depthtex0"} : new String[]{"depthtex0", "shadowtex0"}) {
+            for (String dk : reuseShadow ? DEPTH_ONLY : DEPTH_AND_SHADOW) {
                 Integer h = images.get(dk);
                 if (h == null)
                     continue;
                 access(h, "TRANSFER_WRITE");
-                gpu.clear(h, new float[]{1, 0, 0, 0});
-                trace.add("clear " + dk + " 1.0 (geometry frame)");
+                gpu.clear(h, FAR_DEPTH);
+                if (tracing) trace.add("clear " + dk + " 1.0 (geometry frame)");
             }
         if (afterInputs != null)
             afterInputs.run();
         // passes
         String lastStage = null;
-        for (PassGraph.Pass p : frame.passes) {
+        for (int pi = 0; pi < frame.passes.size(); pi++) {
+            PassGraph.Pass p = frame.passes.get(pi);
             int st = STAGES.indexOf(p.stage);
             if (st < start)
                 continue;
@@ -434,15 +513,15 @@ public final class FrameExecutor {
                     onStage.accept(p.stage);
             }
             if (skip.contains(p.id)) {
-                trace.add("skip " + p.id + " (iroh.pack.skip)");
+                if (tracing) trace.add("skip " + p.id + " (iroh.pack.skip)");
                 continue;
             }
             if (reuseShadow && (p.stage.equals("shadow") || p.stage.equals("shadowcomp"))) {
-                trace.add("skip " + p.id + " (shadow maps reused)");
+                if (tracing) trace.add("skip " + p.id + " (shadow maps reused)");
                 continue;
             }
             if (upscale != null && upscale.replaces().contains(p.id)) {
-                trace.add("skip " + p.id + " (replaced by the upscaler)");
+                if (tracing) trace.add("skip " + p.id + " (replaced by the upscaler)");
                 continue;
             }
             switch (p.kind) {
@@ -457,8 +536,8 @@ public final class FrameExecutor {
                     gpu.timeEnd(p.id);
                 }
                 case "geometry" -> {
-                    if (batchesFor(p, in).isEmpty()) {
-                        trace.add("skip " + p.id + " (no geometry supplied)");
+                    if (!hasBatches(p, in)) {
+                        if (tracing) trace.add("skip " + p.id + " (no geometry supplied)");
                     } else {
                         gpu.timeBegin(p.id);
                         geometry(p, in);
@@ -466,42 +545,59 @@ public final class FrameExecutor {
                     }
                 }
                 case "capture" -> capture(p, in);
-                case "flip" -> trace.add("flip " + p.id + " " + p.flipsAfter + " (frozen in the plan)");
-                default -> trace.add("skip " + p.id + " (" + p.kind + ")");
+                case "flip" -> { if (tracing) trace.add("flip " + p.id + " " + p.flipsAfter + " (frozen in the plan)"); }
+                default -> { if (tracing) trace.add("skip " + p.id + " (" + p.kind + ")"); }
             }
             if (upscale != null && p.id.equals(upscale.after()))
                 runCut(in);
         }
         postCut = false;
         // end of frame: alt -> main copies for flipped, never-cleared pairs
-        for (PassGraph.Target t : frame.targets.values()) {
-            if (!(t.endOfFrameCopy && t.pairNeeded()))
-                continue;
-            Integer a = images.get(t.name + "#alt"), m = images.get(t.name + "#main");
-            if (a == null || m == null)
-                continue;
-            access(a, "TRANSFER_READ");
-            access(m, "TRANSFER_WRITE");
-            gpu.copy(a, m);
-            trace.add("copy " + t.name + "#alt -> #main (end of frame)");
+        if (endCopies == null) {
+            List<int[]> l = new ArrayList<>();
+            for (PassGraph.Target t : frame.targets.values()) {
+                if (!(t.endOfFrameCopy && t.pairNeeded()))
+                    continue;
+                Integer a = images.get(t.name + "#alt"), m = images.get(t.name + "#main");
+                if (a != null && m != null)
+                    l.add(new int[]{a, m});
+            }
+            endCopies = l.toArray(new int[0][]);
+        }
+        for (int[] am : endCopies) {
+            access(am[0], "TRANSFER_READ");
+            access(am[1], "TRANSFER_WRITE");
+            gpu.copy(am[0], am[1]);
+            if (tracing) trace.add("copy " + am[0] + " -> " + am[1] + " (end of frame alt -> main)");
         }
         if (in.depthTo() >= 0 && images.containsKey("depthtex0")) {
             Integer d0 = images.get("depthtex0");
             access(d0, "TRANSFER_READ");
             access(in.depthTo(), "TRANSFER_WRITE");
             gpu.blit(d0, in.depthTo());
-            trace.add("depth back depthtex0 -> scene depth");
+            if (tracing) trace.add("depth back depthtex0 -> scene depth");
         }
         if (presentTo >= 0) {
             Integer out = images.get("output");
             access(out, "TRANSFER_READ");
             access(presentTo, "TRANSFER_WRITE");
             gpu.blit(out, presentTo);
-            trace.add("present output");
+            if (tracing) trace.add("present output");
         }
         gpu.endFrame();
-        trace.add("frame end");
+        if (tracing) trace.add("frame end");
     }
+
+    // P3-8 frame-plan caches (cleared on close)
+    private final Map<Integer, Set<String>> flippedCache = new HashMap<>();
+    private List<Object[]> clearPlan;
+    private Set<String> clearPlanSupplied;
+    private boolean clearPlanReuse;
+    private final Map<String, Integer> inputKeys = new HashMap<>();
+    private final Map<String, int[]> clearValueKeys = new HashMap<>();
+    private int[][] endCopies;
+    private static final String[] DEPTH_ONLY = {"depthtex0"}, DEPTH_AND_SHADOW = {"depthtex0", "shadowtex0"};
+    private static final float[] FAR_DEPTH = {1, 0, 0, 0};
 
     private JsonObject targetsJson() {
         return new JsonObject();
@@ -548,14 +644,73 @@ public final class FrameExecutor {
      * one access per image of a program's bindings: an image bound both as a sampler and as storage counts once, as
      * the storage access (a read-modify-write by that program), so the NEXT reader still sees a write and barriers
      */
+    /** P3-8: everything about a pass that is stable from frame to frame (rebuilt only when the inputs' identity changes) */
+    static final class PassCache {
+        GpuBackend.Draw draw;
+        GpuBackend.Dispatch dispatch;
+        ByteBuffer ubo;
+        int[] mips = new int[0];
+        // geometry
+        Map<Integer, GpuBackend.Bind> set0, set1;
+        int[] colour;
+        int depth = -1;
+        int[] viewport;
+        List<PackFrameInputs.Geometry> geoRef;
+        List<PackFrameInputs.Geometry> geo;
+        final List<ByteBuffer> batchUbos = new ArrayList<>();
+        final List<GpuBackend.GeoBatch> batches = new ArrayList<>();
+        GpuBackend.GeoDraw geoDraw;
+        // capture
+        int capSrc = -1, capDst = -1;
+    }
+
+    private final Map<PassGraph.Pass, PassCache> passCache = new java.util.IdentityHashMap<>();
+
+    private int viewW() {
+        return upscale == null ? 0 : postCut ? displayW : width;
+    }
+
+    private int viewH() {
+        return upscale == null ? 0 : postCut ? displayH : height;
+    }
+
+    private int[] abImg = new int[64];
+    private String[] abKind = new String[64];
+
     private void accessBinds(Map<Integer, GpuBackend.Bind> set0, String storageKind) {
-        Map<Integer, String> per = new LinkedHashMap<>();
-        for (GpuBackend.Bind b : set0.values())
-            if (b.image() >= 0) {
-                String k = "STORAGE".equals(b.sampler()) ? storageKind : "SAMPLED_READ";
-                per.merge(b.image(), k, (a, c) -> a.endsWith("WRITE") ? a : c.endsWith("WRITE") ? c : a.startsWith("STORAGE") ? a : c);
+        GpuBackend.Bind[] arr = bindArrays.get(set0);
+        if (arr == null) {
+            arr = set0.values().toArray(new GpuBackend.Bind[0]);
+            bindArrays.put(set0, arr);
+        }
+        if (abImg.length < arr.length) {
+            abImg = new int[arr.length];
+            abKind = new String[arr.length];
+        }
+        int n = 0;
+        for (GpuBackend.Bind b : arr) {
+            if (b.image() < 0)
+                continue;
+            String k = "STORAGE".equals(b.sampler()) ? storageKind : "SAMPLED_READ";
+            int j = 0;
+            while (j < n && abImg[j] != b.image())
+                j++;
+            if (j == n) {
+                abImg[n] = b.image();
+                abKind[n++] = k;
+            } else {
+                String a = abKind[j];
+                abKind[j] = a.endsWith("WRITE") ? a : k.endsWith("WRITE") ? k : a.startsWith("STORAGE") ? a : k;
             }
-        per.forEach(this::access);
+        }
+        for (int i = 0; i < n; i++)
+            access(abImg[i], abKind[i]);
+    }
+
+    /** bind maps -> arrays (identity: the maps are cached per pass) */
+    private final Map<Map<Integer, GpuBackend.Bind>, GpuBackend.Bind[]> bindArrays = new java.util.IdentityHashMap<>();
+
+    private void unusedAccessBinds() {
     }
 
     private void access(int image, String kind) {
@@ -680,6 +835,17 @@ public final class FrameExecutor {
             }
             """;
 
+    private static void putMat(ByteBuffer b, int off, double[] m) {
+        for (int i = 0; i < 16; i++)
+            b.putFloat(off + i * 4, (float) m[i]);
+    }
+
+    private final ByteBuffer cutUbo = ByteBuffer.allocate(4 * 64 + 16).order(ByteOrder.LITTLE_ENDIAN);
+    private GpuBackend.Draw cutDraw;
+    private static final double[] ZERO3 = new double[3];
+    private int[][] cutCopies;
+    private Integer cutIn, cutOut;
+
     /** after the cut pass: motion vectors, the upscale, display copies of everything else the later passes read */
     private void runCut(PackFrameInputs in) {
         Integer depth = images.get("depthtex0"), mv = images.get("engine:motion");
@@ -687,38 +853,49 @@ public final class FrameExecutor {
             access(depth, "SAMPLED_READ");
             access(mv, "ATTACHMENT_WRITE");
             Map<String, double[]> u = in.uniforms();
-            ByteBuffer b = ByteBuffer.allocate(4 * 64 + 16).order(ByteOrder.LITTLE_ENDIAN);
-            double[][] ms = {u.getOrDefault("gbufferProjectionInverse", IDENTITY), u.getOrDefault("gbufferModelViewInverse", IDENTITY),
-                    u.getOrDefault("gbufferPreviousModelView", IDENTITY), u.getOrDefault("gbufferPreviousProjection", IDENTITY)};
-            for (int m = 0; m < 4; m++)
-                for (int i = 0; i < 16; i++)
-                    b.putFloat(m * 64 + i * 4, (float) ms[m][i]);
-            double[] c = u.getOrDefault("cameraPosition", new double[3]), pc = u.getOrDefault("previousCameraPosition", c);
+            ByteBuffer b = cutUbo;
+            putMat(b, 0, u.getOrDefault("gbufferProjectionInverse", IDENTITY));
+            putMat(b, 64, u.getOrDefault("gbufferModelViewInverse", IDENTITY));
+            putMat(b, 128, u.getOrDefault("gbufferPreviousModelView", IDENTITY));
+            putMat(b, 192, u.getOrDefault("gbufferPreviousProjection", IDENTITY));
+            double[] c = u.getOrDefault("cameraPosition", ZERO3), pc = u.getOrDefault("previousCameraPosition", c);
             for (int i = 0; i < 3; i++)
                 b.putFloat(256 + i * 4, (float) (c[i] - pc[i]));
-            gpu.draw(new GpuBackend.Draw("engine:motion", motionPipe, new int[]{mv}, new int[]{0, 0, width, height},
-                    Map.of(1, GpuBackend.Bind.image(depth, "NEAREST")), Map.of(), b.array()));
-            trace.add("engine motion vectors " + width + "x" + height);
+            if (cutDraw == null)
+                cutDraw = new GpuBackend.Draw("engine:motion", motionPipe, new int[]{mv}, new int[]{0, 0, width, height},
+                        Map.of(1, GpuBackend.Bind.image(depth, "NEAREST")), Map.of(), b.array());
+            gpu.draw(cutDraw);
+            if (tracing) trace.add("engine motion vectors " + width + "x" + height);
         }
-        for (String k : displayKeys) {
-            if (k.equals(upscaleOutKey))
-                continue;
-            Integer src = images.get(k), dst = images.get("D:" + k);
-            if (src == null || dst == null)
-                continue;
-            access(src, "TRANSFER_READ");
-            access(dst, "TRANSFER_WRITE");
-            gpu.blit(src, dst);
-            trace.add("display copy " + k);
+        if (cutCopies == null) {
+            List<int[]> l = new ArrayList<>();
+            for (String k : displayKeys) {
+                if (k.equals(upscaleOutKey))
+                    continue;
+                Integer src = images.get(k), dst = images.get("D:" + k);
+                if (src != null && dst != null)
+                    l.add(new int[]{src, dst});
+            }
+            cutCopies = l.toArray(new int[0][]);
         }
-        Integer inImg = images.get(upscaleInKey), outImg = upscaleOutKey == null ? null : images.get("D:" + upscaleOutKey);
+        for (int[] sd : cutCopies) {
+            access(sd[0], "TRANSFER_READ");
+            access(sd[1], "TRANSFER_WRITE");
+            gpu.blit(sd[0], sd[1]);
+            if (tracing) trace.add("display copy " + sd[0] + " -> " + sd[1]);
+        }
+        if (cutIn == null) {
+            cutIn = images.get(upscaleInKey);
+            cutOut = upscaleOutKey == null ? null : images.get("D:" + upscaleOutKey);
+        }
+        Integer inImg = cutIn, outImg = cutOut;
         if (inImg != null && outImg != null) {
             access(inImg, "TRANSFER_READ");
             if (mv != null)
                 access(mv, "SAMPLED_READ");
             access(outImg, "TRANSFER_WRITE");
             upscale.upscaler().dispatch(gpu, inImg, depth == null ? -1 : depth, mv == null ? -1 : mv, outImg, width, height, displayW, displayH);
-            trace.add("upscale " + upscale.upscaler().name() + " " + upscaleInKey + " " + width + "x" + height + " -> D:" + upscaleOutKey + " " + displayW + "x" + displayH);
+            if (tracing) trace.add("upscale " + upscale.upscaler().name() + " " + upscaleInKey + " " + width + "x" + height + " -> D:" + upscaleOutKey + " " + displayW + "x" + displayH);
         }
         postCut = true;
     }
@@ -726,19 +903,39 @@ public final class FrameExecutor {
     private void fullscreen(PassGraph.Pass p, PackFrameInputs in) {
         Integer pipe = pipelines.get(p.id);
         if (pipe == null) {
-            trace.add("skip " + p.id + " (no pipeline)");
+            if (tracing) trace.add("skip " + p.id + " (no pipeline)");
             return;
         }
         PackData.Unit u = data.units.get(p.unit);
+        PassCache c = passCache.get(p);
+        if (c != null && c.draw != null && afterPass == null) {
+            // P3-8 steady state: no allocation
+            for (int h : c.mips) {
+                access(h, "TRANSFER_WRITE");
+                gpu.generateMips(h);
+            }
+            accessBinds(c.draw.set0(), "STORAGE_WRITE");
+            for (int h : c.draw.colour())
+                access(h, "ATTACHMENT_WRITE");
+            fillUniforms(u, c.ubo, in.uniforms(), true, viewW(), viewH());
+            gpu.draw(c.draw);
+            if (tracing) trace.add("draw " + p.id + " viewport " + c.draw.viewport()[2] + "x" + c.draw.viewport()[3] + " reads " + readKeys(p));
+            passIndex = frame.passes.indexOf(p);
+            drawCount++;
+            return;
+        }
+        int[] mipHandles = new int[p.mipmapsBefore.size()];
+        int nMips = 0;
         mipped = new HashSet<>();
         for (String mip : p.mipmapsBefore) {
             String[] tp = mip.replace("(", "").replace(")", "").split(" ");
             mipped.add(tp[0]);
             Integer h = imageFor(tp[0], tp[1]);
             if (h != null) {
+                mipHandles[nMips++] = h;
                 access(h, "TRANSFER_WRITE");
                 gpu.generateMips(h);
-                trace.add("mips " + tp[0] + "#" + tp[1]);
+                if (tracing) trace.add("mips " + tp[0] + "#" + tp[1]);
             }
         }
         Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
@@ -764,9 +961,14 @@ public final class FrameExecutor {
         if (p.scale instanceof List<?> l && !l.isEmpty())
             s = ((Number) l.get(0)).doubleValue();
         int[] viewport = {0, 0, (int) Math.max(1, Math.round(aw * s)), (int) Math.max(1, Math.round(ah * s))};
-        byte[] ubo = uniformBlock(u, sized(in), true);
-        gpu.draw(new GpuBackend.Draw(p.id, pipe, colour, viewport, set0, set1, ubo));
-        trace.add("draw " + p.id + " -> " + keys + " viewport " + viewport[2] + "x" + viewport[3] + " reads " + readKeys(p));
+        c = new PassCache();
+        c.ubo = newBlock(u);
+        fillUniforms(u, c.ubo, in.uniforms(), true, viewW(), viewH());
+        c.mips = java.util.Arrays.copyOf(mipHandles, nMips);
+        c.draw = new GpuBackend.Draw(p.id, pipe, colour, viewport, set0, set1, c.ubo.array());
+        passCache.put(p, c);
+        gpu.draw(c.draw);
+        if (tracing) trace.add("draw " + p.id + " -> " + keys + " viewport " + viewport[2] + "x" + viewport[3] + " reads " + readKeys(p));
         passIndex = frame.passes.indexOf(p);
         drawCount++;
         if (afterPass != null) {
@@ -812,42 +1014,85 @@ public final class FrameExecutor {
      * shadowModelView / shadowProjection, depth = shadowtex0. gl_Vertex = camera-relative position (decode folds the
      * wide vertex's 1/2048 grid, its +4 offset and the section origin, as Iris' vaPosition + chunkOffset).
      */
+    // per-batch uniform scratch (P3-8: reused; the backend copies each block when it records the draw)
+    private final double[] gDecode = new double[4], gViewInv = new double[16], gProjInv = new double[16], gMvp = new double[16],
+            gNormal = new double[9], gTmp = new double[16], gStage = new double[1];
+    private static final double[] MINUS_ONE = {-1};
+    private final Map<String, double[]> gPer = new HashMap<>();
+    private final MutableLayered gLayer = new MutableLayered(gPer);
+
+    /** {@link Layered} with a replaceable base (the frame's uniform map) */
+    static final class MutableLayered extends java.util.AbstractMap<String, double[]> {
+        final Map<String, double[]> top;
+        Map<String, double[]> base = Map.of();
+
+        MutableLayered(Map<String, double[]> top) {
+            this.top = top;
+        }
+
+        @Override
+        public double[] get(Object k) {
+            double[] v = top.get(k);
+            return v != null ? v : base.get(k);
+        }
+
+        @Override
+        public Set<Entry<String, double[]>> entrySet() {
+            Map<String, double[]> m = new HashMap<>(base);
+            m.putAll(top);
+            return m.entrySet();
+        }
+    }
+
+    /**
+     * One geometry pass (P3-5): every supplied batch of its classes in ONE render pass instance with depth. Main:
+     * gl_ModelViewMatrix = gbufferModelView, gl_ProjectionMatrix = gbufferProjection, depth = depthtex0; shadow:
+     * shadowModelView / shadowProjection, depth = shadowtex0. gl_Vertex = camera-relative position (decode folds the
+     * wide vertex's 1/2048 grid, its +4 offset and the section origin, as Iris' vaPosition + chunkOffset).
+     * P3-8: bindings, attachments, batch objects and uniform blocks are cached per pass while the inputs' geometry
+     * list is the same object; the per-batch values are written into reused scratch arrays.
+     */
     private void geometry(PassGraph.Pass p, PackFrameInputs in) {
         Integer pipe = pipelines.get(p.id);
         if (pipe == null) {
-            trace.add("skip " + p.id + " (no pipeline)");
+            if (tracing) trace.add("skip " + p.id + " (no pipeline)");
             return;
         }
         boolean shadow = shadowPass(p);
         PackData.Unit u = data.units.get(p.unit);
-        mipped = Set.of();
-        geoIn = in;
-        Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
-        Map<Integer, GpuBackend.Bind> set1 = binds(p, u, 1);
-        geoIn = null;
-        // storage images in a geometry program are written (shadow voxelisation: imageStore from the shadow pass)
-        accessBinds(set0, "STORAGE_WRITE");
-        int[] colour = new int[p.writes.size()];
-        List<String> keys = new ArrayList<>();
-        for (int i = 0; i < colour.length; i++) {
-            Map<String, Object> w = p.writes.get(i);
-            Integer h = imageFor((String) w.get("target"), (String) w.get("half"));
-            if (h == null) {
-                problems.add(p.id + ": no image for " + w.get("target") + "/" + w.get("half"));
+        PassCache c = passCache.get(p);
+        if (c == null || c.set0 == null) {
+            c = new PassCache();
+            mipped = Set.of();
+            geoIn = in;
+            c.set0 = binds(p, u, 0);
+            c.set1 = binds(p, u, 1);
+            geoIn = null;
+            c.colour = new int[p.writes.size()];
+            for (int i = 0; i < c.colour.length; i++) {
+                Map<String, Object> w = p.writes.get(i);
+                Integer h = imageFor((String) w.get("target"), (String) w.get("half"));
+                if (h == null) {
+                    problems.add(p.id + ": no image for " + w.get("target") + "/" + w.get("half"));
+                    return;
+                }
+                c.colour[i] = h;
+            }
+            Integer depth = images.get(shadow ? "shadowtex0" : "depthtex0");
+            if (depth == null) {
+                problems.add(p.id + ": no depth image");
                 return;
             }
-            colour[i] = h;
-            keys.add(w.get("target") + "#" + w.get("half"));
+            c.depth = depth;
+            GpuBackend.ImageDesc dd = gpu.desc(depth);
+            c.viewport = new int[]{0, 0, dd.width(), dd.height()};
+            passCache.put(p, c);
+        }
+        // storage images in a geometry program are written (shadow voxelisation: imageStore from the shadow pass)
+        accessBinds(c.set0, "STORAGE_WRITE");
+        for (int h : c.colour)
             access(h, "ATTACHMENT_WRITE");
-        }
-        Integer depth = images.get(shadow ? "shadowtex0" : "depthtex0");
-        if (depth == null) {
-            problems.add(p.id + ": no depth image");
-            return;
-        }
-        access(depth, "ATTACHMENT_WRITE");
-        GpuBackend.ImageDesc dd = gpu.desc(depth);
-        int[] viewport = {0, 0, dd.width(), dd.height()};
+        access(c.depth, "ATTACHMENT_WRITE");
         Map<String, double[]> base = in.uniforms();
         double[] view = shadow ? base.get("shadowModelView") : base.get("gbufferModelView");
         double[] proj = shadow ? base.get("shadowProjection") : base.get("gbufferProjection");
@@ -855,33 +1100,60 @@ public final class FrameExecutor {
             problems.add(p.id + ": no " + (shadow ? "shadow" : "gbuffer") + " matrices in the inputs");
             return;
         }
-        List<GpuBackend.GeoBatch> batches = new ArrayList<>();
+        List<PackFrameInputs.Geometry> all = in.geometry();
+        boolean sameList = c.geoRef == all;
+        if (!sameList) {
+            c.geoRef = all;
+            c.geo = batchesFor(p, in);
+            c.batches.clear();
+            c.geoDraw = null;
+        }
+        Mat.invert(view, gViewInv);
+        Mat.invert(proj, gProjInv);
+        Mat.mul(proj, view, gMvp);
+        Mat.normal(view, gTmp, gNormal);
+        gPer.put("iroh_ModelViewMatrix", view);
+        gPer.put("iroh_ModelViewMatrixInverse", gViewInv);
+        gPer.put("iroh_ProjectionMatrix", proj);
+        gPer.put("iroh_ProjectionMatrixInverse", gProjInv);
+        gPer.put("iroh_ModelViewProjectionMatrix", gMvp);
+        gPer.put("iroh_NormalMatrix", gNormal);
+        gPer.put("iroh_TextureMatrix", LIGHTMAP_TEXTURE_MATRICES);
+        gPer.put("blockEntityId", MINUS_ONE);
+        gPer.put("entityId", MINUS_ONE);
+        gPer.put("iroh_VertexDecode", gDecode);
+        gPer.put("renderStage", gStage);
+        gLayer.base = base;
+        int vw = viewW(), vh = viewH();
         int quads = 0;
-        for (PackFrameInputs.Geometry g : batchesFor(p, in)) {
-            Integer vb = g.indirect() != null ? Integer.valueOf(-1) : vertexBuffers.get(g);
-            if (vb == null) {
-                vb = gpu.createVertexBuffer("pack:geo " + g.geometryClass(), g.vertices().duplicate());
-                vertexBuffers.put(g, vb);
-            }
-            Map<String, double[]> per = new HashMap<>();
+        for (int i = 0; i < c.geo.size(); i++) {
+            PackFrameInputs.Geometry g = c.geo.get(i);
+            if (c.batchUbos.size() <= i)
+                c.batchUbos.add(newBlock(u));
+            ByteBuffer ub = c.batchUbos.get(i);
             double[] o = g.origin();
-            per.put("iroh_VertexDecode", new double[]{1.0 / 2048, 4 + o[0], 4 + o[1], 4 + o[2]});
-            per.put("chunkOffset", o);
-            per.put("iroh_ModelViewMatrix", view);
-            per.put("iroh_ModelViewMatrixInverse", Mat.invert(view));
-            per.put("iroh_ProjectionMatrix", proj);
-            per.put("iroh_ProjectionMatrixInverse", Mat.invert(proj));
-            per.put("iroh_ModelViewProjectionMatrix", Mat.mul(proj, view));
-            per.put("iroh_NormalMatrix", Mat.normal(view));
-            per.put("iroh_TextureMatrix", LIGHTMAP_TEXTURE_MATRICES);
-            per.put("blockEntityId", new double[]{-1});
-            per.put("entityId", new double[]{-1});
-            per.put("renderStage", new double[]{renderStage(g.geometryClass(), shadow)});
-            batches.add(new GpuBackend.GeoBatch(uniformBlock(u, overlay(sized(in), per), false), vb, g.quads(), 0L, 0L, g.indirect()));
+            gDecode[0] = 1.0 / 2048;
+            gDecode[1] = 4 + o[0];
+            gDecode[2] = 4 + o[1];
+            gDecode[3] = 4 + o[2];
+            gPer.put("chunkOffset", o);
+            gStage[0] = renderStage(g.geometryClass(), shadow);
+            fillUniforms(u, ub, gLayer, false, vw, vh);
+            if (c.batches.size() <= i) {
+                Integer vb = g.indirect() != null ? Integer.valueOf(-1) : vertexBuffers.get(g);
+                if (vb == null) {
+                    vb = gpu.createVertexBuffer("pack:geo " + g.geometryClass(), g.vertices().duplicate());
+                    vertexBuffers.put(g, vb);
+                }
+                c.batches.add(new GpuBackend.GeoBatch(ub.array(), vb, g.quads(), 0L, 0L, g.indirect()));
+            }
             quads += g.quads();
         }
-        gpu.drawGeometry(new GpuBackend.GeoDraw(p.id, pipe, colour, depth, viewport, set0, set1, batches));
-        trace.add("geometry " + p.id + " -> " + keys + " + " + (shadow ? "shadowtex0" : "depthtex0") + " batches " + batches.size()
+        gLayer.base = Map.of();
+        if (c.geoDraw == null)
+            c.geoDraw = new GpuBackend.GeoDraw(p.id, pipe, c.colour, c.depth, c.viewport, c.set0, c.set1, c.batches);
+        gpu.drawGeometry(c.geoDraw);
+        if (tracing) trace.add("geometry " + p.id + " + " + (shadow ? "shadowtex0" : "depthtex0") + " batches " + c.batches.size()
                 + " quads " + quads + " reads " + readKeys(p));
         drawCount++;
     }
@@ -964,35 +1236,49 @@ public final class FrameExecutor {
     /** depth captures: depthtex1 / depthtex2 := depthtex0 now, shadowtex1 := shadowtex0 now */
     private void capture(PassGraph.Pass p, PackFrameInputs in) {
         if (in.geometry().isEmpty()) {
-            trace.add("skip " + p.id + " (depth capture: supplied)");
+            if (tracing) trace.add("skip " + p.id + " (depth capture: supplied)");
             return;
         }
-        String dst = p.id.substring("capture:".length());
-        String src = dst.startsWith("shadowtex") ? "shadowtex0" : "depthtex0";
-        Integer a = images.get(src), b = images.get(dst);
-        if (a == null || b == null) {
-            trace.add("skip " + p.id + " (no image)");
+        PassCache c = passCache.get(p);
+        if (c == null) {
+            c = new PassCache();
+            String dst0 = p.id.substring("capture:".length());
+            Integer a0 = images.get(dst0.startsWith("shadowtex") ? "shadowtex0" : "depthtex0"), b0 = images.get(dst0);
+            c.capSrc = a0 == null ? -1 : a0;
+            c.capDst = b0 == null ? -1 : b0;
+            passCache.put(p, c);
+        }
+        int a = c.capSrc, b = c.capDst;
+        if (a < 0 || b < 0) {
+            if (tracing) trace.add("skip " + p.id + " (no image)");
             return;
         }
         access(a, "TRANSFER_READ");
         access(b, "TRANSFER_WRITE");
         gpu.copy(a, b);
-        trace.add("capture " + dst + " := " + src);
+        if (tracing) trace.add("capture " + p.id);
     }
 
     private void compute(PassGraph.Pass p, PackFrameInputs in) {
         mipped = Set.of();
         Integer pipe = pipelines.get(p.id);
         if (pipe == null) {
-            trace.add("skip " + p.id + " (no pipeline)");
+            if (tracing) trace.add("skip " + p.id + " (no pipeline)");
             return;
         }
         PackData.Unit u = data.units.get(p.unit);
-        Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
-        accessBinds(set0, "STORAGE_WRITE");
-        int[] groups = groups(p, u);
-        gpu.dispatch(new GpuBackend.Dispatch(p.id, pipe, groups, set0, binds(p, u, 1), uniformBlock(u, sized(in), false)));
-        trace.add("dispatch " + p.id + " " + java.util.Arrays.toString(groups));
+        PassCache c = passCache.get(p);
+        if (c == null || c.dispatch == null) {
+            c = new PassCache();
+            c.ubo = newBlock(u);
+            c.dispatch = new GpuBackend.Dispatch(p.id, pipe, groups(p, u), binds(p, u, 0), binds(p, u, 1), c.ubo.array());
+            passCache.put(p, c);
+        }
+        accessBinds(c.dispatch.set0(), "STORAGE_WRITE");
+        int[] groups = c.dispatch.groups();
+        fillUniforms(u, c.ubo, in.uniforms(), false, viewW(), viewH());
+        gpu.dispatch(c.dispatch);
+        if (tracing) trace.add("dispatch " + p.id + " " + java.util.Arrays.toString(groups));
     }
 
     private int[] groups(PassGraph.Pass p, PackData.Unit u) {
@@ -1185,6 +1471,104 @@ public final class FrameExecutor {
 
     // ------------------------------------------------------------------------------------------------ uniforms
 
+    /** P3-8: one std140 member, parsed once per unit (no regex / JSON walk per frame) */
+    private record Member(String name, int off, boolean integer, int cols, int rows, int arr, int elemStride, double[] fallback,
+                          double[] fullscreenValue) {}
+
+    private final Map<String, Member[]> layouts = new HashMap<>();
+    private final Map<String, Integer> blockSizes = new HashMap<>();
+
+    private Member[] layout(PackData.Unit u) {
+        Member[] l = layouts.get(u.id);
+        if (l != null)
+            return l;
+        JsonObject r = u.reflection();
+        if (!r.has("uniformBlock")) {
+            blockSizes.put(u.id, 16);
+            layouts.put(u.id, l = new Member[0]);
+            return l;
+        }
+        JsonObject blk = r.getAsJsonObject("uniformBlock");
+        blockSizes.put(u.id, Math.max(16, blk.get("size").getAsInt()));
+        List<Member> ms = new ArrayList<>();
+        for (JsonElement e : blk.getAsJsonArray("members")) {
+            JsonObject m = e.getAsJsonObject();
+            String name = m.get("name").getAsString();
+            String type = m.get("type").getAsString();
+            int arr = 1;
+            String base = type;
+            Matcher am = Pattern.compile("(\\w+)\\[(\\d+)]").matcher(type);
+            if (am.matches()) {
+                base = am.group(1);
+                arr = Integer.parseInt(am.group(2));
+            }
+            boolean integer = base.startsWith("i") || base.startsWith("u") || base.startsWith("b") || base.equals("int") || base.equals("uint") || base.equals("bool");
+            int cols = 1, rows = 1;
+            if (base.startsWith("mat")) {
+                cols = base.charAt(3) - '0';
+                rows = base.length() > 5 ? base.charAt(5) - '0' : cols;
+            } else if (base.contains("vec")) {
+                rows = base.charAt(base.length() - 1) - '0';
+            }
+            int elemStride = base.startsWith("mat") ? cols * 16 : (arr > 1 ? 16 : 0);
+            double[] fb = m.has("default") ? literal(m.get("default").getAsString()) : null;
+            if (fb == null)
+                fb = defaults(name, type);
+            ms.add(new Member(name, m.get("offset").getAsInt(), integer, cols, rows, arr, elemStride, fb, fullscreenCompat(name)));
+        }
+        layouts.put(u.id, l = ms.toArray(new Member[0]));
+        return l;
+    }
+
+    /** fills {@code b} (block size of {@code u}) from the inputs; view size overridden when vw > 0 (upscaler sides) */
+    private void fillUniforms(PackData.Unit u, ByteBuffer b, Map<String, double[]> vals, boolean fullscreen, int vw, int vh) {
+        for (Member m : layout(u)) {
+            double[] v = fullscreen ? m.fullscreenValue() : null;
+            if (v == null && vw > 0) {
+                if (m.name().equals("viewWidth")) {
+                    viewSize[0] = vw;
+                    v = viewSize;
+                } else if (m.name().equals("viewHeight")) {
+                    viewSize2[0] = vh;
+                    v = viewSize2;
+                }
+            }
+            if (v == null)
+                v = vals.get(m.name());
+            if (v == null)
+                v = m.fallback();
+            writeMember(b, m, v);
+        }
+    }
+
+    private final double[] viewSize = new double[1], viewSize2 = new double[1];
+
+    static void writeMember(ByteBuffer b, Member mb, double[] v) {
+        int k = 0;
+        for (int a = 0; a < mb.arr(); a++) {
+            int eoff = mb.off() + a * mb.elemStride();
+            if (a > 0 && k >= v.length)
+                k = 0;
+            for (int c = 0; c < mb.cols(); c++)
+                for (int r = 0; r < mb.rows(); r++) {
+                    double x = k < v.length ? v[k] : 0;
+                    k++;
+                    int pos = eoff + (mb.cols() > 1 ? c * 16 : 0) + r * 4;
+                    if (pos + 4 > b.capacity())
+                        continue;
+                    if (mb.integer())
+                        b.putInt(pos, (int) Math.round(x));
+                    else
+                        b.putFloat(pos, (float) x);
+                }
+        }
+    }
+
+    private ByteBuffer newBlock(PackData.Unit u) {
+        layout(u);
+        return ByteBuffer.allocate(blockSizes.get(u.id)).order(ByteOrder.LITTLE_ENDIAN);
+    }
+
     /** std140 bytes of the program's IrohPackUniforms block from the inputs (fullscreen compat matrices per pass) */
     byte[] uniformBlock(PackData.Unit u, PackFrameInputs in, boolean fullscreen) {
         JsonObject r = u.reflection();
@@ -1301,8 +1685,19 @@ public final class FrameExecutor {
             gpu.freeBuffer(vb);
         vertexBuffers.clear();
         lastAccess.clear();
+        passCache.clear();
+        hasBatchesCache.clear();
+        bindArrays.clear();
+        flippedCache.clear();
+        clearPlan = null;
+        inputKeys.clear();
+        clearValueKeys.clear();
+        endCopies = null;
+        cutDraw = null;
+        cutCopies = null;
+        cutIn = cutOut = null;
         prepared = false;
-        trace.add("closed");
+        if (tracing) trace.add("closed");
     }
 
     // ------------------------------------------------------------------------------------------------ results

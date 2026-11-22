@@ -105,6 +105,24 @@ public final class PackPerfTest {
             System.out.println("# executor allocation per full frame: " + perFrame / 1024 + " KiB (recording backend, 9 terrain batches, 45 passes)");
             check("allocation per frame bounded (< 4 MiB)", perFrame < (4L << 20));
             ex.close();
+            // P3-8: the executor's OWN steady-state allocation (no-op backend, tracing off)
+            for (boolean up : new boolean[]{false, true}) {
+                NullBackend nb = new NullBackend();
+                FrameExecutor ne = new FrameExecutor(data, plan, "world0", nb, FrameExecutor.cap(1L << 30));
+                ne.tracing = false;
+                if (up)
+                    ne.upscale = new FrameExecutor.Upscale("composite5", "colortex3", java.util.Set.of("composite6"), 320, 180,
+                            new dev.elemore.iroh.shaderpack.runtime.PackUpscaler.Bilinear());
+                for (int i = 0; i < 300; i++)
+                    ne.frame(in); // warm-up (JIT, caches)
+                long b0 = mx.getThreadAllocatedBytes(t);
+                for (int i = 0; i < 200; i++)
+                    ne.frame(in);
+                long per = (mx.getThreadAllocatedBytes(t) - b0) / 200;
+                System.out.println("# executor own allocation per full frame" + (up ? " (upscaler on)" : "") + ": " + per + " bytes");
+                check("zero steady-state allocation in the executor" + (up ? " (upscaler)" : "") + " (" + per + " B/frame)", per == 0);
+                check("frames drew", nb.draws > 0);
+            }
         }
         System.out.println("# packperf " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);

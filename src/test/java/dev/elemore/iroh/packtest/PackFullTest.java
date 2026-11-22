@@ -86,8 +86,8 @@ public final class PackFullTest {
             check(folder + ": geometry passes " + rec.geoDraws.size() / 2 + " per frame", rec.geoDraws.size() >= 4);
             check(folder + ": every geometry draw has a depth attachment", rec.geoDraws.stream().allMatch(g -> g.depth() >= 0));
             String trace = String.join("\n", ex.trace);
-            check(folder + ": depthtex1 captured between terrain and water", trace.indexOf("capture depthtex1") > trace.indexOf("geometry gbuffers_terrain")
-                    && trace.indexOf("capture depthtex1") < trace.indexOf("geometry gbuffers_water"));
+            check(folder + ": depthtex1 captured between terrain and water", trace.indexOf("capture capture:depthtex1") > trace.indexOf("geometry gbuffers_terrain")
+                    && trace.indexOf("capture capture:depthtex1") < trace.indexOf("geometry gbuffers_water"));
             check(folder + ": vertex buffers created once (" + rec.liveVertexBuffers() + ")", rec.liveVertexBuffers() == in.geometry().size());
             ex.close();
             check(folder + ": close frees images, pipelines, vertex buffers", rec.live() == 0 && rec.livePipelines() == 0 && rec.liveVertexBuffers() == 0);

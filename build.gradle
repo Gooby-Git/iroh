@@ -561,3 +561,8 @@ tasks.register('packPerfTest', JavaExec) {
 	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
 	workingDir = projectDir
 }
+
+// P3-8: prints the test runtime classpath (allocation profiling of the offline harnesses with JFR)
+tasks.register('printTestCp') {
+	doLast { println sourceSets.test.runtimeClasspath.asPath }
+}

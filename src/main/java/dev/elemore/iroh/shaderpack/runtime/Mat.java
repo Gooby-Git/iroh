@@ -61,8 +61,31 @@ public final class Mat {
         return m;
     }
 
+    /** P3-8 allocation-free variants (out must not alias the inputs) */
+    public static double[] mul(double[] a, double[] b, double[] r) {
+        for (int c = 0; c < 4; c++)
+            for (int row = 0; row < 4; row++) {
+                double v = 0;
+                for (int k = 0; k < 4; k++)
+                    v += a[k * 4 + row] * b[c * 4 + k];
+                r[c * 4 + row] = v;
+            }
+        return r;
+    }
+
+    public static double[] normal(double[] m, double[] inv, double[] n) {
+        invert(m, inv);
+        for (int c = 0; c < 3; c++)
+            for (int r = 0; r < 3; r++)
+                n[c * 3 + r] = inv[r * 4 + c];
+        return n;
+    }
+
     public static double[] invert(double[] m) {
-        double[] inv = new double[16];
+        return invert(m, new double[16]);
+    }
+
+    public static double[] invert(double[] m, double[] inv) {
         inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
         inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
         inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
@@ -80,8 +103,11 @@ public final class Mat {
         inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
         inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
         double det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-        if (det == 0)
-            return identity();
+        if (det == 0) {
+            for (int i = 0; i < 16; i++)
+                inv[i] = i % 5 == 0 ? 1 : 0;
+            return inv;
+        }
         for (int i = 0; i < 16; i++)
             inv[i] /= det;
         return inv;
