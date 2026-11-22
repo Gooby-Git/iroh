@@ -539,6 +539,8 @@ tasks.register('fsrAdapterReplay', JavaExec) {
 		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
 		useLavapipe(it)
 	}
+}
+
 // Offline Iris-pack front end (P3-1): parse, preprocess, translate and compile every program of a shader pack.
 // ./gradlew packHarness [-Ppack=<pack dir|zip|shaderpacks dir>] [-Poptions=<file>] [-PallowFail] [-Pnovista] [-Pshow=<unit>]
 // Reads packs where they lie (never copied into the repo); writes build/packHarness/<pack>/.
