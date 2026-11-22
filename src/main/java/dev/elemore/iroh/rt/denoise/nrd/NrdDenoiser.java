@@ -48,6 +48,8 @@ public final class NrdDenoiser implements Denoiser {
     private boolean firstFrame = true, poolsInit;
     private final int width, height;
     private int uboNext;
+    /** compute dispatches NRD requested in the last denoise call (cost proxy) */
+    public int lastDispatches;
 
     public NrdDenoiser(DenoiseGpu gpu, DenoiserType[] types, int width, int height) {
         if (!NrdLoader.load()) throw new NrdException("NRD unavailable: " + NrdLoader.unavailableReason());
@@ -239,6 +241,7 @@ public final class NrdDenoiser implements Denoiser {
                 poolsInit = true;
             }
             int n = blob.getInt();
+            lastDispatches = n;
             int lastPipeline = -1;
             VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_SHADER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
             for (int d = 0; d < n; d++) {

@@ -25,7 +25,7 @@ import static org.lwjgl.vulkan.VK12.*;
  * (R32F), IN_NORMAL_ROUGHNESS (A2B10G10R10_UNORM, NRD-compatible oct packing). Outputs: RGBA16F (rgb, a = history length;
  * shadow: r = visibility). No checkerboard / half-rate input support (UNVERIFIED need). THREAD RULE: render thread only.
  * Settings (Map keys): maxHistory 32, minAlpha 0.02, fireflyFactor 0 (off), varFallbackLen 4, zTol 0.02, zSlope 2.5, nTol 0.9,
- * roughLenScale 0.25, lagK 4 (shadow 3), lagBias 0.1 (relative to the history mean for radiance, absolute for shadow), atrousIterations 4 (shadow 3), feedbackIteration 0, phiZ 1, phiN 64, phiL 16 (shadow 0.25), radiusScale 1.
+ * roughLenScale 0.25, hitTol 0 (specular hit-distance history test, off), lagK 4 (shadow 3), lagBias 0.1 (relative to the history mean for radiance, absolute for shadow), atrousIterations 4 (shadow 3), feedbackIteration 0, phiZ 1, phiN 64, phiL 16 (shadow 0.25), radiusScale 1.
  */
 public final class SvgfDenoiser implements Denoiser {
     private final DenoiseGpu gpu;
@@ -100,7 +100,7 @@ public final class SvgfDenoiser implements Denoiser {
         Map<String, Float> m = new HashMap<>();
         m.put("maxHistory", 32f); m.put("minAlpha", 0.02f); m.put("fireflyFactor", 0f); m.put("varFallbackLen", 4f); m.put("zTol", 0.02f); m.put("zSlope", 2.5f);
         m.put("nTol", 0.9f); m.put("roughLenScale", 0.25f); m.put("feedbackIteration", 0f); m.put("phiZ", 1f); m.put("phiN", 64f);
-        m.put("phiL", 16f); m.put("radiusScale", 1f); m.put("lagK", 4f); m.put("lagBias", 0.1f);
+        m.put("phiL", 16f); m.put("radiusScale", 1f); m.put("lagK", 4f); m.put("lagBias", 0.1f); m.put("hitTol", 0f);
         m.put("atrousIterations", 4f);
         if (t == DenoiserType.IROH_SHADOW) { m.put("phiL", 0.25f); m.put("atrousIterations", 3f); m.put("lagK", 3f); }   // binary-like signal: tight luminance stop, lag guard on
         return m;
@@ -173,7 +173,12 @@ public final class SvgfDenoiser implements Denoiser {
     /** bytes per pixel: shared (viewZ 2x4, normal 2x8, filter ping-pong 2x8) + per channel (history 2x8 + moments 2x8). */
     @Override
     public long estimateMemoryBytes(int width, int height) {
-        return (long) width * height * (8 + 16 + 16 + 32L * types.length);
+        return estimateBytes(types.length, width, height);
+    }
+
+    /** shared 40 B/px (viewZ 2x4, normal 2x8, filter ping-pong 2x8) + 32 B/px per channel (history 2x8, moments 2x8). */
+    public static long estimateBytes(int channels, int width, int height) {
+        return (long) width * height * (40 + 32L * channels);
     }
 
     @Override
@@ -236,9 +241,9 @@ public final class SvgfDenoiser implements Denoiser {
                 write(s, set, sampled, stor);
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tPipe);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tpl, 0, s.longs(set), null);
-                ByteBuffer pc = s.malloc(56);
+                ByteBuffer pc = s.malloc(60);
                 pc.putFloat(0, w).putFloat(4, h).putFloat(8, mode).putFloat(12, (albedo ? 1 : 0) + (reset ? 2 : 0)).putFloat(16, f(m, "maxHistory")).putFloat(20, f(m, "minAlpha"))
-                        .putFloat(24, f(m, "fireflyFactor")).putFloat(28, f(m, "varFallbackLen")).putFloat(32, f(m, "zTol")).putFloat(36, f(m, "zSlope")).putFloat(40, f(m, "nTol")).putFloat(44, f(m, "roughLenScale")).putFloat(48, f(m, "lagK")).putFloat(52, f(m, "lagBias"));
+                        .putFloat(24, f(m, "fireflyFactor")).putFloat(28, f(m, "varFallbackLen")).putFloat(32, f(m, "zTol")).putFloat(36, f(m, "zSlope")).putFloat(40, f(m, "nTol")).putFloat(44, f(m, "roughLenScale")).putFloat(48, f(m, "lagK")).putFloat(52, f(m, "lagBias")).putFloat(56, f(m, "hitTol"));
                 vkCmdPushConstants(cmd, tpl, VK_SHADER_STAGE_COMPUTE_BIT, 0, pc);
                 vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, mb, null, null);

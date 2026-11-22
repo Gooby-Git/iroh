@@ -25,4 +25,16 @@ public final class FsrNative {
     public static native long[] memoryBytes(long ctx);
     public static native void destroy(long ctx);
     public static native void dispatch(long ctx, ByteBuffer params);
+
+    // ---- frame generation components (optical flow + frame interpolation, no swapchain proxy)
+    public static native int fgStructSize();
+    /** flags bit0: HDR colour input; backBufferVkFormat: VkFormat of the presentation colour image. */
+    public static native long fgCreate(long instance, long physicalDevice, long device, long getDeviceProcAddr, int flags, int shimFlags, int renderW, int renderH, int displayW, int displayH, int backBufferVkFormat);
+    public static native String fgInfo(long ctx);
+    /** {sdkInternalGpuBytes, shimSharedImageBytes, hostScratchBytes}. */
+    public static native long[] fgMemoryBytes(long ctx);
+    /** inspection: {image, width, height, vkFormat} x5: optical flow vector, SCD, dilated depth, dilated MV, reconstructed previous depth. */
+    public static native long[] fgSharedImages(long ctx);
+    public static native void fgDestroy(long ctx);
+    public static native void fgDispatch(long ctx, ByteBuffer params);
 }

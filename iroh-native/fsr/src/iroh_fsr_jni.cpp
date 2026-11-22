@@ -10,6 +10,8 @@
 #include <jni.h>
 #include <vulkan/vulkan.h>
 #include <FidelityFX/host/ffx_fsr3upscaler.h>
+#include <FidelityFX/host/ffx_opticalflow.h>
+#include <FidelityFX/host/ffx_frameinterpolation.h>
 #include <FidelityFX/host/backends/vk/ffx_vk.h>
 #include <cstdint>
 #include <cstddef>
@@ -133,6 +135,7 @@ struct Ctx {
     uint32_t maxRW = 0, maxRH = 0, maxUW = 0, maxUH = 0;
 };
 
+#define VKD2(name) auto name = (PFN_##name)c->dc.vkDeviceProcAddr(c->dc.vkDevice, #name)
 #define VKD(name) auto name = (PFN_##name)c->dc.vkDeviceProcAddr(c->dc.vkDevice, #name)
 
 bool makeShared(Ctx* c, Ctx::Shared& s, VkFormat fmt, uint32_t w, uint32_t h, std::string& err) {
@@ -183,6 +186,88 @@ void destroyCtx(Ctx* c) {
     if (c->dc.vkDevice) { freeShared(c, c->dilatedDepth); freeShared(c, c->dilatedMv); freeShared(c, c->prevDepth); }
     free64(c->scratch);
     free64(c->fsr);
+    delete c;
+}
+
+
+// ===================================================================================================================
+// Frame generation without the (Win32-only) swapchain proxy: optical flow + frame interpolation components, driven in the
+// sequence ffx_fsr3.cpp uses for "interpolation only": FrameInterpolationPrepare -> OpticalFlow dispatch -> FrameInterpolation dispatch,
+// all into the caller's command buffer. The shim owns the shared images (optical flow vector + SCD, dilated depth / motion vectors,
+// reconstructed previous depth) created from the descriptions the SDK reports. Presenting the interpolated image is the caller's job.
+struct FgImage { uint64_t image; uint32_t format, width, height, usage, layout, pad; };
+struct IrohFgDispatch {
+    uint64_t cmdBuf;
+    ImageRef color, depth, motionVectors, output;       // color = current HUD-less presentation colour (display size); output = interpolated image (display size, GENERAL)
+    float jitterX, jitterY, mvScaleX, mvScaleY;
+    uint32_t renderW, renderH, displayW, displayH;
+    float frameTimeMs, cameraNear, cameraFar, fovY, viewSpaceToMeters;
+    float camPos[3], camUp[3], camRight[3], camForward[3];
+    uint64_t frameId;
+    uint32_t flags;                                      // bit0 reset, bit1 debug view, bit2 colour is linear (scRGB) instead of sRGB
+    uint32_t pad;
+};
+static_assert(sizeof(IrohFgDispatch) % 8 == 0, "IrohFgDispatch");
+
+struct FgCtx {
+    VkDeviceContext dc{};
+    VkPhysicalDevice phys = nullptr;
+    void* scratch = nullptr; size_t scratchSize = 0;
+    FfxInterface iface{};
+    FfxOpticalflowContext* of = nullptr; FfxFrameInterpolationContext* fi = nullptr;
+    bool ofOk = false, fiOk = false;
+    struct Sh { VkImage image = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkFormat fmt = VK_FORMAT_UNDEFINED; uint32_t w = 0, h = 0; bool init = false; uint64_t bytes = 0; std::string what; };
+    Sh ofVec, ofScd, dilD, dilMv, recD;
+    uint64_t sdkBytes = 0, sharedBytes = 0;
+    uint32_t rw = 0, rh = 0, dw = 0, dh = 0;
+    std::string info;
+};
+
+VkFormat vkFromFfx(FfxSurfaceFormat f) {
+    switch (f) {
+        case FFX_SURFACE_FORMAT_R32_UINT: return VK_FORMAT_R32_UINT;
+        case FFX_SURFACE_FORMAT_R32_FLOAT: return VK_FORMAT_R32_SFLOAT;
+        case FFX_SURFACE_FORMAT_R16G16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
+        case FFX_SURFACE_FORMAT_R16G16_SINT: return VK_FORMAT_R16G16_SINT;
+        case FFX_SURFACE_FORMAT_R16G16_UINT: return VK_FORMAT_R16G16_UINT;
+        case FFX_SURFACE_FORMAT_R16_FLOAT: return VK_FORMAT_R16_SFLOAT;
+        case FFX_SURFACE_FORMAT_R16_UINT: return VK_FORMAT_R16_UINT;
+        case FFX_SURFACE_FORMAT_R8_UINT: return VK_FORMAT_R8_UINT;
+        case FFX_SURFACE_FORMAT_R8G8_UINT: return VK_FORMAT_R8G8_UINT;
+        case FFX_SURFACE_FORMAT_R8_UNORM: return VK_FORMAT_R8_UNORM;
+        case FFX_SURFACE_FORMAT_R32G32_FLOAT: return VK_FORMAT_R32G32_SFLOAT;
+        case FFX_SURFACE_FORMAT_R16G16B16A16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+bool makeSharedFfx(FgCtx* c, FgCtx::Sh& s, const FfxCreateResourceDescription& d, const char* what, std::string& err) {
+    VkFormat f = vkFromFfx(d.resourceDescription.format);
+    char b[160]; snprintf(b, sizeof b, "%s: ffx format %d (vk %d) %ux%u; ", what, (int)d.resourceDescription.format, (int)f, d.resourceDescription.width, d.resourceDescription.height);
+    c->info += b;
+    if (f == VK_FORMAT_UNDEFINED) { err = std::string("unmapped FFX surface format for ") + what + ": " + std::to_string((int)d.resourceDescription.format); return false; }
+    Ctx tmp; tmp.dc = c->dc; tmp.phys = c->phys;
+    if (!makeShared(&tmp, tmp.dilatedDepth, f, d.resourceDescription.width, d.resourceDescription.height, err)) return false;
+    s.image = tmp.dilatedDepth.image; s.mem = tmp.dilatedDepth.mem; s.fmt = f; s.w = d.resourceDescription.width; s.h = d.resourceDescription.height; s.bytes = tmp.dilatedDepth.bytes;
+    return true;
+}
+void freeShFg(FgCtx* c, FgCtx::Sh& s) {
+    Ctx tmp; tmp.dc = c->dc; tmp.phys = c->phys;
+    tmp.dilatedDepth.image = s.image; tmp.dilatedDepth.mem = s.mem;
+    freeShared(&tmp, tmp.dilatedDepth);
+    s = FgCtx::Sh{};
+}
+FfxResource shRes(FgCtx::Sh& s) {
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = s.fmt; ci.extent = {s.w, s.h, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    return ffxGetResourceVK((void*)(uintptr_t)s.image, ffxGetImageResourceDescriptionVK(s.image, ci), L"iroh-fg-shared", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
+}
+void destroyFg(FgCtx* c) {
+    if (!c) return;
+    if (c->fiOk) ffxFrameInterpolationContextDestroy(c->fi);
+    if (c->ofOk) ffxOpticalflowContextDestroy(c->of);
+    if (c->dc.vkDevice) for (FgCtx::Sh* s : {&c->ofVec, &c->ofScd, &c->dilD, &c->dilMv, &c->recD}) freeShFg(c, *s);
+    free64(c->scratch); free64(c->of); free64(c->fi);
     delete c;
 }
 
@@ -352,6 +437,132 @@ J(void, dispatch)(JNIEnv* env, jclass, jlong h, jobject buf) {
     { std::lock_guard<std::mutex> l(g_msgMutex); g_messages.clear(); }
     FfxErrorCode e = ffxFsr3UpscalerContextDispatch(c->fsr, &d);
     if (e != FFX_OK) throwFfx(env, "ffxFsr3UpscalerContextDispatch", e);
+}
+
+J(jint, fgStructSize)(JNIEnv*, jclass) { return (jint)sizeof(IrohFgDispatch); }
+
+// fgCreate(instance, phys, device, gdpa, flags (bit0 hdr colour input), shimFlags, renderW, renderH, displayW, displayH, backBufferVkFormat) -> handle
+J(jlong, fgCreate)(JNIEnv* env, jclass, jlong instance, jlong phys, jlong device, jlong gdpa, jint flags, jint shimFlags, jint rw, jint rh, jint dw, jint dh, jint backFormat) {
+    (void)instance;
+    if (!phys || !device) { throwFsr(env, "fgCreate", "null VkPhysicalDevice/VkDevice"); return 0; }
+    std::lock_guard<std::mutex> cl(g_createMutex);
+    { std::lock_guard<std::mutex> l(g_msgMutex); g_messages.clear(); }
+    FgCtx* c = new FgCtx();
+    c->phys = (VkPhysicalDevice)phys;
+    c->dc.vkDevice = (VkDevice)device; c->dc.vkPhysicalDevice = (VkPhysicalDevice)phys;
+    c->dc.vkDeviceProcAddr = gdpa ? (PFN_vkGetDeviceProcAddr)gdpa : (PFN_vkGetDeviceProcAddr)vkGetDeviceProcAddr;
+    c->rw = rw; c->rh = rh; c->dw = dw; c->dh = dh;
+    c->scratchSize = ffxGetScratchMemorySizeVK(c->phys, 2);
+    c->scratch = alloc64(c->scratchSize);
+    c->of = (FfxOpticalflowContext*)alloc64(sizeof(FfxOpticalflowContext));
+    c->fi = (FfxFrameInterpolationContext*)alloc64(sizeof(FfxFrameInterpolationContext));
+    if (!c->scratch || !c->of || !c->fi) { destroyFg(c); throwFsr(env, "fgCreate", "out of host memory"); return 0; }
+    memset(c->scratch, 0, c->scratchSize); memset(c->of, 0, sizeof(FfxOpticalflowContext)); memset(c->fi, 0, sizeof(FfxFrameInterpolationContext));
+    FfxDevice d = ffxGetDeviceVK(&c->dc);
+    FfxErrorCode e = ffxGetInterfaceVK(&c->iface, d, c->scratch, c->scratchSize, 2);
+    if (e != FFX_OK) { destroyFg(c); throwFfx(env, "ffxGetInterfaceVK(fg)", e); return 0; }
+    g_origCaps = c->iface.fpGetDeviceCapabilities;
+    g_forceNoFp16 = (shimFlags & 1) != 0; g_forceNoWave64 = (shimFlags & 2) != 0;
+    c->iface.fpGetDeviceCapabilities = capsWrapper;
+    FfxOpticalflowContextDescription od{};
+    od.backendInterface = c->iface; od.flags = 0; od.resolution = {(uint32_t)dw, (uint32_t)dh};
+    e = ffxOpticalflowContextCreate(c->of, &od);
+    if (e != FFX_OK) { destroyFg(c); throwFfx(env, "ffxOpticalflowContextCreate", e); return 0; }
+    c->ofOk = true;
+    FfxFrameInterpolationContextDescription fd{};
+    fd.flags = (flags & 1) ? FFX_FRAMEINTERPOLATION_ENABLE_HDR_COLOR_INPUT : 0;
+    fd.maxRenderSize = {(uint32_t)rw, (uint32_t)rh}; fd.displaySize = {(uint32_t)dw, (uint32_t)dh};
+    fd.backBufferFormat = ffxGetSurfaceFormatVK((VkFormat)backFormat); fd.previousInterpolationSourceFormat = fd.backBufferFormat;
+    fd.backendInterface = c->iface;
+    e = ffxFrameInterpolationContextCreate(c->fi, &fd);
+    if (e != FFX_OK) { destroyFg(c); throwFfx(env, "ffxFrameInterpolationContextCreate", e); return 0; }
+    c->fiOk = true;
+    FfxEffectMemoryUsage mu{};
+    if (ffxOpticalflowContextGetGpuMemoryUsage(c->of, &mu) == FFX_OK) c->sdkBytes += mu.totalUsageInBytes;
+    if (ffxFrameInterpolationContextGetGpuMemoryUsage(c->fi, &mu) == FFX_OK) c->sdkBytes += mu.totalUsageInBytes;
+    FfxOpticalflowSharedResourceDescriptions od2{};
+    FfxFrameInterpolationSharedResourceDescriptions fd2{};
+    std::string err;
+    if (ffxOpticalflowGetSharedResourceDescriptions(c->of, &od2) != FFX_OK || ffxFrameInterpolationGetSharedResourceDescriptions(c->fi, &fd2) != FFX_OK) { destroyFg(c); throwFsr(env, "fgCreate", "GetSharedResourceDescriptions failed"); return 0; }
+    if (!makeSharedFfx(c, c->ofVec, od2.opticalFlowVector, "opticalFlowVector", err) || !makeSharedFfx(c, c->ofScd, od2.opticalFlowSCD, "opticalFlowSCD", err) ||
+        !makeSharedFfx(c, c->dilD, fd2.dilatedDepth, "dilatedDepth", err) || !makeSharedFfx(c, c->dilMv, fd2.dilatedMotionVectors, "dilatedMotionVectors", err) ||
+        !makeSharedFfx(c, c->recD, fd2.reconstructedPrevNearestDepth, "reconstructedPrevNearestDepth", err)) { destroyFg(c); throwFsr(env, "fgCreate", err); return 0; }
+    c->sharedBytes = c->ofVec.bytes + c->ofScd.bytes + c->dilD.bytes + c->dilMv.bytes + c->recD.bytes;
+    return (jlong)(uintptr_t)c;
+}
+
+J(jstring, fgInfo)(JNIEnv* env, jclass, jlong h) { return env->NewStringUTF(((FgCtx*)(uintptr_t)h)->info.c_str()); }
+J(jlongArray, fgMemoryBytes)(JNIEnv* env, jclass, jlong h) {
+    FgCtx* c = (FgCtx*)(uintptr_t)h;
+    jlong v[3] = {(jlong)c->sdkBytes, (jlong)c->sharedBytes, (jlong)c->scratchSize};
+    jlongArray a = env->NewLongArray(3); env->SetLongArrayRegion(a, 0, 3, v); return a;
+}
+// debug/inspection: {image, width, height, vkFormat} for optical flow vector, SCD, dilated depth, dilated MV, reconstructed previous depth
+J(jlongArray, fgSharedImages)(JNIEnv* env, jclass, jlong h) {
+    FgCtx* c = (FgCtx*)(uintptr_t)h;
+    jlong v[20]; int i = 0;
+    for (FgCtx::Sh* s : {&c->ofVec, &c->ofScd, &c->dilD, &c->dilMv, &c->recD}) { v[i++] = (jlong)s->image; v[i++] = s->w; v[i++] = s->h; v[i++] = s->fmt; }
+    jlongArray a = env->NewLongArray(20); env->SetLongArrayRegion(a, 0, 20, v); return a;
+}
+J(void, fgDestroy)(JNIEnv*, jclass, jlong h) { destroyFg((FgCtx*)(uintptr_t)h); }
+
+J(void, fgDispatch)(JNIEnv* env, jclass, jlong h, jobject buf) {
+    FgCtx* c = (FgCtx*)(uintptr_t)h;
+    if (!c) { throwFsr(env, "fgDispatch", "null context"); return; }
+    if (env->GetDirectBufferCapacity(buf) < (jlong)sizeof(IrohFgDispatch)) { throwFsr(env, "fgDispatch", "parameter buffer smaller than fgStructSize()"); return; }
+    IrohFgDispatch p;
+    memcpy(&p, env->GetDirectBufferAddress(buf), sizeof p);
+    VkCommandBuffer cb = (VkCommandBuffer)p.cmdBuf;
+    if (!cb) { throwFsr(env, "fgDispatch", "null command buffer"); return; }
+    // first use of the shim-owned images: UNDEFINED -> GENERAL
+    VkImageMemoryBarrier bars[5]; uint32_t nb = 0;
+    for (FgCtx::Sh* s : {&c->ofVec, &c->ofScd, &c->dilD, &c->dilMv, &c->recD}) {
+        if (s->init) continue;
+        VkImageMemoryBarrier& b = bars[nb++]; b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_GENERAL; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = s->image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        s->init = true;
+    }
+    if (nb) { Ctx tmp; tmp.dc = c->dc; tmp.phys = c->phys; VKD2(vkCmdPipelineBarrier); vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, nb, bars); }
+    bool ok; std::string err;
+    FfxResource color = toFfx(p.color, ok, err, "color"); if (!ok) { throwFsr(env, "fgDispatch", err); return; }
+    FfxResource depth = toFfx(p.depth, ok, err, "depth"); if (!ok) { throwFsr(env, "fgDispatch", err); return; }
+    FfxResource mv = toFfx(p.motionVectors, ok, err, "motionVectors"); if (!ok) { throwFsr(env, "fgDispatch", err); return; }
+    FfxResource out = toFfx(p.output, ok, err, "output"); if (!ok) { throwFsr(env, "fgDispatch", err); return; }
+    { std::lock_guard<std::mutex> l(g_msgMutex); g_messages.clear(); }
+    FfxResource dilD = shRes(c->dilD), dilMv = shRes(c->dilMv), recD = shRes(c->recD), ofv = shRes(c->ofVec), ofs = shRes(c->ofScd);
+    FfxCommandList cl = ffxGetCommandListVK(cb);
+    // 1. prepare (dilate depth / motion vectors, reconstruct previous depth)
+    FfxFrameInterpolationPrepareDescription pd{};
+    pd.flags = 0; pd.commandList = cl; pd.renderSize = {p.renderW, p.renderH}; pd.jitterOffset = {p.jitterX, p.jitterY}; pd.motionVectorScale = {p.mvScaleX, p.mvScaleY};
+    pd.frameTimeDelta = p.frameTimeMs; pd.cameraNear = p.cameraNear; pd.cameraFar = p.cameraFar; pd.viewSpaceToMetersFactor = p.viewSpaceToMeters > 0 ? p.viewSpaceToMeters : 1.0f;
+    pd.cameraFovAngleVertical = p.fovY; pd.depth = depth; pd.motionVectors = mv; pd.frameID = p.frameId;
+    pd.dilatedDepth = dilD; pd.dilatedMotionVectors = dilMv; pd.reconstructedPrevDepth = recD;
+    for (int i = 0; i < 3; i++) { pd.cameraPosition[i] = p.camPos[i]; pd.cameraUp[i] = p.camUp[i]; pd.cameraRight[i] = p.camRight[i]; pd.cameraForward[i] = p.camForward[i]; }
+    FfxErrorCode e = ffxFrameInterpolationPrepare(c->fi, &pd);
+    if (e != FFX_OK) { throwFfx(env, "ffxFrameInterpolationPrepare", e); return; }
+    // 2. optical flow on the presentation colour
+    FfxOpticalflowDispatchDescription od{};
+    od.commandList = cl; od.color = color; od.opticalFlowVector = ofv; od.opticalFlowSCD = ofs; od.reset = (p.flags & 1) != 0;
+    od.backbufferTransferFunction = (p.flags & 4) ? FFX_BACKBUFFER_TRANSFER_FUNCTION_SCRGB : FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB; od.minMaxLuminance = {0.0f, 0.0f};
+    if ((p.flags & 8) == 0) {                          // bit3: skip the SDK optical flow (vectors supplied by the caller into the shim-owned images)
+        e = ffxOpticalflowContextDispatch(c->of, &od);
+        if (e != FFX_OK) { throwFfx(env, "ffxOpticalflowContextDispatch", e); return; }
+    }
+    // 3. interpolation
+    FfxFrameInterpolationDispatchDescription fd{};
+    fd.flags = (p.flags & 2) ? FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW : 0;
+    fd.commandList = cl; fd.displaySize = {p.displayW, p.displayH}; fd.renderSize = {p.renderW, p.renderH};
+    fd.currentBackBuffer = color; fd.output = out;
+    fd.interpolationRect = {0, 0, (int32_t)p.displayW, (int32_t)p.displayH};
+    fd.opticalFlowVector = ofv; fd.opticalFlowSceneChangeDetection = ofs; fd.opticalFlowBufferSize = {p.displayW, p.displayH}; fd.opticalFlowBlockSize = 8;
+    fd.opticalFlowScale = {1.0f / p.displayW, 1.0f / p.displayH};
+    fd.cameraNear = p.cameraNear; fd.cameraFar = p.cameraFar; fd.cameraFovAngleVertical = p.fovY; fd.viewSpaceToMetersFactor = pd.viewSpaceToMetersFactor;
+    fd.frameTimeDelta = p.frameTimeMs; fd.reset = (p.flags & 1) != 0;
+    fd.backBufferTransferFunction = od.backbufferTransferFunction; fd.minMaxLuminance[0] = 0.0f; fd.minMaxLuminance[1] = 0.0f;
+    fd.frameID = p.frameId; fd.dilatedDepth = dilD; fd.dilatedMotionVectors = dilMv; fd.reconstructedPrevDepth = recD;
+    e = ffxFrameInterpolationDispatch(c->fi, &fd);
+    if (e != FFX_OK) throwFfx(env, "ffxFrameInterpolationDispatch", e);
 }
 
 } // extern "C"

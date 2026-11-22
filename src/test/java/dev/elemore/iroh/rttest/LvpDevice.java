@@ -35,6 +35,7 @@ public final class LvpDevice implements DenoiseGpu {
     public final List<String> report = new ArrayList<>();
     public boolean computeDerivativesQuads;
     public boolean hasComputeDerivativesExt;
+    public int subgroupSize;
 
     public LvpDevice(boolean wantComputeDerivatives) {
         String icd = System.getenv("VK_DRIVER_FILES");
@@ -78,6 +79,7 @@ public final class LvpDevice implements DenoiseGpu {
             VkPhysicalDeviceSubgroupProperties sg = VkPhysicalDeviceSubgroupProperties.calloc(s).sType$Default();
             VkPhysicalDeviceProperties2 p2 = VkPhysicalDeviceProperties2.calloc(s).sType$Default().pNext(sg.address());
             vkGetPhysicalDeviceProperties2(phys, p2);
+            subgroupSize = sg.subgroupSize();
             report.add("device: " + deviceName);
             report.add(String.format("features: storageImageExtendedFormats=%b writeWithoutFormat=%b readWithoutFormat=%b imageQuery(core)", ft.shaderStorageImageExtendedFormats(), ft.shaderStorageImageWriteWithoutFormat(), ft.shaderStorageImageReadWithoutFormat()));
             report.add(String.format("VK_KHR_compute_shader_derivatives: extension=%b computeDerivativeGroupQuads=%b; subgroup size %d quad=%b", hasComputeDerivativesExt, quads, sg.subgroupSize(), (sg.supportedOperations() & VK_SUBGROUP_FEATURE_QUAD_BIT) != 0));
@@ -236,6 +238,11 @@ public final class LvpDevice implements DenoiseGpu {
             vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.buffer(), r);
         }
         layout(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    }
+
+    /** copy a small image (any size) into a buffer; the image is assumed to be in GENERAL and is left there. */
+    public void downloadSized(long image, int w, int h, Buf b, int unused) {
+        download(image, w, h, b);
     }
 
     public static ByteBuffer bytes(Buf b) {

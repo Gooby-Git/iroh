@@ -35,6 +35,8 @@ public final class DenoiseTest {
         boolean threw = false;
         try { NrdSettings.toKeyValues(1, Map.of("nope", 1f)); } catch (IllegalArgumentException e) { threw = true; }
         check(threw, "unknown setting rejected");
+        check(SvgfDenoiser.estimateBytes(1, 1707, 960) == 1707L * 960 * 72 && SvgfDenoiser.estimateBytes(3, 2560, 1440) == 2560L * 1440 * 136, "own denoiser memory estimate (40 B/px + 32 B/px per channel)");
+        check(DenoiserType.IROH_SHADOW.noisyInputs().contains(Slot.IN_PENUMBRA) && DenoiserType.IROH_DIFFUSE.outputs().contains(Slot.OUT_DIFF_RADIANCE_HITDIST) && Slot.IN_ALBEDO.isInput(), "own denoiser slot sets");
         // formats
         check(NrdFormats.bytesPerPixel(27) == 8 && NrdFormats.bytesPerPixel(17) == 2 && NrdFormats.bytesPerPixel(40) == 4 && NrdFormats.bytesPerPixel(0) == 1, "format sizes");
         check(NrdFormats.name(40).equals("R10_G10_B10_A2_UNORM"), "format names");

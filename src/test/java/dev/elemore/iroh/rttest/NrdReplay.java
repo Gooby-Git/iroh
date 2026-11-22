@@ -84,11 +84,11 @@ public final class NrdReplay {
                 for (int p = 0; p < W * H; p++) {
                     mv.putShort(p * 4, Float.floatToFloat16(fr.mv[p * 2])).putShort(p * 4 + 2, Float.floatToFloat16(fr.mv[p * 2 + 1]));
                     z.putFloat(p * 4, fr.viewZ[p]);
-                    n.putInt(p * 4, NrdScene.packNormalRoughness(fr.normal[p * 3], fr.normal[p * 3 + 1], fr.normal[p * 3 + 2], 1.0f, 0));
+                    n.putInt(p * 4, NrdScene.packNormalRoughness(fr.normal[p * 3], fr.normal[p * 3 + 1], fr.normal[p * 3 + 2], type == DenoiserType.IROH_SPECULAR ? 0.5f : 1.0f, 0));
                     float r = fr.radiance[p * 3], g = fr.radiance[p * 3 + 1], b = fr.radiance[p * 3 + 2], hd = fr.hitDist[p];
                     float a0, a1, a2, a3;
                     if (type == DenoiserType.REBLUR_DIFFUSE) { float[] y = NrdScene.ycocg(r, g, b); a0 = y[0]; a1 = y[1]; a2 = y[2]; a3 = NrdScene.normHitDist(hd, fr.viewZ[p]); }
-                    else { a0 = r; a1 = g; a2 = b; a3 = Math.min(hd, 65504f); }
+                    else { a0 = r; a1 = g; a2 = b; a3 = type == DenoiserType.IROH_SPECULAR ? 2f : Math.min(hd, 65504f); }
                     no.putShort(p * 8, Float.floatToFloat16(Math.min(a0, 65504f))).putShort(p * 8 + 2, Float.floatToFloat16(a1)).putShort(p * 8 + 4, Float.floatToFloat16(a2)).putShort(p * 8 + 6, Float.floatToFloat16(a3));
                     pe.putShort(p * 2, Float.floatToFloat16(Math.min(fr.penumbra[p], 65504f)));
                 }
@@ -108,8 +108,8 @@ public final class NrdReplay {
                 df.images.put(IN_MV, ref(im.mv(), VK_FORMAT_R16G16_SFLOAT));
                 df.images.put(IN_VIEWZ, ref(im.viewZ(), VK_FORMAT_R32_SFLOAT));
                 df.images.put(IN_NORMAL_ROUGHNESS, ref(im.nrm(), VK_FORMAT_A2B10G10R10_UNORM_PACK32));
-                df.images.put(IN_DIFF_RADIANCE_HITDIST, ref(im.noisy(), VK_FORMAT_R16G16B16A16_SFLOAT));
-                df.images.put(OUT_DIFF_RADIANCE_HITDIST, ref(im.out(), VK_FORMAT_R16G16B16A16_SFLOAT));
+                df.images.put(type == DenoiserType.IROH_SPECULAR ? IN_SPEC_RADIANCE_HITDIST : IN_DIFF_RADIANCE_HITDIST, ref(im.noisy(), VK_FORMAT_R16G16B16A16_SFLOAT));
+                df.images.put(type == DenoiserType.IROH_SPECULAR ? OUT_SPEC_RADIANCE_HITDIST : OUT_DIFF_RADIANCE_HITDIST, ref(im.out(), VK_FORMAT_R16G16B16A16_SFLOAT));
                 df.images.put(IN_PENUMBRA, ref(im.pen(), VK_FORMAT_R16_SFLOAT));
                 df.images.put(OUT_SHADOW_TRANSLUCENCY, own ? ref(im.out(), VK_FORMAT_R16G16B16A16_SFLOAT) : ref(im.shadow(), VK_FORMAT_R8_UNORM));
                 FrameSettings fs = df.settings;
@@ -148,6 +148,8 @@ public final class NrdReplay {
             }
             return last;
         } finally {
+            if (den instanceof NrdDenoiser nd) System.out.println("   NRD dispatches per frame (last frame): " + nd.lastDispatches);
+            if (den instanceof SvgfDenoiser sd) System.out.println("   own dispatches per frame: " + sd.lastDispatches);
             den.close();
             for (DenoiseGpu.Img i : new DenoiseGpu.Img[]{im.mv(), im.viewZ(), im.nrm(), im.noisy(), im.out(), im.pen(), im.shadow(), im.spec()}) dev.destroyImage(i);
             for (LvpDevice.Buf b : new LvpDevice.Buf[]{bMv, bZ, bN, bNoisy, bOut, bPen, bSh}) dev.destroyBuffer(b);
@@ -231,6 +233,9 @@ public final class NrdReplay {
             }
             System.out.println(sb);
         }
+        for (int[] sz : new int[][]{{1707, 960}, {2560, 1440}})
+            System.out.printf("own denoiser memory %dx%d: diffuse %.1f MiB, diffuse+specular %.1f MiB, diffuse+specular+shadow %.1f MiB (estimate, 40 B/px shared + 32 B/px per channel)%n", sz[0], sz[1],
+                    SvgfDenoiser.estimateBytes(1, sz[0], sz[1]) / 1048576.0, SvgfDenoiser.estimateBytes(2, sz[0], sz[1]) / 1048576.0, SvgfDenoiser.estimateBytes(3, sz[0], sz[1]) / 1048576.0);
         dev = new LvpDevice(true);
         for (String l : dev.report) System.out.println(l);
         System.out.println("note: the NRD library in use was built with " + (dev.computeDerivativesQuads ? "" : "(device lacks compute derivative quads) ") + "NRD_SUPPORTS_QUAD_INTRINSICS as selected by the gradle task");
@@ -315,6 +320,12 @@ public final class NrdReplay {
             png(o, 3, t.name().toLowerCase() + ".png");
             if (t == DenoiserType.RELAX_DIFFUSE) goldenCheck(o, golden);
         }
+        // ---- own specular channel: SMOKE test only (the scene has no specular signal: the diffuse-like noisy signal is fed as specular with roughness 0.5)
+        fin[0] = true;
+        float[] osp = run("IROH_SPECULAR (smoke)", DenoiserType.IROH_SPECULAR, false, frames, fin, mem);
+        double sE = rmse(osp, gt, 3, surf, true);
+        System.out.printf("IROH_SPECULAR (smoke, roughness-limited history, diffuse-like signal): RMSE tonemapped %.4f vs noisy %.4f%n", sE, eNoisyT);
+        ck(fin[0] && sE < eNoisyT * 0.7, "own specular channel runs, no NaN, reduces the error (smoke only; no specular reference scene)");
         // ---- own shadow denoiser
         fin[0] = true;
         float[] osh = run("IROH_SHADOW", DenoiserType.IROH_SHADOW, false, frames, fin, mem);

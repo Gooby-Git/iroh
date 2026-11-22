@@ -25,7 +25,8 @@ layout(push_constant) uniform P {
     float mode, flags;            // flags bit0 albedo demodulation, bit1 reset
     float maxLen, minAlpha, fireflyFactor, varFallbackLen;
     float zTol, zSlope, nTol, roughLenScale;
-    float lagK, lagBias;          // history lag guard: |current - history mean| > lagK * sigma + lagBias -> history length cut (A-SVGF motivated, cheaper)
+    float lagK, lagBias;
+    float hitTol;                 // specular: reject history when the hit distance differs by more than this fraction (0 = off)          // history lag guard: |current - history mean| > lagK * sigma + lagBias -> history length cut (A-SVGF motivated, cheaper)
 } p;
 
 vec4 decodeNormal(vec4 q) {
@@ -95,8 +96,8 @@ void main() {
             float w = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y);
             bool ok = abs(pz - z) <= zt && dot(pn.xyz, nr.xyz) >= p.nTol;
             vec4 hcq = texelFetch(uHistColor, q, 0);
-            if (p.mode > 0.5 && p.mode < 1.5 && raw.a > 0.0 && hcq.a > 0.0)                      // specular: hit distance must stay consistent
-                ok = ok && abs(hcq.a - raw.a) <= 0.5 * max(raw.a, hcq.a);
+            if (p.hitTol > 0.0 && p.mode > 0.5 && p.mode < 1.5 && raw.a > 0.0 && hcq.a > 0.0)   // specular: hit distance must stay consistent (off by default: noisy 1 spp hit distances reject too much)
+                ok = ok && abs(hcq.a - raw.a) <= p.hitTol * max(raw.a, hcq.a);
             if (ok) { hc += w * hcq.rgb; hm += w * texelFetch(uHistMoments, q, 0).rgb; haux += w * hcq.a; wsum += w; }
         }
     }

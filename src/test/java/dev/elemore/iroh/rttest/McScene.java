@@ -15,7 +15,9 @@ public final class McScene {
     static final float SUN_TAN2 = 0.05f, SUN_I = 3.0f, TORCH_I = 7.0f;
     /** static camera / entity / flicker (light-switch test) */
     public static boolean STATIC;
-    static int cf(int f) { return STATIC ? 0 : f; }
+    /** fractional frame offset (frame-generation tests render the true in-between frame) */
+    public static float HALF = 0f;
+    static float cf(int f) { return STATIC ? 0 : f + HALF; }
     static final float[] TORCH = {-2.7f, 1.9f, 0.4f};
 
     /** boxes: cx,cy,cz,hx,hy,hz, material (0 stone, 1 planks, 2 floor dirt, 3 wood, 4 entity cloth) */
@@ -44,7 +46,7 @@ public final class McScene {
         return b;
     }
 
-    static float flicker(int f) { return STATIC ? 1f : 1.0f + 0.3f * (float) Math.sin(0.9 * f) + 0.15f * (float) Math.sin(2.3 * f + 1); }
+    static float flicker(int f) { return STATIC ? 1f : 1.0f + 0.3f * (float) Math.sin(0.9 * cf(f)) + 0.15f * (float) Math.sin(2.3 * cf(f) + 1); }
 
     public static float[] eye(int f) { return new float[]{-1.2f + 0.05f * cf(f), 1.6f, -3.0f + 0.03f * cf(f)}; }
 
