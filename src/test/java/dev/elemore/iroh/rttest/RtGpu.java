@@ -37,7 +37,7 @@ final class RtGpu implements AutoCloseable {
 
     VkBuf verts, inst, atlas, mats, lights, frame, counters, origins, cmds, cache;
     VkBuf gbufCur, gbufPrev;
-    Object gImage, dImage, raster;
+    Object gImage, dImage, raster, rasterEnt;
     RtCompute.Pass pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon;
     /** P5-1: upscaler jitter in pixels for the next setFrame (content shifts by +jitter). */
     float[] jitterPx = {0, 0};
@@ -126,6 +126,14 @@ final class RtGpu implements AutoCloseable {
     // ------------------------------------------------------------------------------------------------ scene
 
     int[][] firstVertex; // per section, per bucket
+    /** P5-3 entities: first vertex of each part model (appended after the terrain), its BLAS, the static TLAS instances,
+     *  the per-frame pose buffer (6 vec4 per part instance: current + previous 3x4) and the entity draw commands. */
+    int[] firstVertexPart;
+    final List<RtAccel.Accel> partBlas = new ArrayList<>();
+    final List<RtAccel.Instance> staticInstances = new ArrayList<>();
+    VkBuf poses, entCmds;
+    int entityCount;
+    static final int MAX_ENT_INSTANCES = 4096;
 
     void uploadScene() {
         List<RtScene.SectionMesh> secs = scene.sections;
@@ -138,19 +146,32 @@ final class RtGpu implements AutoCloseable {
                 total += secs.get(s).quads[b] * 4;
                 totalQuads += secs.get(s).quads[b];
             }
+        RtEntities ents = scene.entities;
+        int parts = ents == null ? 0 : RtEntities.PARTS;
+        firstVertexPart = new int[parts];
+        for (int p = 0; p < parts; p++) {
+            firstVertexPart[p] = total;
+            total += ents.quads[p] * 4;
+        }
         ByteBuffer v = le(Math.max(16, total * 16));
         for (RtScene.SectionMesh m : secs) for (int b = 0; b < 3; b++) v.put(m.buckets[b].duplicate());
+        for (int p = 0; p < parts; p++) v.put(ents.mesh[p].duplicate());
         v.flip();
         verts = buf(v.capacity());
         up(verts, 0, v);
 
-        ByteBuffer in = le(sectionCount * 2 * 16), or = le(sectionCount * 16), cm = le(sectionCount * 20);
+        ByteBuffer in = le((sectionCount * 2 + parts) * 16), or = le(sectionCount * 16), cm = le(sectionCount * 20);
         for (int s = 0; s < sectionCount; s++) {
             RtScene.SectionMesh m = secs.get(s);
             in.putInt(firstVertex[s][0]).putInt(firstVertex[s][1]).putInt(0).putInt(0);
             in.putInt(firstVertex[s][2]).putInt(0).putInt(1).putInt(0);
             or.putFloat(m.sx * 16).putFloat(m.sy * 16).putFloat(m.sz * 16).putFloat(0);
             cm.putInt(m.totalQuads() * 6).putInt(1).putInt(0).putInt(firstVertex[s][0]).putInt(s);
+        }
+        for (int p = 0; p < parts; p++) in.putInt(firstVertexPart[p]).putInt(0).putInt(2).putInt(0);   // customIndex sectionCount*2 + p
+        if (parts > 0) {
+            poses = buf(MAX_ENT_INSTANCES * 96L);
+            entCmds = dev.rawBuffer(MAX_ENT_INSTANCES * 20L, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         }
         inst = buf(in.capacity());
         up(inst, 0, in.flip());
@@ -264,12 +285,52 @@ final class RtGpu implements AutoCloseable {
             instances.add(new RtAccel.Instance(m.sx * 16, m.sy * 16, m.sz * 16, ci,
                     (ci & 1) == 0 ? RtAccel.MASK_SOLID : RtAccel.MASK_TRANSLUCENT, c.address, false));
         }
+        if (scene.entities != null)   // P5-3: one BLAS per rigid part model, built once (never per frame)
+            for (int p = 0; p < RtEntities.PARTS; p++) {
+                RtAccel.Accel a = accel.buildBlas(List.of(new RtAccel.Geometry(verts, firstVertexPart[p] * 16L, 16, scene.entities.quads[p], geomTransform(), true)), false);
+                partBlas.add(a);
+                partBlasBytes += a.bytes;
+            }
+        staticInstances.addAll(instances);
         accel.barrierBuildToBuild();
         tlas = accel.buildTlas(instances);
         tlasBytes = tlas.bytes;
         instanceCount = instances.size();
         sync();
         accel.releaseTransient();
+    }
+
+    long partBlasBytes;
+
+    /**
+     * P5-3: pose the entities for the next frame. Rebuilds the TLAS over the static section instances plus one instance per
+     * posed part ({@code inTlas} false = the "before" case: entities only in the raster G-buffer, so they receive RT light
+     * but cast no RT shadow and are absent from GI and reflections), and writes the pose buffer + draw commands the
+     * G-buffer's entity draw reads. Timed as "TLAS rebuild (+N entity instances)".
+     */
+    void poseEntities(List<RtEntities.Inst> insts, boolean inTlas) {
+        entityCount = insts.size();
+        ByteBuffer pb = le(Math.max(1, entityCount) * 96), cb = le(Math.max(1, entityCount) * 20);
+        List<RtAccel.Instance> all = new ArrayList<>(staticInstances);
+        for (int i = 0; i < entityCount; i++) {
+            RtEntities.Inst e = insts.get(i);
+            for (float f : e.cur()) pb.putFloat(f);
+            for (float f : e.prev()) pb.putFloat(f);
+            cb.putInt(scene.entities.quads[e.part()] * 6).putInt(1).putInt(0).putInt(firstVertexPart[e.part()]).putInt(i);
+            if (inTlas) all.add(new RtAccel.Instance(e.cur(), sectionCount * 2 + e.part(), e.mask(), partBlas.get(e.part()).address, true));
+        }
+        if (entityCount > 0) {
+            up(poses, 0, pb.flip());
+            up(entCmds, 0, cb.flip());
+            uploadBarrier();
+        }
+        time("TLAS rebuild (static + entity instances)", () -> {
+            RtAccel.Accel old = tlas;
+            tlas = accel.buildTlas(all);
+            accel.destroy(old);
+        });
+        accel.releaseTransient();
+        instanceCount = all.size();
     }
 
     void createPipelines() {
@@ -279,6 +340,12 @@ final class RtGpu implements AutoCloseable {
         ByteBuffer vs = RtShaders.spirv("gbuffer.vert"), fs = RtShaders.spirv("gbuffer.frag");
         raster = dev.createDrawPipeline("rt-gbuffer", vs, fs, 5, 0, 0, VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_D32_SFLOAT,
                 VK_COMPARE_OP_LESS, true, false);
+        if (scene.entities != null) {
+            ByteBuffer ve = RtShaders.spirv("gbuffer_ent.vert");
+            rasterEnt = dev.createDrawPipeline("rt-gbuffer-entities", ve, fs, 5, 0, 0, VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_D32_SFLOAT,
+                    VK_COMPARE_OP_LESS, true, false);
+            MemoryUtil.memFree(ve);
+        }
         MemoryUtil.memFree(vs);
         MemoryUtil.memFree(fs);
         pPrimary = pass("primary.comp", true, 9, 0);
@@ -348,6 +415,9 @@ final class RtGpu implements AutoCloseable {
             dev.beginRendering(gImage, dImage, new float[]{0, 0, 0, 0}, 1f, true);
             dev.drawIndexedIndirect(raster, new Object[]{verts, origins, atlas, mats, frame}, new Object[0], null,
                     accel.quadIndices(totalQuads), VK_INDEX_TYPE_UINT32, cmds, 0, sectionCount, 20);
+            if (rasterEnt != null && entityCount > 0)
+                dev.drawIndexedIndirect(rasterEnt, new Object[]{verts, poses, atlas, mats, frame}, new Object[0], null,
+                        accel.quadIndices(totalQuads), VK_INDEX_TYPE_UINT32, entCmds, 0, entityCount, 20);
             dev.endRendering();
             dev.barrier(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_READ_BIT);
@@ -470,6 +540,8 @@ final class RtGpu implements AutoCloseable {
     public void close() {
         sync();
         for (RtAccel.Accel a : blas) accel.destroy(a);
+        for (RtAccel.Accel a : partBlas) accel.destroy(a);
+        if (rasterEnt != null) dev.destroyPipeline(rasterEnt);
         if (tlas != null) accel.destroy(tlas);
         accel.close();
         for (RtCompute.Pass p : new RtCompute.Pass[]{pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon})

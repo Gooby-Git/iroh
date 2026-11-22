@@ -30,7 +30,10 @@ import static org.lwjgl.vulkan.VK12.*;
  * {@link #MASK_TRANSLUCENT}, so shadow rays skip it by cull mask instead of by candidate work.
  */
 public final class RtAccel {
-    public static final int MASK_SOLID = 0x01, MASK_TRANSLUCENT = 0x02;
+    /** Instance masks. Entities (P5-3) carry SOLID|ENTITY (every solid ray sees them; ENTITY lets a pass exclude them); the
+     *  player's own body in first person carries SELF only: shadow and reflection rays include SELF, GI rays do not, and
+     *  primary visibility is raster (the first-person hand is raster-only, never in the TLAS). See docs/P5-DESIGN.md 14. */
+    public static final int MASK_SOLID = 0x01, MASK_TRANSLUCENT = 0x02, MASK_ENTITY = 0x04, MASK_SELF = 0x08;
     /** 16-byte terrain vertex: position = snorm * SNORM_SCALE + 4 (section-local blocks). */
     public static final float SNORM_SCALE = 32767f / 2048f, POS_OFFSET = 4f;
 
@@ -147,6 +150,10 @@ public final class RtAccel {
     }
 
     private VkAccelerationStructureBuildGeometryInfoKHR blasInfo(MemoryStack s, List<Geometry> geoms, boolean compactable, long transformBase) {
+        return blasInfo(s, geoms, compactable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0, transformBase);
+    }
+
+    private VkAccelerationStructureBuildGeometryInfoKHR blasInfo(MemoryStack s, List<Geometry> geoms, int extraFlags, long transformBase) {
         int maxQuads = 0;
         for (Geometry g : geoms) maxQuads = Math.max(maxQuads, g.quadCount);
         long idx = address(quadIndices(Math.max(1, maxQuads)));
@@ -163,7 +170,7 @@ public final class RtAccel {
             t.indexData().deviceAddress(idx);
             t.transformData().deviceAddress(transformBase == 0 || g.transform3x4 == null ? 0 : transformBase + i * 48L);
         }
-        int flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | (compactable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0);
+        int flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | extraFlags;
         return VkAccelerationStructureBuildGeometryInfoKHR.calloc(s).sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
                 .flags(flags).mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR).pGeometries(gb)
                 .geometryCount(geoms.size()); // LWJGL does not derive it (shared with ppGeometries)
@@ -195,6 +202,24 @@ public final class RtAccel {
      * uploaded into a small input buffer kept until {@link #releaseTransient}.
      */
     public Accel buildBlas(List<Geometry> geoms, boolean compactable) {
+        return buildBlas(geoms, compactable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0, null);
+    }
+
+    /**
+     * P5-3 refit fallback (free-form entity renderers): a BLAS built with ALLOW_UPDATE whose vertices are rewritten in place
+     * each frame and refitted with {@link #refitBlas} (same topology), rebuilt from scratch every N frames because a refit's
+     * bounds only grow looser. Rigid model parts never take this path (one static BLAS per part + a TLAS instance pose).
+     */
+    public Accel buildBlasUpdatable(List<Geometry> geoms) {
+        return buildBlas(geoms, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR, null);
+    }
+
+    /** Records an in-place refit (mode UPDATE, src = dst) of a BLAS made by {@link #buildBlasUpdatable} over the same geometry layout. */
+    public void refitBlas(Accel a, List<Geometry> geoms) {
+        buildBlas(geoms, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR, a);
+    }
+
+    private Accel buildBlas(List<Geometry> geoms, int extraFlags, Accel update) {
         try (MemoryStack s = stackPush()) {
             ByteBuffer tb = MemoryUtil.memAlloc(geoms.size() * 48).order(ByteOrder.LITTLE_ENDIAN);
             for (Geometry g : geoms) for (int k = 0; k < 12; k++) tb.putFloat(g.transform3x4 == null ? 0 : g.transform3x4[k]);
@@ -204,12 +229,21 @@ public final class RtAccel {
             MemoryUtil.memFree(tb);
             transient_.add(tbuf);
             dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, STAGE_AS_BUILD, VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
-            VkAccelerationStructureBuildGeometryInfoKHR info = blasInfo(s, geoms, compactable, address(tbuf));
+            VkAccelerationStructureBuildGeometryInfoKHR info = blasInfo(s, geoms, extraFlags, address(tbuf));
             java.nio.IntBuffer counts = counts(s, geoms);
             VkAccelerationStructureBuildSizesInfoKHR sz = VkAccelerationStructureBuildSizesInfoKHR.calloc(s).sType$Default();
             vkGetAccelerationStructureBuildSizesKHR(vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, info, counts, sz);
-            Accel a = create(s, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, sz.accelerationStructureSize(), sz.buildScratchSize());
-            VkBuf sc = scratch(sz.buildScratchSize());
+            Accel a;
+            VkBuf sc;
+            if (update == null) {
+                a = create(s, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, sz.accelerationStructureSize(), sz.buildScratchSize());
+                sc = scratch(sz.buildScratchSize());
+            } else {
+                a = update;
+                sc = scratch(sz.updateScratchSize());
+                info.mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR).srcAccelerationStructure(a.handle);
+                dev.barrier(STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE, STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE);
+            }
             info.dstAccelerationStructure(a.handle).scratchData().deviceAddress(aligned(address(sc)));
             VkAccelerationStructureBuildRangeInfoKHR.Buffer ranges = VkAccelerationStructureBuildRangeInfoKHR.calloc(geoms.size(), s);
             for (int i = 0; i < geoms.size(); i++) ranges.get(i).primitiveCount(geoms.get(i).quadCount * 2);
@@ -260,8 +294,19 @@ public final class RtAccel {
         }
     }
 
-    /** One TLAS instance: translation-only transform (section origin relative to the camera-near rebase origin). */
-    public record Instance(float tx, float ty, float tz, int customIndex, int mask, long blasAddress, boolean forceOpaque) {}
+    /**
+     * One TLAS instance with a full row-major 3x4 object-to-world transform (P5-3: posed entity model parts; terrain sections
+     * use the translation-only constructor: the section origin relative to the camera-near rebase origin). Shaders that
+     * need a world-space normal at a hit transform the triangle through {@code rayQueryGetIntersectionObjectToWorldEXT}.
+     */
+    public record Instance(float[] transform3x4, int customIndex, int mask, long blasAddress, boolean forceOpaque) {
+        public Instance(float tx, float ty, float tz, int customIndex, int mask, long blasAddress, boolean forceOpaque) {
+            this(new float[]{1, 0, 0, tx, 0, 1, 0, ty, 0, 0, 1, tz}, customIndex, mask, blasAddress, forceOpaque);
+        }
+    }
+
+    /** Bytes per TLAS instance record (VkAccelerationStructureInstanceKHR). */
+    public static final int INSTANCE_BYTES = 64;
 
     /** Records a full TLAS build over {@code instances} (rebuilt every frame in v1; see docs/P5-DESIGN.md). */
     public Accel buildTlas(List<Instance> instances) {
@@ -271,9 +316,7 @@ public final class RtAccel {
             for (int i = 0; i < n; i++) {
                 Instance in = instances.get(i);
                 int o = i * 64;
-                ib.putFloat(o, 1).putFloat(o + 12, in.tx);
-                ib.putFloat(o + 20, 1).putFloat(o + 28, in.ty);
-                ib.putFloat(o + 40, 1).putFloat(o + 44, in.tz);
+                for (int k = 0; k < 12; k++) ib.putFloat(o + k * 4, in.transform3x4[k]);
                 ib.putInt(o + 48, (in.customIndex & 0xFFFFFF) | (in.mask << 24));
                 int flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR | (in.forceOpaque ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR : 0);
                 ib.putInt(o + 52, flags << 24); // sbt offset 0

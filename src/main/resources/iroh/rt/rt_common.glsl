@@ -17,7 +17,10 @@ layout(std430, set = 0, binding = 8) buffer Counters { uint counters[]; };      
 const float PI = 3.14159265358979;
 const float EPS = 1e-3;
 const float TMAX = 1000.0;
-const uint MASK_SOLID = 1u, MASK_TRANSLUCENT = 2u, MASK_ALL = 0xFFu;
+const uint MASK_SOLID = 1u, MASK_TRANSLUCENT = 2u, MASK_ENTITY = 4u, MASK_SELF = 8u, MASK_ALL = 0xFFu;
+// P5-3 entity masks: entity part instances carry SOLID|ENTITY (seen by every solid ray); the first-person player's own body
+// carries SELF only, so it casts sun/block-light shadows and shows in reflections, but GI rays (SOLID) skip it.
+const uint MASK_SHADOW = MASK_SOLID | MASK_SELF, MASK_REFL = MASK_SOLID | MASK_SELF;
 const int ATLAS_SIZE = 128, TILE = 16, TILES_X = 8;
 
 // ---------------------------------------------------------------------------------------------------- random
@@ -105,7 +108,10 @@ Hit traceClosest(vec3 o, vec3 d, float tmax, uint mask) {
     vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
     uvec4 a, b, c;
     triVerts(h.ci, g, h.prim, a, b, c);
-    vec3 pa = vpos(a), pb = vpos(b), pc = vpos(c);   // translation-only instances: object normal = world normal
+    // P5-3: entity parts are posed by a full 3x4 instance transform, so the face normal comes from the triangle in WORLD
+    // space (exact for any affine pose, incl. non-uniform part scale; terrain's translation-only instances are unchanged)
+    mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+    vec3 pa = o2w * vec4(vpos(a), 1.0), pb = o2w * vec4(vpos(b), 1.0), pc = o2w * vec4(vpos(c), 1.0);
     vec3 n = normalize(cross(pb - pa, pc - pa));
     h.n = dot(n, d) > 0.0 ? -n : n;
     vec2 ua = vuv(a), ub = vuv(b), uc = vuv(c);
@@ -149,7 +155,7 @@ vec3 sunIrradiance(vec3 x, vec3 n, inout uint rays) {
     float c = dot(n, l);
     if (c <= 0.0) return vec3(0.0);
     rays++;
-    return visible(x + n * EPS, l, TMAX, MASK_SOLID) ? fr.sunE.rgb * c * cloudShadow(x) : vec3(0.0);
+    return visible(x + n * EPS, l, TMAX, MASK_SHADOW) ? fr.sunE.rgb * c * cloudShadow(x) : vec3(0.0);
 }
 
 /**
@@ -237,7 +243,7 @@ vec3 emitIrradiance(vec3 x, vec3 n, inout uint rays) {
     }
     if (wsum <= 0.0 || selPhat <= 0.0) return vec3(0.0);
     rays++;
-    if (!visible(x + n * EPS, selW, selDist - 2.0 * EPS, MASK_SOLID)) return vec3(0.0);
+    if (!visible(x + n * EPS, selW, selDist - 2.0 * EPS, MASK_SHADOW)) return vec3(0.0);
     vec3 le = lights[selL * 5u + 4u].rgb;
     return le * (dot(n, selW) / selPhat) * (wsum / float(M));
 }

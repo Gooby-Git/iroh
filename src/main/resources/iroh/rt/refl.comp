@@ -26,7 +26,7 @@ vec3 sampleVNDF(vec3 Ve, float alpha, float u1, float u2) {
 
 vec3 traceShade(vec3 o, vec3 d, bool mirror, inout uint rays, out float dist) {
     rays++;
-    Hit h = traceClosest(o, d, TMAX, MASK_SOLID);
+    Hit h = traceClosest(o, d, TMAX, MASK_REFL);
     if (!h.hit) { dist = TMAX; return sky(d) + (mirror ? sunDisc(d) : vec3(0.0)); }
     dist = h.t;
     return shadeDirect(h, rays);

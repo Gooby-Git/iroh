@@ -51,6 +51,8 @@ public final class RtScene {
     public final Material[] materials = new Material[TILES];
     public final List<SectionMesh> sections = new ArrayList<>();
     public final List<Light> lights = new ArrayList<>();
+    /** P5-3: entity part models uploaded next to the terrain (null = no entities; the P5-0..P5-2 runs are unchanged). */
+    public RtEntities entities;
 
     /** One section's mesh: vertices per bucket (16 bytes each, 4 per quad). */
     public static final class SectionMesh {
@@ -208,6 +210,7 @@ public final class RtScene {
                     int tx = (t % GRID) * TILE + x, ty = (t / GRID) * TILE + y;
                     atlas[ty * ATLAS + tx] = rgba(r, g, b, a);
                 }
+        RtEntities.paint(atlas);   // P5-3 entity textures in tiles no terrain uses
     }
 
     // ------------------------------------------------------------------------------------------------ world

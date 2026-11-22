@@ -20,7 +20,7 @@ void main() {
         o.b = max(dot(s.n, fr.sunDir.xyz), 0.0);
         if (c > 0.0) {
             rays++;
-            bool vis = visible(s.pos + s.n * EPS, l, TMAX, MASK_SOLID);
+            bool vis = visible(s.pos + s.n * EPS, l, TMAX, MASK_SHADOW);
             o.r = vis ? 60000.0 : 1.0;
             o.g = vis ? 1.0 : 0.0;
         }

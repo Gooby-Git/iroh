@@ -28,7 +28,22 @@ public final class RtLookSheets {
     static final Path SHEETS = Path.of(System.getProperty("rt.out", "build/rt"), "sheets");
     static final Path PICTURES = Path.of(System.getProperty("user.home"), "Pictures", "iroh-rt-preview");
 
-    record Scene(String name, Vector3f pos, Vector3f target, RtLookModel.Inputs in) {}
+    /** P5-3: {@code walk} != null poses the walking mob (RtEntities) each frame; the scene's RtScene must carry entities. */
+    record Scene(String name, Vector3f pos, Vector3f target, RtLookModel.Inputs in, RtEntities.Walk walk) {
+        Scene(String name, Vector3f pos, Vector3f target, RtLookModel.Inputs in) {
+            this(name, pos, target, in, null);
+        }
+    }
+
+    /** P5-3 preview scenes: the day view with the walking mob's shadow, and a torch-lit night with the mob on the path. */
+    static List<Scene> entityScenes() {
+        Vector3f d0 = RtScene.v(9.5f, 8f, 22f), d1 = RtScene.v(12.5f, 8f, 22f), n0 = RtScene.v(8.5f, 8f, 18.2f), n1 = RtScene.v(12f, 8f, 18.2f);
+        return List.of(
+                new Scene("day, mob", RtScene.v(1f, 15f, 42f), RtScene.v(22f, 8.5f, 16f), inputs(48, 215, 0, false, 0.35f),
+                        new RtEntities.Walk(new float[]{d0.x, d0.y, d0.z}, new float[]{d1.x, d1.y, d1.z}, FRAMES, null, null)),
+                new Scene("night, torch + mob", RtScene.v(12.5f, 12.8f, 27.5f), RtScene.v(10.6f, 9.6f, 12f), inputs(-35, 215, 0, false, 0),
+                        new RtEntities.Walk(new float[]{n0.x, n0.y, n0.z}, new float[]{n1.x, n1.y, n1.z}, FRAMES, null, null)));
+    }
 
     record Preset(String name, float scale, int candidates, boolean halfGi, boolean halfRefl, float roughMax, String note) {}
 
@@ -54,6 +69,7 @@ public final class RtLookSheets {
         s.add(new Scene("cave", RtScene.v(30.6f, 10.2f, 35.1f), RtScene.v(46f, 9.0f, 35.4f), inputs(40, 140, 0, false, 0)));
         s.add(new Scene("underwater", RtScene.v(13f, 5.4f, 34.6f), RtScene.v(13.3f, 6.2f, 26f), inputs(55, 200, 0, true, 0)));
         s.add(new Scene("rain", RtScene.v(1f, 15f, 42f), RtScene.v(22f, 8.5f, 16f), inputs(40, 215, 1, false, 0.8f)));
+        s.addAll(entityScenes());
         return s;
     }
 
@@ -83,8 +99,11 @@ public final class RtLookSheets {
         ch.gpu.resetCounters();
         long t0 = System.nanoTime();
         float[] out = null;
+        boolean ents = ch.gpu.scene.entities != null;
+        if (ents && sc.walk() == null) ch.gpu.poseEntities(List.of(), true);
         try (RtChain.Den den = ch.new Den(); RtChain.Fsr fd = ch.new Fsr()) {
             for (int k = 0; k < FRAMES; k++) {
+                if (ents && sc.walk() != null) ch.gpu.poseEntities(RtEntities.frame(sc.walk(), k, Math.max(0, k - 1), true), true);
                 RtChain.Rt r = ch.trace(cam, cam, 90_000 + k, k, flags);
                 RtChain.In in = ch.pack(r);
                 float[][] o = den.run(in, k, k == 0, cam, cam, r.jitter, ch.js.offset(Math.max(0, k - 1)));
@@ -331,6 +350,7 @@ public final class RtLookSheets {
         Files.createDirectories(RtReplay.OUT);
         RtReplay.metrics = new java.io.PrintStream(Files.newOutputStream(RtReplay.OUT.resolve("look_metrics.txt")), true);
         RtScene scene = new RtScene(true);
+        scene.entities = new RtEntities();   // P5-3: posed only in the entity scenes; the others keep a terrain-only TLAS
         int quads = 0;
         for (RtScene.SectionMesh m : scene.sections) quads += m.totalQuads();
         System.out.println("village: " + scene.sections.size() + " sections, " + quads + " quads, " + scene.lights.size() + " emissive quads; display " + DW + "x" + DH + ", " + FRAMES + " frames per tile");
@@ -375,7 +395,7 @@ public final class RtLookSheets {
             List<BufferedImage> sb = new ArrayList<>();
             List<String> lb = new ArrayList<>();
             for (Scene sc : scenes)
-                if (sc.name().equals("day") || sc.name().startsWith("night")) {
+                if (sc.name().equals("day") || sc.name().equals("night, torches")) {
                     sb.add(flat(scene, sc, sc.name().startsWith("night")));
                     lb.add(sc.name() + " | flat raster lighting (vanilla-style: face shade x light levels)");
                     sb.add(highTiles.get(sc.name()));

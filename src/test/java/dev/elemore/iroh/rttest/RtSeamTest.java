@@ -137,6 +137,7 @@ public final class RtSeamTest {
         System.out.printf(Locale.ROOT, "    per section: %d quads -> %.0f KiB BLAS (RADV assumed), %.0f KiB on lavapipe (measured 104 B/tri)%n", 3000,
                 model.blasBytes(3000) / 1024.0, new RtMemoryModel(RtMemoryModel.LAVAPIPE_BYTES_PER_TRIANGLE, 0.4, 8).blasBytes(3000) / 1024.0);
         RtAdapterTest.run();
+        RtEntityBudgetTest.run();
         System.out.println("# rtseam " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
     }

@@ -35,6 +35,54 @@ final class CpuRef {
         build();
     }
 
+    // ------------------------------------------------------------------------------------------------ P5-3 dynamic triangles
+    /** Static triangle count (BVH); posed entity triangles follow it, tested brute force per group (one AABB per part). */
+    int ns = -1, dynGroups;
+    double[] dmin, dmax;
+    int per;
+
+    /** Replaces the entity triangles (world space, {@code trisPerGroup} per posed part) for the next estimates. */
+    void setDynamic(RtScene.Tris d, int trisPerGroup) {
+        if (ns < 0) ns = t.n;
+        int n = ns + d.n;
+        t.p = java.util.Arrays.copyOf(t.p, n * 9);
+        t.uv = java.util.Arrays.copyOf(t.uv, n * 6);
+        t.tile = java.util.Arrays.copyOf(t.tile, n);
+        t.tint = java.util.Arrays.copyOf(t.tint, n);
+        t.translucent = java.util.Arrays.copyOf(t.translucent, n);
+        System.arraycopy(d.p, 0, t.p, ns * 9, d.n * 9);
+        System.arraycopy(d.uv, 0, t.uv, ns * 6, d.n * 6);
+        System.arraycopy(d.tile, 0, t.tile, ns, d.n);
+        System.arraycopy(d.tint, 0, t.tint, ns, d.n);
+        java.util.Arrays.fill(t.translucent, ns, n, false);
+        t.n = n;
+        per = trisPerGroup;
+        dynGroups = d.n / trisPerGroup;
+        dmin = new double[dynGroups * 3];
+        dmax = new double[dynGroups * 3];
+        java.util.Arrays.fill(dmin, 1e30);
+        java.util.Arrays.fill(dmax, -1e30);
+        for (int k = 0; k < d.n; k++)
+            for (int v = 0; v < 3; v++)
+                for (int a = 0; a < 3; a++) {
+                    int g = k / per;
+                    dmin[g * 3 + a] = Math.min(dmin[g * 3 + a], d.p[k * 9 + v * 3 + a] - 1e-6);
+                    dmax[g * 3 + a] = Math.max(dmax[g * 3 + a], d.p[k * 9 + v * 3 + a] + 1e-6);
+                }
+    }
+
+    boolean dynBox(int g, double[] o, double[] inv, double tmax) {
+        double t0 = 0, t1 = tmax;
+        for (int a = 0; a < 3; a++) {
+            double ta = (dmin[g * 3 + a] - o[a]) * inv[a], tb = (dmax[g * 3 + a] - o[a]) * inv[a];
+            if (ta > tb) { double x = ta; ta = tb; tb = x; }
+            t0 = Math.max(t0, ta);
+            t1 = Math.min(t1, tb);
+            if (t0 > t1) return false;
+        }
+        return true;
+    }
+
     // ------------------------------------------------------------------------------------------------ BVH
 
     void build() {
@@ -178,6 +226,12 @@ final class CpuRef {
                 stack[sp++] = start[id];
             }
         }
+        for (int g = 0; g < dynGroups; g++)
+            if (dynBox(g, o, inv, h.t))
+                for (int k = ns + g * per; k < ns + (g + 1) * per; k++) {
+                    double tt = tri(k, o, d, h.t, bc);
+                    if (tt > 0) { h.t = tt; h.tri = k; h.u = bc[0]; h.v = bc[1]; }
+                }
         return h;
     }
 
@@ -201,6 +255,9 @@ final class CpuRef {
                 stack[sp++] = start[id];
             }
         }
+        for (int g = 0; g < dynGroups; g++)
+            if (dynBox(g, o, inv, tmax))
+                for (int k = ns + g * per; k < ns + (g + 1) * per; k++) if (tri(k, o, d, tmax, bc) > 0) return true;
         return false;
     }
 
@@ -439,6 +496,16 @@ final class CpuRef {
 
     float[] sun(Surf[] prim, boolean soft, int spp) {
         return estimate(prim, soft ? spp : 1, 11, (s, i, r) -> isWater(s) ? new double[3] : sunIrr(s.pos, s.n, soft, r));
+    }
+
+    /** P5-3: sun visibility fraction (soft cone, {@code spp} rays) at each primary surface; water and back-facing -> 1. */
+    float[] sunVis(Surf[] prim, int spp, long seed) {
+        return estimate(prim, spp, seed, (s, i, r) -> {
+            double[] l = sunDir(true, r);
+            if (isWater(s) || dot(s.n, l) <= 0) return new double[]{1, 1, 1};
+            double v = occluded(off(s.pos, s.n, EPS), l, TMAX) ? 0 : 1;
+            return new double[]{v, v, v};
+        });
     }
 
     float[] emit(Surf[] prim, int spp) {

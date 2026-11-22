@@ -441,6 +441,42 @@ tasks.register('rtLook', JavaExec) {
 	}
 }
 
+// P5-3: entity shadows/reflections (per-part rigid BLAS + posed TLAS instances) vs the CPU reference, the moving shadow
+// through denoiser + FSR, cost per entity, entities.png. ./gradlew rtEntities ; last line "# rtentities PASS n/n". lavapipe only.
+tasks.register('rtEntities', JavaExec) {
+	group = 'verification'
+	description = 'P5-3 entity RT on lavapipe against the CPU reference'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtEntityReplay'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	['out'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
+	doFirst {
+		useLavapipe(it, 'rtEntities')
+		def fl = file('iroh-native/natives/linux-x64/libiroh_fsr.so')
+		if (fl.exists()) systemProperty 'iroh.fsr.lib', fl.absolutePath
+	}
+}
+
+// P5-3: per-section light grid + ReSTIR DI (temporal + spatial reuse) vs RIS and the CPU reference; many_lights.png.
+// ./gradlew rtLights ; last line "# rtlights PASS n/n". lavapipe only.
+tasks.register('rtLights', JavaExec) {
+	group = 'verification'
+	description = 'P5-3 many-light sampling on lavapipe against the CPU reference'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtLightReplay'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	['out'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
+	doFirst {
+		useLavapipe(it, 'rtLights')
+		def fl = file('iroh-native/natives/linux-x64/libiroh_fsr.so')
+		if (fl.exists()) systemProperty 'iroh.fsr.lib', fl.absolutePath
+	}
+}
+
 // P5-0: RT seams without a device (BLAS queue budget, memory model, presets, inert-when-off). ./gradlew rtSeamTest ;
 // last line "# rtseam PASS n/n".
 tasks.register('rtSeamTest', JavaExec) {
