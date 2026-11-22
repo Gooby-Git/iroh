@@ -184,8 +184,13 @@ public final class TemporalRuntime {
         if (!velocityFrame() || !(Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp))
             return;
         int w = TemporalFrame.renderW, h = TemporalFrame.renderH;
-        opaqueColour = ensure(opaqueColour, w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "opaque colour");
-        opaqueDepth = ensure(opaqueDepth, w, h, Vulkan.getDefaultDepthFormat(), VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "opaque depth");
+        try {
+            opaqueColour = ensure(opaqueColour, w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "opaque colour");
+            opaqueDepth = ensure(opaqueDepth, w, h, Vulkan.getDefaultDepthFormat(), VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "opaque depth");
+        } catch (RuntimeException e) {
+            offForSession("upscale", e); // INT-2: allocation before any pass change; this frame finishes without masks
+            return;
+        }
         haveOpaque = dmp.copyWorld(opaqueColour, opaqueDepth);
     }
 
@@ -196,8 +201,13 @@ public final class TemporalRuntime {
         UpscalerAdapter a = adapter != null ? adapter : UpscalerAdapter.Bilinear.INSTANCE;
         if (!(TemporalFrame.velocityOn || a.temporal()) || !(Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp))
             return;
-        sceneDepth = ensure(sceneDepth, TemporalFrame.renderW, TemporalFrame.renderH, Vulkan.getDefaultDepthFormat(),
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "scene depth before hand");
+        try {
+            sceneDepth = ensure(sceneDepth, TemporalFrame.renderW, TemporalFrame.renderH, Vulkan.getDefaultDepthFormat(),
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "scene depth before hand");
+        } catch (RuntimeException e) {
+            offForSession("upscale", e); // INT-2: as onAfterEntities
+            return;
+        }
         haveSceneDepth = dmp.copyWorld(null, sceneDepth);
     }
 

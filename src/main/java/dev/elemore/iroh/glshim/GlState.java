@@ -268,7 +268,8 @@ public final class GlState {
         viewport[3] = h;
         if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD && boundTarget() == Orientation.Target.SCENE) {
             // P4-1a: a display-size rect from a mod (Window size) on the render-size world target
-            int[] r = {x, y, w, h};
+            int[] r = FIX_RECT; // INT-2: render-thread scratch, no array per call
+            r[0] = x; r[1] = y; r[2] = w; r[3] = h;
             if (dev.elemore.iroh.temporal.TemporalFrame.fixRect(r)) { x = r[0]; y = r[1]; w = r[2]; h = r[3]; }
         }
         float[] v = Orientation.vkViewport(boundTarget(), x, y, w, h, boundHeight()); // conventions: Orientation
@@ -295,11 +296,14 @@ public final class GlState {
      * Re-applies the GL scissor box to the bound target. {@code Renderer.setScissor} converts GL's bottom-left y to
      * the top-down main target; on a GL-layout (off-screen) target the rows already match, so y is pre-converted.
      */
+    private static final int[] FIX_RECT = new int[4];
+
     public static void applyScissor() {
         int x = scissorBox[0], y = scissorBox[1], w = scissorBox[2], h = scissorBox[3];
         if (w <= 0 || h <= 0) return;
         if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD && boundTarget() == Orientation.Target.SCENE) {
-            int[] r = {x, y, w, h}; // P4-1a, as in viewport()
+            int[] r = FIX_RECT; // P4-1a, as in viewport(); INT-2: scratch
+            r[0] = x; r[1] = y; r[2] = w; r[3] = h;
             if (dev.elemore.iroh.temporal.TemporalFrame.fixRect(r)) { x = r[0]; y = r[1]; w = r[2]; h = r[3]; }
         }
         int[] sc = Orientation.vkScissor(boundTarget(), x, y, w, h, boundHeight());
