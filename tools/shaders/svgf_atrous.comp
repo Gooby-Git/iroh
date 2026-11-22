@@ -1,0 +1,78 @@
+#version 450
+// Iroh's own spatiotemporal denoiser, pass 2: edge-stopping a-trous wavelet iteration (SVGF, Schied et al. 2017, with the
+// B3-spline kernel of Dammertz et al., "Edge-Avoiding A-Trous Wavelet Transform", HPG 2010). Weights: view-depth with a local
+// slope term, normal power, luminance scaled by the filtered per-pixel variance. Written from the papers, no NVIDIA code.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D uColorVar;    // rgb, a = variance
+layout(set = 0, binding = 1) uniform sampler2D uViewZ;
+layout(set = 0, binding = 2) uniform sampler2D uNormal;      // decoded normal xyz + roughness (this frame)
+layout(set = 0, binding = 3) uniform sampler2D uAlbedo;
+layout(set = 0, binding = 4) uniform sampler2D uMoments;     // m1, m2, length, aux
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D uFiltOut;
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D uHistOut;   // colour history for the next frame (feedback iteration only)
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D uOut;       // final output (last iteration): rgb * albedo, a = history length
+layout(push_constant) uniform P {
+    vec2 size;
+    float step, iteration, lastIteration, feedbackIteration;
+    float flags;              // bit0 re-modulate by albedo
+    float phiZ, phiN, phiL, mode, radiusScale;
+} p;
+const float kernel[3] = float[3](0.375, 0.25, 0.0625);
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = ivec2(p.size);
+    if (px.x >= sz.x || px.y >= sz.y) return;
+    vec4 c0 = texelFetch(uColorVar, px, 0);
+    float z0 = texelFetch(uViewZ, px, 0).r;
+    vec4 mo = texelFetch(uMoments, px, 0);
+    vec3 res; float resVar;
+    if (z0 > 5.0e4) {
+        res = c0.rgb; resVar = 0.0;
+    } else {
+        vec4 n0 = texelFetch(uNormal, px, 0);
+        // variance prefilter 3x3 (gaussian), as in SVGF
+        float v = 0.0, vw = 0.0;
+        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            ivec2 q = clamp(px + ivec2(dx, dy), ivec2(0), sz - 1);
+            float w = (dx == 0 ? 0.5 : 0.25) * (dy == 0 ? 0.5 : 0.25);
+            v += w * texelFetch(uColorVar, q, 0).a; vw += w;
+        }
+        v /= vw;
+        float l0 = lum(c0.rgb);
+        float dzdx = (texelFetch(uViewZ, clamp(px + ivec2(1, 0), ivec2(0), sz - 1), 0).r - texelFetch(uViewZ, clamp(px - ivec2(1, 0), ivec2(0), sz - 1), 0).r) * 0.5;
+        float dzdy = (texelFetch(uViewZ, clamp(px + ivec2(0, 1), ivec2(0), sz - 1), 0).r - texelFetch(uViewZ, clamp(px - ivec2(0, 1), ivec2(0), sz - 1), 0).r) * 0.5;
+        float stepPx = p.step * p.radiusScale;
+        // short history -> wider luminance tolerance (SVGF lets the variance do it; the factor keeps early frames from stalling)
+        float sigmaL = p.phiL * sqrt(max(v, 0.0)) + 1.0e-4;
+        vec3 sum = c0.rgb * kernel[0] * kernel[0]; float wsum = kernel[0] * kernel[0];
+        float vsum = c0.a * kernel[0] * kernel[0] * kernel[0] * kernel[0];
+        float w2sum = wsum * wsum;
+        for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            ivec2 q = px + ivec2(round(vec2(dx, dy) * stepPx));
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, sz))) continue;
+            float zq = texelFetch(uViewZ, q, 0).r;
+            if (zq > 5.0e4) continue;
+            vec4 cq = texelFetch(uColorVar, q, 0);
+            vec4 nq = texelFetch(uNormal, q, 0);
+            float k = kernel[abs(dx)] * kernel[abs(dy)];
+            float wz = exp(-abs(z0 - zq) / (p.phiZ * (abs(dzdx * float(dx)) + abs(dzdy * float(dy))) * stepPx + 0.01 * z0 + 1.0e-4));
+            float wn = pow(max(0.0, dot(n0.xyz, nq.xyz)), p.phiN);
+            float wl = exp(-abs(l0 - lum(cq.rgb)) / sigmaL);
+            float w = k * wz * wn * wl;
+            sum += w * cq.rgb; wsum += w;
+            vsum += w * w * cq.a; w2sum += w * w;
+        }
+        res = sum / wsum;
+        resVar = vsum / (wsum * wsum);
+    }
+    imageStore(uFiltOut, px, vec4(res, resVar));
+    if (p.iteration == p.feedbackIteration) imageStore(uHistOut, px, vec4(res, mo.w));
+    if (p.iteration == p.lastIteration) {
+        vec3 o = res;
+        if (z0 <= 5.0e4 && (int(p.flags) & 1) != 0) o *= max(texelFetch(uAlbedo, px, 0).rgb, vec3(0.02));
+        imageStore(uOut, px, vec4(o, mo.z));
+    }
+}

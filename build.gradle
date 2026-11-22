@@ -742,3 +742,108 @@ tasks.register('integrationInertTest', JavaExec) {
 	jvmArgs '-Djava.awt.headless=true'
 	workingDir = projectDir
 }
+
+// P6-0 NRD (NVIDIA RTX SDKs licence: built on request, NEVER bundled in the jar unless -PbundleNv=true): ./gradlew nrdNative
+tasks.register('nrdNative', Exec) {
+	group = 'build'
+	description = 'Build libiroh_nrd (NVIDIA NRD v4.18.0 stock + shim) with iroh-native/build-nrd.sh'
+	workingDir = projectDir
+	environment 'IROH_JAVA_HOME', System.getenv('IROH_JAVA_HOME') ?: '/usr/lib/jvm/java-21-openjdk'
+	def a = ['./iroh-native/build-nrd.sh']
+	if (project.hasProperty('nrdArgs')) a.addAll(project.property('nrdArgs').toString().split(' ') as List)
+	commandLine a
+}
+def nrdLib = file(project.findProperty('nrdLib') ?: 'iroh-native/natives-nv/linux-x64/libiroh_nrd.so')
+if (project.findProperty('bundleNv') == 'true') jar { from(file('iroh-native/natives-nv')) { into 'natives'; exclude '*.txt' } }
+
+// P6-0 pure denoiser parts (+ library cross-checks when libiroh_nrd is built): ./gradlew denoiseTest ; last line "# denoise PASS n/n"
+tasks.register('denoiseTest', JavaExec) {
+	group = 'verification'
+	description = 'Denoiser interface parts; NRD instance description checks when the library is present'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.DenoiseTest'
+	jvmArgs '-ea'
+	doFirst { if (nrdLib.exists()) systemProperty 'iroh.nrd.lib', nrdLib.absolutePath }
+}
+
+// P6-0 NRD + the temporal fallback on lavapipe (CPU Vulkan; never the GPU). ./gradlew nrdReplay [-Pgolden=check|update] [-Pdump=dir] [-PnrdLib=path]
+tasks.register('nrdReplay', JavaExec) {
+	group = 'verification'
+	description = 'NRD RELAX/REBLUR/SIGMA through the JNI shim on lavapipe against a synthetic noisy scene'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.NrdReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['golden', 'dump'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	args a
+	// INT-2: NRD is an optional NVIDIA component that this repo never fetches by itself: without the built library the
+	// task is SKIPPED with the reason (not failed); build it on request with ./gradlew nrdNative
+	onlyIf {
+		if (!nrdLib.exists()) logger.lifecycle("nrdReplay: SKIPPED: ${nrdLib} not present (optional NVIDIA NRD component, build on request with ./gradlew nrdNative)")
+		nrdLib.exists()
+	}
+	doFirst {
+		systemProperty 'iroh.nrd.lib', nrdLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
+// P6-2 Minecraft-like scene: own vs NRD vs fallback denoisers + light-switch lag on lavapipe. ./gradlew mcReplay [-Pdump=dir]
+tasks.register('mcReplay', JavaExec) {
+	group = 'verification'
+	description = 'Minecraft-like scene through the denoisers on lavapipe (own, NRD when built, fallback)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.McReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	if (project.hasProperty('dump')) a << "--dump=${project.property('dump')}"
+	args a
+	doFirst {
+		if (nrdLib.exists()) systemProperty 'iroh.nrd.lib', nrdLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
+// P6-4 chain test: ./gradlew chainReplay [-Pdump=dir]
+tasks.register('chainReplay', JavaExec) {
+	group = 'verification'
+	description = 'P6-4 shared chain on lavapipe: noisy RT-like input -> denoiser -> FSR 3.1, one jitter sequence, one motion-vector buffer'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.ChainReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	if (project.hasProperty('dump')) a << "--dump=${project.property('dump')}"
+	args a
+	doFirst {
+		if (nrdLib.exists()) systemProperty 'iroh.nrd.lib', nrdLib.absolutePath
+		if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
+// P8 groundwork: FSR frame interpolation on lavapipe: ./gradlew fgReplay [-Pdump=dir]
+tasks.register('fgReplay', JavaExec) {
+	group = 'verification'
+	description = 'FSR optical flow + frame interpolation (no swapchain proxy) on lavapipe'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.FgReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	if (project.hasProperty('dump')) a << "--dump=${project.property('dump')}"
+	if (project.hasProperty('size')) a << "--size=${project.property('size')}"
+	args a
+	doFirst {
+		if (nrdLib.exists()) systemProperty 'iroh.nrd.lib', nrdLib.absolutePath
+		if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}

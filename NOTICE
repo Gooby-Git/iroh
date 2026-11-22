@@ -20,3 +20,7 @@ Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (ref
   Vitrail's common/src/main/java/dev/vitrail/pack/model/ProgramFallbacks.java, which Vitrail's NOTICE
   lists as derived from Iris (https://github.com/IrisShaders/Iris, LGPL-3.0, copyright the Iris
   contributors). Re-typed as a table; no other Vitrail or Iris code is copied.
+
+NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
+  this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
+  distributed by this project.

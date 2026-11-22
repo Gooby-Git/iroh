@@ -1,0 +1,47 @@
+#version 450
+// Iroh's own minimal temporal accumulation denoiser (the licence-free fallback for machines without NRD): reproject the previous
+// output with the motion vector, accept it when the view-space depth matches, blend with weight 1/(count+1) up to maxFrames.
+// Compile: tools/shaders/build-shaders.sh (glslangValidator -V) -> src/main/resources/dev/elemore/iroh/rt/denoise/temporal_accum.spv
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D uNoisy;       // rgb radiance (linear), a = hit distance
+layout(set = 0, binding = 1) uniform sampler2D uViewZ;       // linear view depth
+layout(set = 0, binding = 2) uniform sampler2D uMv;          // previous minus current, in UV units
+layout(set = 0, binding = 3) uniform sampler2D uPrevViewZ;
+layout(set = 0, binding = 4) uniform sampler2D uHistory;     // previous output: rgb, a = accumulated frame count
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D uOut;
+layout(set = 0, binding = 6, r32f) uniform writeonly image2D uViewZOut;
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D uHistOut;   // internal history for the next frame (same data as uOut)
+layout(push_constant) uniform P { vec2 size; float maxFrames; float reset; float depthTolerance; } p;
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(p.size.x) || px.y >= int(p.size.y)) return;
+    vec2 uv = (vec2(px) + 0.5) / p.size;
+    vec3 cur = texelFetch(uNoisy, px, 0).rgb;
+    float z = texelFetch(uViewZ, px, 0).r;
+    vec2 prevUv = uv + texelFetch(uMv, px, 0).rg;
+    vec4 outv = vec4(cur, 1.0);
+    bool inside = all(greaterThanEqual(prevUv, vec2(0.0))) && all(lessThan(prevUv, vec2(1.0)));
+    if (p.reset < 0.5 && inside) {
+        vec2 fp = prevUv * p.size - 0.5;
+        ivec2 b = ivec2(floor(fp));
+        vec2 f = fp - vec2(b);
+        vec4 acc = vec4(0.0);
+        float wsum = 0.0;
+        for (int dy = 0; dy < 2; dy++)
+            for (int dx = 0; dx < 2; dx++) {
+                ivec2 q = clamp(b + ivec2(dx, dy), ivec2(0), ivec2(p.size) - 1);
+                float pz = texelFetch(uPrevViewZ, q, 0).r;
+                float w = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y);
+                if (abs(pz - z) <= p.depthTolerance * max(z, 1.0)) { acc += w * texelFetch(uHistory, q, 0); wsum += w; }
+            }
+        if (wsum > 0.5) {
+            acc /= wsum;
+            float n = min(acc.a, p.maxFrames);
+            outv = vec4(mix(acc.rgb, cur, 1.0 / (n + 1.0)), n + 1.0);
+        }
+    }
+    imageStore(uOut, px, outv);
+    imageStore(uHistOut, px, outv);
+    imageStore(uViewZOut, px, vec4(z));
+}

@@ -30,3 +30,14 @@ THE SOFTWARE.
 
 (Licence text as in the SDK's LICENSE.txt, sha256 82cf74fc23885107c7f69249ac3f1dac55898ff68320eb2c753984cae6b2d78a.)
 No AMD signed binary (FSR 4 DLLs) and no NVIDIA binary is bundled.
+
+## NVIDIA NRD (Real-time Denoisers) v4.18.0: NOT shipped in the Iroh jar
+Built on request by iroh-native/build-nrd.sh from the upstream source (fetched by commit 8f12a22fc90e6a3c7f5da4c9c3103633c842963a, content
+hash pinned, never committed here, stock: no patches). Licence: NVIDIA RTX SDKs LICENSE (v. April 12, 2021) + RTX supplement, which is NOT an
+open source licence. The built library (natives-nv/) is excluded from the jar unless Gradle is run with -PbundleNv=true; the intended
+distribution is a separate optional component with the licence text and an explicit acceptance (docs/P6-PLAN.md, knowledge/nrd.md).
+If you distribute that component you must: ship NVIDIA's LICENSE.txt with it (iroh-native/natives-nv/NVIDIA-RTX-SDKs-LICENSE.txt is copied by
+the build), bind recipients to terms at least as protective (licence 2(c)), include NVIDIA's attribution and marks on the credit screen or in
+the end-user documentation (supplement 6.1(c), marks need NVIDIA's approval), and not remove proprietary notices. Build-time-only
+components, not shipped: ShaderMake (MIT, NVIDIA), MathLib (MIT, NVIDIA; its code is compiled into NRD: include its MIT notice), a prebuilt
+DXC (Microsoft/LLVM, downloaded by NRD's CMake; its release licence text says "solely for use on Windows").
