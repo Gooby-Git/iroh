@@ -242,7 +242,7 @@ public abstract class VkPackBackend implements GpuBackend {
         for (Iterator<Map.Entry<String, long[]>> it = framebuffers.entrySet().iterator(); it.hasNext(); ) {
             long[] fb = it.next().getValue();
             for (int k = 1; k < fb.length; k++)
-                if (fb[k] == image) {
+                if (fb[k] == im.image) { // P3-6 fix: compared the VkImage handle with the backend index (never matched: framebuffers leaked until close)
                     long handle = fb[0];
                     releaseLater(() -> vkDestroyFramebuffer(device(), handle, null));
                     it.remove();
@@ -643,19 +643,58 @@ public abstract class VkPackBackend implements GpuBackend {
         });
     }
 
+    // ---- per-frame-slot uniform ring (P3-6 perf: no buffer allocation per draw; chunks are kept and reused)
+    private static final int UBO_CHUNK = 1 << 20, UBO_ALIGN = 256;
+    private final List<List<HostBuf>> uboChunks = new ArrayList<>();
+    private int uboSlot, uboChunk, uboCursor;
+
+    /** call when frame slot {@code slot} starts recording again (its previous use has completed) */
+    protected void resetUboRing(int slot) {
+        while (uboChunks.size() <= slot)
+            uboChunks.add(new ArrayList<>());
+        uboSlot = slot;
+        uboChunk = 0;
+        uboCursor = 0;
+    }
+
+    /** {chunk index, byte offset} in the current slot's ring */
+    private long[] uboAlloc(int bytes) {
+        if (uboChunks.isEmpty())
+            resetUboRing(0);
+        List<HostBuf> chunks = uboChunks.get(uboSlot);
+        int size = (bytes + UBO_ALIGN - 1) / UBO_ALIGN * UBO_ALIGN;
+        if (uboChunk < chunks.size() && uboCursor + size > chunks.get(uboChunk).size()) {
+            uboChunk++;
+            uboCursor = 0;
+        }
+        if (uboChunk >= chunks.size())
+            chunks.add(hostBuffer(Math.max(UBO_CHUNK, size), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT));
+        long[] r = {uboChunk, uboCursor};
+        uboCursor += size;
+        return r;
+    }
+
+    /** chunks in use (tests / profile) */
+    public int uboChunks() {
+        int n = 0;
+        for (List<HostBuf> l : uboChunks)
+            n += l.size();
+        return n;
+    }
+
     private long[] sets(Pipe p, Map<Integer, Bind> set0, Map<Integer, Bind> set1, byte[] ubo) {
         try (MemoryStack s = stackPush()) {
             LongBuffer lb = s.mallocLong(2);
             check(vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
                     .pSetLayouts(s.longs(p.set0(), p.set1())), lb), "descriptor sets");
             long s0 = lb.get(0), s1 = lb.get(1);
-            HostBuf u = hostBuffer(Math.max(16, ubo.length), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-            u.mapped().put(0, ubo);
-            freeHostBufferAfterFrame(u);
+            long[] at = uboAlloc(Math.max(16, ubo.length));
+            HostBuf u = uboChunks.get(uboSlot).get((int) at[0]);
+            u.mapped().put((int) at[1], ubo);
             int count = 1 + set0.size() + set1.size();
             VkWriteDescriptorSet.Buffer w = VkWriteDescriptorSet.calloc(count, s);
             w.get(0).sType$Default().dstSet(s0).dstBinding(0).descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-                    .pBufferInfo(VkDescriptorBufferInfo.calloc(1, s).buffer(u.buffer()).offset(0).range(VK_WHOLE_SIZE)).descriptorCount(1);
+                    .pBufferInfo(VkDescriptorBufferInfo.calloc(1, s).buffer(u.buffer()).offset(at[1]).range(Math.max(16, ubo.length))).descriptorCount(1);
             int i = 1;
             for (int set = 0; set < 2; set++)
                 for (Map.Entry<Integer, Bind> e : (set == 0 ? set0 : set1).entrySet()) {
@@ -668,7 +707,9 @@ public abstract class VkPackBackend implements GpuBackend {
                         Img im = img(b.image());
                         boolean storage = "STORAGE".equals(b.sampler());
                         VkDescriptorImageInfo.Buffer ii = VkDescriptorImageInfo.calloc(1, s)
-                                .imageView(storage ? im.viewMip0 : im.viewAll).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                                .imageView(storage ? im.viewMip0 : im.viewAll)
+                                // P3-6: an imported image (the block atlas) is sampled in the layout Iroh keeps it in
+                                .imageLayout(im.imported != null && im.imported.get() != VK_IMAGE_LAYOUT_UNDEFINED ? im.imported.get() : VK_IMAGE_LAYOUT_GENERAL);
                         if (!storage)
                             ii.sampler(sampler(b.sampler()));
                         x.descriptorType(storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(ii);
@@ -819,11 +860,27 @@ public abstract class VkPackBackend implements GpuBackend {
             sc.get(0).extent().set(Math.min(v[2], aw), Math.min(v[3], ah));
             vkCmdSetScissor(cmd(), 0, sc);
             vkCmdBindPipeline(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline());
-            vkCmdBindIndexBuffer(cmd(), ib, 0, VK_INDEX_TYPE_UINT32);
+            boolean boundQuadIndex = false;
             for (int i = 0; i < ds.length; i++) {
                 GeoBatch gb = d.batches().get(i);
+                PackFrameInputs.Indirect ind = gb.indirect();
+                if (ind != null) {
+                    // Iroh's own section buffers and the indirect commands it wrote (P3-6)
+                    if (ind.drawCount() <= 0)
+                        continue;
+                    vkCmdBindDescriptorSets(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout(), 0, s.longs(ds[i][0], ds[i][1]), null);
+                    vkCmdBindVertexBuffers(cmd(), 0, s.longs(ind.vertexBuffer()), s.longs(0));
+                    vkCmdBindIndexBuffer(cmd(), ind.indexBuffer(), 0, ind.indexType());
+                    vkCmdDrawIndexedIndirect(cmd(), ind.indirectBuffer(), ind.indirectOffset(), ind.drawCount(), ind.stride());
+                    boundQuadIndex = false;
+                    continue;
+                }
                 if (gb.quads() <= 0)
                     continue;
+                if (!boundQuadIndex) {
+                    vkCmdBindIndexBuffer(cmd(), ib, 0, VK_INDEX_TYPE_UINT32);
+                    boundQuadIndex = true;
+                }
                 vkCmdBindDescriptorSets(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout(), 0, s.longs(ds[i][0], ds[i][1]), null);
                 if (gb.vertexBuffer() >= 0)
                     vkCmdBindVertexBuffers(cmd(), 0, s.longs(vbufs.get(gb.vertexBuffer()).buffer()), s.longs(0));
@@ -862,6 +919,9 @@ public abstract class VkPackBackend implements GpuBackend {
         List<Long> sm = new ArrayList<>(samplers.values());
         List<Long> rps = new ArrayList<>(renderPasses.values());
         List<HostBuf> bs = new ArrayList<>(bufs);
+        for (List<HostBuf> l : uboChunks)
+            bs.addAll(l);
+        uboChunks.clear();
         for (HostBuf vb : vbufs)
             if (vb != null)
                 bs.add(vb);

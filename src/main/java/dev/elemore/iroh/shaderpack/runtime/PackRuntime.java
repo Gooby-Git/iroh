@@ -45,6 +45,22 @@ public final class PackRuntime {
             i.worldEnd();
     }
 
+    /** P3-6 FULL mode, WorldRenderEvents.START: decides whether the raster terrain layers are skipped this frame */
+    public static void onWorldStart() {
+        PackRuntimeImpl i = impl;
+        boolean on = active && i != null && i.fullReady();
+        net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive = on;
+    }
+
+    /** P3-6 FULL mode, WorldRenderEvents.BEFORE_ENTITIES: shadow + gbuffers + the whole chain, output and depth back */
+    public static void onBeforeEntities() {
+        if (!active)
+            return;
+        PackRuntimeImpl i = impl;
+        if (i != null && net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive)
+            i.fullFrame();
+    }
+
     public static void onSetLevel() {
         PackRuntimeImpl i = impl;
         if (i != null)

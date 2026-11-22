@@ -274,6 +274,7 @@ public final class HeadlessVkBackend extends VkPackBackend {
     public void beginFrame() {
         submitWait(); // setup work first, so the descriptor pool reset below cannot hit in-flight sets
         vkResetDescriptorPool(device, descPool, 0);
+        resetUboRing(0);
         cmd();
     }
 

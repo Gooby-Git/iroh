@@ -860,7 +860,7 @@ public final class PackGlsl {
                 r.builtinsUsed.add("ftransform");
             }
             if (u.stage == Stage.VERTEX && (u.uses("gl_Vertex") || u.uses("ftransform")))
-                // P3-5: gl_Vertex = raw.xyz * decode.x + decode.yzw (terrain: the wide vertex's int16 positions; float
+                // P3-5/P3-6: gl_Vertex = raw.xyz * decode.x + decode.yzw + the section offset Iroh encodes in baseInstance (DrawBuffers.encodeSectionOffset; 0 for every other draw) (terrain: the wide vertex int16 positions; float
                 // vertex formats: (1, 0, 0, 0))
                 block.put("iroh_VertexDecode", new String[]{"vec4", "", "builtin:iroh_VertexDecode", null});
         }
@@ -1610,7 +1610,7 @@ public final class PackGlsl {
                 if (allVaryings.containsKey("iroh_FrontColor") && !u.uses("gl_FrontColor"))
                     sb.append("    iroh_FrontColor = vec4(1.0);\n");
                 if (u.uses("gl_Vertex") || u.uses("ftransform"))
-                    sb.append("    iris_Vertex = vec4(iroh_InVertex.xyz * iroh_VertexDecode.x + iroh_VertexDecode.yzw, 1.0);\n");
+                    sb.append("    iris_Vertex = vec4(iroh_InVertex.xyz * iroh_VertexDecode.x + iroh_VertexDecode.yzw + vec3((ivec3(gl_InstanceIndex) >> ivec3(0, 16, 8)) & 255), 1.0);\n");
             }
             for (String p : prologue)
                 sb.append("    ").append(p).append('\n');

@@ -219,9 +219,30 @@ final class GameInputs implements PackFrameInputs {
         return null;
     }
 
+    // ---- P3-6 FULL mode (null / empty in post mode)
+    final java.util.List<Geometry> geometry = new java.util.ArrayList<>();
+    final Map<String, Integer> geoImages = new java.util.HashMap<>();
+    boolean full;
+    int depthTo = -1;
+
+    @Override
+    public java.util.List<Geometry> geometry() {
+        return full ? geometry : java.util.List.of();
+    }
+
+    @Override
+    public Map<String, Integer> geometryImages() {
+        return geoImages;
+    }
+
+    @Override
+    public int depthTo() {
+        return full ? depthTo : -1;
+    }
+
     @Override
     public String startStage() {
-        return "deferred";
+        return full ? "begin" : "deferred";
     }
 
     @Override

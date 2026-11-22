@@ -40,7 +40,19 @@ public interface PackFrameInputs {
      * {@code layout} "wide-terrain" = WideTerrainVertex quads; {@code origin} = section origin minus camera position
      * (blocks, camera-relative, as Iris' chunkOffset).
      */
-    record Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin) {}
+    record Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin, Indirect indirect) {
+        public Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin) {
+            this(geometryClass, layout, vertices, quads, origin, null);
+        }
+    }
+
+    /**
+     * P3-6 in-game terrain: draw an Iroh chunk area's sections with the renderer's own buffers: its area vertex
+     * buffer, the index buffer the raster path uses for that layer, and indexed-indirect commands Iroh wrote (same
+     * visibility as raster; baseInstance carries each section's offset, decoded by the translated vertex shader).
+     * geometryClass "shadow:<class>" = the shadow pass's own visibility list (not used by the main passes).
+     */
+    record Indirect(long vertexBuffer, long indexBuffer, int indexType, long indirectBuffer, long indirectOffset, int drawCount, int stride) {}
 
     default java.util.List<Geometry> geometry() {
         return java.util.List.of();
@@ -52,6 +64,16 @@ public interface PackFrameInputs {
      */
     default java.util.Set<String> geometryTextures() {
         return java.util.Set.of();
+    }
+
+    /** P3-6: draw textures already on the backend (in game: the block atlas imported from Iroh), by "geo:*" name */
+    default Map<String, Integer> geometryImages() {
+        return Map.of();
+    }
+
+    /** P3-6: backend image the pack's main depth (depthtex0 at frame end) is copied into (full mode: the scene depth) */
+    default int depthTo() {
+        return -1;
     }
 
     /** targets / depth images filled by a copy from a backend image (post mode: the raster scene colour and depth) */

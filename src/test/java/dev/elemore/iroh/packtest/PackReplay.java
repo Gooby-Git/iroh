@@ -147,6 +147,46 @@ public final class PackReplay {
                 };
             for (int f = 0; f < frames; f++)
                 ex.frame(in);
+            if (opt.containsKey("full") && opt.containsKey("roundtrip")) {
+                // P3-6: the in-game FULL-mode capture path offline: read back every target before "deferred" (the
+                // half a replay uploads into), write an .irohframe, replay it from "deferred" on a fresh executor and
+                // compare with the full frame's output
+                Map<String, float[]> capImgs = new LinkedHashMap<>();
+                Map<String, int[]> capExt = new LinkedHashMap<>();
+                ex.onStage = st -> {
+                    if (!st.equals("deferred"))
+                        return;
+                    // every target half under its exact key (a pair's other half holds last frame's history) + image.* volumes
+                    java.util.Set<String> names = new java.util.TreeSet<>();
+                    for (String k : ex.images.keySet())
+                        if (!k.startsWith("dummy:") && !k.startsWith("custom:") && !k.startsWith("geo:") && !k.equals("output"))
+                            names.add(k);
+                    for (String n : names) {
+                        Integer img = ex.images.get(n);
+                        GpuBackend.ImageDesc d = gpu.desc(img);
+                        capImgs.put(n, gpu.readback(img));
+                        capExt.put(n, new int[]{d.width(), d.height(), d.depth()});
+                    }
+                };
+                ex.frame(in);
+                ex.onStage = null;
+                float[] fullOut = gpu.readback(ex.images.get("output"));
+                FrameCapture cap = new FrameCapture(name, folder, "synthetic-full", "round trip of the FULL-mode capture path", w, h,
+                        "deferred", in.frameSeconds(), new LinkedHashMap<>(in.uniforms()), capImgs, capExt);
+                cap.write(out.resolve("full-capture.irohframe"));
+                FrameCapture back = FrameCapture.read(out.resolve("full-capture.irohframe"));
+                FrameExecutor ex2 = new FrameExecutor(data, plan, folder, gpu, FrameExecutor.cap(1L << 30));
+                ex2.frame(back);
+                float[] replayOut = gpu.readback(ex2.images.get("output"));
+                double diff = 0;
+                for (int i = 0; i < fullOut.length; i++)
+                    diff += Math.abs(fullOut[i] - replayOut[i]);
+                diff /= fullOut.length;
+                report.append(String.format("# roundtrip FULL frame vs replay of its capture: mean abs diff %.5f (%d images captured)%n", diff, capImgs.size()));
+                if (diff > 0.02)
+                    ok = false;
+                ex2.close();
+            }
             long ms = (System.nanoTime() - t0) / 1_000_000;
             Map<String, Map<String, Object>> stats = ex.inspect();
             for (Map.Entry<String, Map<String, Object>> e : stats.entrySet()) {

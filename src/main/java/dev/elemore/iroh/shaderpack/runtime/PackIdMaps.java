@@ -49,6 +49,11 @@ public final class PackIdMaps {
         return m;
     }
 
+    /** registry id -> mc_Entity.x, for the mesher (PackStartup.blockIds) */
+    public Map<String, Integer> blockMap() {
+        return java.util.Collections.unmodifiableMap(new HashMap<>(byKind.get("block")));
+    }
+
     public int block(String id) {
         return byKind.get("block").getOrDefault(id, -1);
     }

@@ -158,6 +158,7 @@ public final class IrohVkBackend extends VkPackBackend {
             vkResetDescriptorPool(device(), pools[f], 0);
         // the slot's previous frame has completed (Renderer waited its fence): its timestamps are ready
         readTimes(f);
+        resetUboRing(f);
         if (queryPool != 0)
             vkCmdResetQueryPool(cmd(), queryPool, f * MAXQ, MAXQ); // outside any render pass (endPassRunResume)
         slot = f;

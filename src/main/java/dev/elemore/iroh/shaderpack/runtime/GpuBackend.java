@@ -54,9 +54,14 @@ public interface GpuBackend extends AutoCloseable {
      * {@code externalBuffer} = a VkBuffer the renderer owns (in game: Iroh's section AreaBuffer) read from byte
      * {@code externalOffset} (P3-5 hookup point; the executor never frees external buffers).
      */
-    record GeoBatch(byte[] uniforms, int vertexBuffer, int quads, long externalBuffer, long externalOffset) {
+    record GeoBatch(byte[] uniforms, int vertexBuffer, int quads, long externalBuffer, long externalOffset,
+                    PackFrameInputs.Indirect indirect) {
         public GeoBatch(byte[] uniforms, int vertexBuffer, int quads) {
-            this(uniforms, vertexBuffer, quads, 0L, 0L);
+            this(uniforms, vertexBuffer, quads, 0L, 0L, null);
+        }
+
+        public GeoBatch(byte[] uniforms, int vertexBuffer, int quads, long externalBuffer, long externalOffset) {
+            this(uniforms, vertexBuffer, quads, externalBuffer, externalOffset, null);
         }
     }
 

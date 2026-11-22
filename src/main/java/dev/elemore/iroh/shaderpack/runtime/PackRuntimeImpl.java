@@ -106,30 +106,66 @@ final class PackRuntimeImpl {
         return !failed;
     }
 
+    /** P3-6: full mode can run this frame (startup format, loaded, healthy, terrain sub-switch on) */
+    boolean fullReady() {
+        return PackStartup.FULL && !failed && ensureLoaded() && DebugSwitches.on(PackSwitches.FULL_TERRAIN)
+                && net.vulkanmod.Initializer.CONFIG.indirectDraw;
+    }
+
+    private boolean fullRanThisFrame;
+
     void worldEnd() {
-        if (failed)
+        if (fullRanThisFrame) { // the full frame already presented before entities
+            fullRanThisFrame = false;
             return;
-        if (loaded == null) {
-            CompletableFuture<Loaded> f = loading;
-            if (f == null || !f.isDone())
-                return;
-            try {
-                loaded = f.join();
-            } catch (RuntimeException e) {
-                fail("loading failed: " + (e.getCause() != null ? e.getCause() : e));
-                return;
-            }
         }
+        frame(false);
+    }
+
+    void fullFrame() {
+        fullRanThisFrame = frame(true);
+    }
+
+    private boolean ensureLoaded() {
+        if (loaded != null)
+            return true;
+        CompletableFuture<Loaded> f = loading;
+        if (f == null || !f.isDone())
+            return false;
+        try {
+            loaded = f.join();
+            PackStartup.blockIds = PackIdMaps.of(loaded.data()).blockMap();
+            if (PackStartup.FULL) {
+                // sections meshed before the ids existed carry mc_Entity -1: mesh everything again once
+                log("block ids loaded (" + PackStartup.blockIds.size() + "): rebuilding sections");
+                Minecraft.getInstance().execute(() -> Minecraft.getInstance().levelRenderer.allChanged());
+            }
+            return true;
+        } catch (RuntimeException e) {
+            fail("loading failed: " + (e.getCause() != null ? e.getCause() : e));
+            return false;
+        }
+    }
+
+    private VulkanImage importedAtlas;
+    private int hAtlas = -1;
+
+    /** @return true when a frame was recorded */
+    private boolean frame(boolean full) {
+        if (failed)
+            return false;
+        if (!ensureLoaded())
+            return false;
         Renderer r = Renderer.getInstance();
         SceneTarget st = r.getMainPass().getSceneTarget();
         if (st == null) {
             fail("no scene target (main pass without one)");
-            return;
+            return false;
         }
         if (gpu == null) {
             gpu = new IrohVkBackend();
             IrohVkBackend g = gpu;
-            dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = () -> g.times.last();
+            dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = () -> g.times.last() + " | " + stats.last;
             lc = new PackLifecycle(gpu, (name, bytes) -> true); // MemoryGuard is asked per image inside IrohVkBackend
             lc.enable(loaded.data(), loaded.plan());
         }
@@ -152,26 +188,46 @@ final class PackRuntimeImpl {
             folder = lc.folderFor(mc.level != null ? mc.level.dimension().location().toString() : "minecraft:overworld");
         if (!loaded.plan().frames.containsKey(folder)) {
             fail("no program folder " + folder);
-            return;
+            return false;
         }
         if (!folder.equals(lastFolder)) {
             log("folder " + folder);
             lastFolder = folder;
         }
-        Map<String, Integer> copies = new LinkedHashMap<>();
-        if (DebugSwitches.on(PackSwitches.POST_SCENE))
+        copies.clear();
+        clears.clear();
+        inputs.full = full;
+        if (full) {
+            // FULL: geometry + shadow + chain; the raster sky (already in the scene colour, terrain skipped) is the
+            // background in colortex0; depthtex0 goes back into the scene depth for the raster draws after this
+            if (DebugSwitches.on(PackSwitches.FULL_RASTER_SKY))
+                copies.put("colortex0", hColour);
+            inputs.depthTo = DebugSwitches.on(PackSwitches.FULL_DEPTH_BACK) ? hDepth : -1;
+            VulkanImage atlas = blockAtlas();
+            if (atlas != null && atlas != importedAtlas) {
+                if (hAtlas >= 0)
+                    gpu.freeImage(hAtlas);
+                hAtlas = gpu.importImage(atlas, "block atlas");
+                importedAtlas = atlas;
+            }
+            inputs.geoImages.clear();
+            if (hAtlas >= 0)
+                inputs.geoImages.put("geo:tex", hAtlas);
+        }
+        if (!full && DebugSwitches.on(PackSwitches.POST_SCENE))
             copies.put("colortex0", hColour);
-        if (DebugSwitches.on(PackSwitches.POST_DEPTH))
+        if (!full && DebugSwitches.on(PackSwitches.POST_DEPTH))
             for (String dt : new String[]{"depthtex0", "depthtex1", "depthtex2"})
                 copies.put(dt, hDepth);
-        Map<String, float[]> clears = new LinkedHashMap<>();
-        clears.put("colortex6", new float[]{0, 0, 1, 0});  // flat material: smooth 0, mask 0, full sky light
-        clears.put("colortex4", new float[]{0, 1, 0, 0});  // flat normal up
-        clears.put("shadowtex0", new float[]{1, 1, 1, 1}); // no shadow pass in post mode: everything lit
-        clears.put("shadowtex1", new float[]{1, 1, 1, 1});
-        if (!DebugSwitches.on(PackSwitches.POST_DEPTH))
+        if (!full) {
+            clears.put("colortex6", FLAT_MATERIAL);  // flat material: smooth 0, mask 0, full sky light
+            clears.put("colortex4", FLAT_NORMAL);    // flat normal up
+            clears.put("shadowtex0", ONE);           // no shadow pass in post mode: everything lit
+            clears.put("shadowtex1", ONE);
+        }
+        if (!full && !DebugSwitches.on(PackSwitches.POST_DEPTH))
             for (String dt : new String[]{"depthtex0", "depthtex1", "depthtex2"})
-                clears.put(dt, new float[]{1, 1, 1, 1});
+                clears.put(dt, ONE);
         double sunPath = 0;
         try {
             sunPath = Double.parseDouble(loaded.plan().frames.get(folder).directives.getOrDefault("sunPathRotation", "0").replaceAll("[fF]$", ""));
@@ -181,11 +237,29 @@ final class PackRuntimeImpl {
         var dir = loaded.plan().frames.get(folder).directives;
         inputs.shadowDistance = SyntheticFullScene.parse(dir.get("shadowDistance"), 96);
         inputs.shadowInterval = SyntheticFullScene.parse(dir.get("shadowIntervalSize"), 2);
+        long cpu0 = System.nanoTime();
         inputs.update(FrameHooks.context(), st.getWidth(), st.getHeight(), copies, clears, sunPath);
-        Set<String> skip = new HashSet<>();
+        if (full) {
+            inputs.geometry.clear();
+            var c = FrameHooks.context().cameraPos();
+            boolean shadow = DebugSwitches.on(PackSwitches.FULL_SHADOW);
+            net.vulkanmod.render.chunk.WorldRenderer wr = net.vulkanmod.render.chunk.WorldRenderer.getInstance();
+            wr.collectPackTerrain(inputs.geometry, c.x(), c.y(), c.z(), shadow ? inputs.uniforms().get("shadowModelView") : null, inputs.shadowDistance);
+            stats.mainDraws = wr.packMainDraws;
+            stats.shadowSections = shadow ? wr.packShadowSections : 0;
+            stats.shadowDraws = shadow ? wr.packShadowDraws : 0;
+            stats.batches = inputs.geometry.size();
+        }
+        skip.clear();
         for (String s : DebugSwitches.getOr(PackSwitches.SKIP, "").split(","))
             if (!s.isBlank())
                 skip.add(s.trim());
+        if (full && !DebugSwitches.on(PackSwitches.FULL_SHADOW))
+            for (var p0 : loaded.plan().frames.get(folder).passes)
+                if (p0.id.startsWith("shadow:"))
+                    skip.add(p0.id);
+        if (full && !DebugSwitches.on(PackSwitches.FULL_TRANSLUCENT))
+            skip.add("gbuffers_water:translucent");
         int present = DebugSwitches.on(PackSwitches.PRESENT) ? hColour : -1;
         String f = folder;
         Path cap = captureDir;
@@ -193,17 +267,69 @@ final class PackRuntimeImpl {
         boolean[] ok = {false};
         VulkanImage.endPassRunResume(() -> {
             if (cap != null && lc.executor() != null)
-                lc.executor().afterInputs = () -> startCapture(cap, f);
+                if (full)
+                    lc.executor().onStage = st0 -> {
+                        if (st0.equals("deferred") && lc.executor().onStage != null) {
+                            lc.executor().onStage = null;
+                            startCapture(cap, f, true);
+                        }
+                    };
+                else
+                    lc.executor().afterInputs = () -> startCapture(cap, f, false);
             ok[0] = lc.frame(inputs, f, present, skip);
-            if (lc.executor() != null)
+            if (lc.executor() != null) {
                 lc.executor().afterInputs = null;
+                lc.executor().onStage = null;
+            }
         });
         if (cap != null && lc.rebuilds == rebuildsBefore)
             captureDir = null;
         if (lc.rebuilds != rebuildsBefore && DebugSwitches.on(PackSwitches.LOG))
             log("built " + f + " at " + st.getWidth() + "x" + st.getHeight() + " (" + lc.executor().images.size() + " images)");
-        if (lc.state() == PackLifecycle.State.FAILED)
+        stats.cpuNs += System.nanoTime() - cpu0;
+        stats.frames++;
+        stats.maybeLog(full);
+        if (lc.state() == PackLifecycle.State.FAILED) {
             fail(lc.failure);
+            return false;
+        }
+        return ok[0];
+    }
+
+    // reused per frame (P3-6: no per-frame maps in the hook)
+    private final Map<String, Integer> copies = new LinkedHashMap<>();
+    private final Map<String, float[]> clears = new LinkedHashMap<>();
+    private final Set<String> skip = new HashSet<>();
+    private static final float[] FLAT_MATERIAL = {0, 0, 1, 0}, FLAT_NORMAL = {0, 1, 0, 0}, ONE = {1, 1, 1, 1};
+    final FrameStats stats = new FrameStats();
+
+    /** CPU cost of the pack frame and the terrain/shadow counts, published every 2 s (iroh.pack.cpu) and in -Diroh.profile */
+    static final class FrameStats {
+        long cpuNs, frames, lastLog = System.nanoTime();
+        int mainDraws, shadowSections, shadowDraws, batches;
+        String last = "no samples yet";
+
+        void maybeLog(boolean full) {
+            long now = System.nanoTime();
+            if (now - lastLog < 2_000_000_000L || frames == 0)
+                return;
+            last = String.format("pack cpu ms/frame %.3f (%s, %d frames)%s", cpuNs / 1e6 / frames, full ? "full" : "post", frames,
+                    full ? String.format(" terrain draws %d, shadow sections %d draws %d, batches %d", mainDraws, shadowSections, shadowDraws, batches) : "");
+            DebugSwitches.publish(PackSwitches.CPU, last);
+            cpuNs = 0;
+            frames = 0;
+            lastLog = now;
+        }
+    }
+
+    static VulkanImage blockAtlas() {
+        try {
+            var tex = Minecraft.getInstance().getTextureManager().getTexture(net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS);
+            var gl = net.vulkanmod.gl.VkGlTexture.getTexture(tex.getId());
+            return gl == null ? null : gl.getVulkanImage();
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private void fail(String why) {
@@ -253,19 +379,27 @@ final class PackRuntimeImpl {
     }
 
     /** reads back the images the chain starts from (after copies and clears) and writes one .irohframe, off-thread */
-    private void startCapture(Path dir, String folder) {
+    private void startCapture(Path dir, String folder, boolean full) {
         FrameExecutor ex = lc.executor();
         capturing = true;
         gpu.barrier(0, "TRANSFER_WRITE", "TRANSFER_READ"); // the copies and clears just recorded finish before the readback
         captureDir = null;
         Map<String, Integer> want = new LinkedHashMap<>();
-        for (String n : new String[]{"colortex0", "colortex3", "colortex4", "colortex6", "depthtex0", "depthtex1", "depthtex2", "shadowtex0", "shadowtex1"}) {
-            Integer h = ex.images.get(n + "#main");
-            if (h == null)
-                h = ex.images.get(n);
-            if (h != null)
-                want.put(n, h);
-        }
+        if (full) {
+            // FULL mode, before "deferred": every target the gbuffers/shadow passes produced, in the half a replay from
+            // "deferred" uploads into, so packReplay -Pcapture re-runs the deferred + composite chain on REAL gbuffers
+            // every target half under its exact key (a pair's other half holds last frame's history) + image.* volumes
+            for (String k : new java.util.TreeSet<>(ex.images.keySet()))
+                if (!k.startsWith("dummy:") && !k.startsWith("custom:") && !k.startsWith("geo:") && !k.equals("output"))
+                    want.put(k, ex.images.get(k));
+        } else
+            for (String n : new String[]{"colortex0", "colortex3", "colortex4", "colortex6", "depthtex0", "depthtex1", "depthtex2", "shadowtex0", "shadowtex1"}) {
+                Integer h = ex.images.get(n + "#main");
+                if (h == null)
+                    h = ex.images.get(n);
+                if (h != null)
+                    want.put(n, h);
+            }
         long bytes = 0;
         for (Integer h : want.values()) {
             var d = gpu.desc(h);
@@ -290,7 +424,9 @@ final class PackRuntimeImpl {
                 if (left.decrementAndGet() == 0) {
                     Thread t = new Thread(() -> {
                         try {
-                            new FrameCapture(packName, folder, "game", "IrohDebug.capturePackFrame, post mode (raster colour/depth, flat material)",
+                            new FrameCapture(packName, folder, "game", full
+                                    ? "IrohDebug.capturePackFrame, FULL mode: real gbuffers + shadow maps before deferred"
+                                    : "IrohDebug.capturePackFrame, post mode (raster colour/depth, flat material)",
                                     w, h, "deferred", inputs.frameSeconds(), uniforms, images, extents).write(dir);
                             log("capture written: " + dir);
                         } catch (Exception ex2) {

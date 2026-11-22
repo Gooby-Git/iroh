@@ -267,6 +267,57 @@ public class DrawBuffers {
         vkCmdDrawIndexedIndirect(Renderer.getCommandBuffer(), indirectBuffer.getId(), indirectBuffer.getOffset(), drawCount, CMD_STRIDE);
     }
 
+    /**
+     * Iroh P3-6 (FULL pack mode): writes the indexed-indirect commands for {@code count} sections (in-area indices
+     * {@code idx}, facing masks {@code mask}; -1 = every facing bucket, for the shadow pass) of one layer into the
+     * shared command scratch, exactly as buildDrawBatchesIndirect does, WITHOUT drawing. Returns the command count;
+     * the caller copies {@code count * CMD_STRIDE} bytes from {@link #packCommandPtr()} into its indirect buffer.
+     */
+    public int writePackCommands(int count, int[] idx, int[] mask, TerrainRenderType terrainRenderType) {
+        long ptr = cmdBufferPtr;
+        long drawParamsBasePtr = this.drawParamsPtr + (terrainRenderType.ordinal() * DrawParametersBuffer.SECTIONS * DrawParametersBuffer.FACINGS) * DrawParametersBuffer.STRIDE;
+        final long facingsStride = DrawParametersBuffer.FACINGS * DrawParametersBuffer.STRIDE;
+        int drawCount = 0;
+        for (int j = 0; j < count; ++j) {
+            long p = drawParamsBasePtr + (idx[j] * facingsStride);
+            int m = mask[j];
+            for (int i = 0; i < QuadFacing.COUNT; i++, p += DrawParametersBuffer.STRIDE) {
+                if ((m & 1 << i) == 0)
+                    continue;
+                final int indexCount = DrawParametersBuffer.getIndexCount(p);
+                if (indexCount <= 0)
+                    continue;
+                MemoryUtil.memPutInt(ptr, indexCount);
+                MemoryUtil.memPutInt(ptr + 4, 1);
+                MemoryUtil.memPutInt(ptr + 8, DrawParametersBuffer.getFirstIndex(p));
+                MemoryUtil.memPutInt(ptr + 12, DrawParametersBuffer.getVertexOffset(p));
+                MemoryUtil.memPutInt(ptr + 16, DrawParametersBuffer.getBaseInstance(p));
+                ptr += CMD_STRIDE;
+                drawCount++;
+            }
+        }
+        return drawCount;
+    }
+
+    /** the raster path's facing mask for a section (back-face culling of the per-facing buckets) */
+    public int facingMask(Vec3 cameraPos, RenderSection section, boolean translucent) {
+        if (translucent || !Initializer.CONFIG.backFaceCulling)
+            return 1 << 6;
+        return getMask(cameraPos, section);
+    }
+
+    public static long packCommandPtr() {
+        return cmdBufferPtr;
+    }
+
+    public static int packCommandStride() {
+        return CMD_STRIDE;
+    }
+
+    public Vector3i origin() {
+        return origin;
+    }
+
     public void buildDrawBatchesDirect(Vec3 cameraPos, StaticQueue<RenderSection> queue, TerrainRenderType terrainRenderType) {
         boolean isTranslucent = terrainRenderType == TerrainRenderType.TRANSLUCENT;
         boolean backFaceCulling = Initializer.CONFIG.backFaceCulling && !isTranslucent;

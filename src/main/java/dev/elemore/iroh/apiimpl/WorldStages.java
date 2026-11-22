@@ -20,10 +20,14 @@ public final class WorldStages {
             Vec3 c = ctx.camera().getPosition();
             FrameHooks.setWorld(c.x, c.y, c.z, ctx.positionMatrix(), ctx.projectionMatrix());
             FrameHooks.setInWorld(true);
+            dev.elemore.iroh.shaderpack.runtime.PackRuntime.onWorldStart(); // P3-6 full mode: raster terrain skip flag
             FrameHooks.dispatch(FrameStage.WORLD_START);
         });
         WorldRenderEvents.AFTER_SETUP.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_SKY));
-        WorldRenderEvents.BEFORE_ENTITIES.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_OPAQUE_TERRAIN));
+        WorldRenderEvents.BEFORE_ENTITIES.register(ctx -> {
+            dev.elemore.iroh.shaderpack.runtime.PackRuntime.onBeforeEntities(); // P3-6 full mode (default off)
+            FrameHooks.dispatch(FrameStage.AFTER_OPAQUE_TERRAIN);
+        });
         WorldRenderEvents.AFTER_ENTITIES.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_ENTITIES));
         WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_TRANSLUCENT));
         WorldRenderEvents.LAST.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_WEATHER));

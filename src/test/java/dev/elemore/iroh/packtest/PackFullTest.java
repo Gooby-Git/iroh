@@ -92,6 +92,46 @@ public final class PackFullTest {
             ex.close();
             check(folder + ": close frees images, pipelines, vertex buffers", rec.live() == 0 && rec.livePipelines() == 0 && rec.liveVertexBuffers() == 0);
         }
+        // P3-6 in-game shape: indirect batches over renderer-owned buffers, a separate shadow list, depth back
+        if (plan.frames.containsKey("world0")) {
+            RecordingBackend rec = new RecordingBackend();
+            SyntheticFullScene syn = new SyntheticFullScene(data, plan.frames.get("world0"), plan.resources.get("world0"), 160, 90);
+            int sceneDepth = rec.importImage(null, "scene depth");
+            int atlas = rec.importImage(null, "block atlas");
+            var ind = new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Indirect(11, 12, 0, 13, 64, 7, 32);
+            java.util.List<dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry> geo = List.of(
+                    new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry("terrain_cutout_mipped", "wide-terrain", null, 0, new double[]{-8, -64, 3}, ind),
+                    new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry("terrain_translucent", "wide-terrain", null, 0, new double[]{-8, -64, 3}, ind),
+                    new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry("shadow:terrain_cutout_mipped", "wide-terrain", null, 0, new double[]{-8, -64, 3}, ind));
+            var in = new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs() {
+                public int width() { return syn.width(); }
+                public int height() { return syn.height(); }
+                public java.util.Map<String, double[]> uniforms() { return syn.uniforms(); }
+                public java.util.Set<String> suppliedImages() { return java.util.Set.of(); }
+                public float[] image(String n) { return null; }
+                public int[] extent(String n) { return null; }
+                public String startStage() { return "begin"; }
+                public double frameSeconds() { return 1 / 60.0; }
+                public List<Geometry> geometry() { return geo; }
+                public java.util.Map<String, Integer> geometryImages() { return java.util.Map.of("geo:tex", atlas); }
+                public int depthTo() { return sceneDepth; }
+            };
+            FrameExecutor ex = new FrameExecutor(data, plan, "world0", rec, FrameExecutor.cap(1L << 30));
+            ex.frame(in);
+            check("indirect: no problems " + ex.problems, ex.problems.isEmpty());
+            check("indirect: no violations " + rec.violations, rec.violations.isEmpty());
+            var shadowDraw = rec.geoDraws.stream().filter(g -> g.pass().equals("shadow:shadow")).findFirst();
+            var terrainDraw = rec.geoDraws.stream().filter(g -> g.pass().equals("gbuffers_terrain")).findFirst();
+            check("shadow pass draws only the shadow list (1 batch)", shadowDraw.isPresent() && shadowDraw.get().batches().size() == 1);
+            check("terrain pass draws the main list (1 batch), indirect kept", terrainDraw.isPresent() && terrainDraw.get().batches().size() == 1
+                    && terrainDraw.get().batches().get(0).indirect() == ind);
+            check("water pass draws the translucent batch", rec.geoDraws.stream().anyMatch(g -> g.pass().equals("gbuffers_water:translucent")));
+            check("the atlas is the imported image", terrainDraw.isPresent() && terrainDraw.get().set0().values().stream().anyMatch(b -> b.image() == atlas));
+            int db = idx(rec.calls, "blit pack:depthtex0 -> scene depth");
+            check("depth back to the scene depth after the chain", db > idx(rec.calls, "draw final"));
+            ex.close();
+            check("close never frees the renderer's atlas or scene depth", !rec.freed.contains(atlas) && !rec.freed.contains(sceneDepth));
+        }
         System.out.println("# packfull " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
     }

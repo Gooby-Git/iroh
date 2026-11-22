@@ -31,6 +31,13 @@ public final class PackDefaultOffTest {
             PackRuntime.onWorldEnd();
         PackRuntime.onSetLevel();
         check("inactive after 1000 frames", !PackRuntime.active());
+        // P3-6: full mode is startup-only and off: the 16-byte section format stays, the terrain-skip flag stays false
+        check("PackStartup.FULL false without the properties", !dev.elemore.iroh.shaderpack.runtime.PackStartup.FULL);
+        for (int i = 0; i < 100; i++) {
+            PackRuntime.onWorldStart();
+            PackRuntime.onBeforeEntities();
+        }
+        check("raster terrain never skipped when off", !net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive);
         Field f = PackRuntime.class.getDeclaredField("impl");
         f.setAccessible(true);
         check("no implementation object created", f.get(null) == null);

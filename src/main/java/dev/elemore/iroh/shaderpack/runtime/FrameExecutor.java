@@ -87,6 +87,26 @@ public final class FrameExecutor {
     public Set<String> skip = Set.of();
     /** called after the inputs were uploaded/copied (capture hook) */
     public Runnable afterInputs;
+    /** P3-6: called when the pass loop enters a stage (full-mode capture before "deferred") */
+    public java.util.function.Consumer<String> onStage;
+
+    /**
+     * image key a replay starting at {@code startStage} uploads a supplied {@code target} into (the half its first
+     * reader sees after the plan's flips before that stage), or the plain key for single targets
+     */
+    public String replayKey(String target, String startStage) {
+        if (!images.containsKey(target + "#main"))
+            return target;
+        int start = STAGES.indexOf(startStage);
+        boolean flipped = false;
+        for (PassGraph.Pass p : frame.passes) {
+            if (STAGES.indexOf(p.stage) >= start)
+                break;
+            if (p.flipsAfter.contains(target))
+                flipped = !flipped;
+        }
+        return target + (flipped ? "#alt" : "#main");
+    }
 
     public FrameExecutor(PackData data, PackPlan pp, String folder, GpuBackend gpu, MemoryGate gate) {
         this.data = data;
@@ -168,8 +188,16 @@ public final class FrameExecutor {
         int st = STAGES.indexOf(p.stage);
         if (st < start)
             return false;
-        if (p.kind.equals("geometry"))
+        if (p.kind.equals("geometry")) {
+            // pipelines for every terrain-class pass once geometry is supplied at all (a class absent in the first
+            // frame, e.g. no water in view, still draws later); other classes only when their batches exist
+            if (in.geometry().isEmpty())
+                return false;
+            for (String g : p.geometry)
+                if (sceneClass(g).startsWith("terrain_"))
+                    return true;
             return !batchesFor(p, in).isEmpty();
+        }
         return p.kind.equals("fullscreen") || p.kind.equals("compute");
     }
 
@@ -197,9 +225,22 @@ public final class FrameExecutor {
             if (c.equals("terrain_cutout"))
                 want.add("terrain_cutout_mipped");
         }
-        for (PackFrameInputs.Geometry g : in.geometry())
-            if (want.contains(g.geometryClass()))
+        boolean shadow = shadowPass(p);
+        boolean ownShadowList = false;
+        if (shadow)
+            for (PackFrameInputs.Geometry g : in.geometry())
+                if (g.geometryClass().startsWith("shadow:")) {
+                    ownShadowList = true;
+                    break;
+                }
+        for (PackFrameInputs.Geometry g : in.geometry()) {
+            String c = g.geometryClass();
+            if (c.startsWith("shadow:")) {
+                if (shadow && want.contains(c.substring(7)))
+                    out.add(g);
+            } else if ((!shadow || !ownShadowList) && want.contains(c))
                 out.add(g);
+        }
         return out;
     }
 
@@ -353,10 +394,16 @@ public final class FrameExecutor {
         if (afterInputs != null)
             afterInputs.run();
         // passes
+        String lastStage = null;
         for (PassGraph.Pass p : frame.passes) {
             int st = STAGES.indexOf(p.stage);
             if (st < start)
                 continue;
+            if (!p.stage.equals(lastStage)) {
+                lastStage = p.stage;
+                if (onStage != null)
+                    onStage.accept(p.stage);
+            }
             if (skip.contains(p.id)) {
                 trace.add("skip " + p.id + " (iroh.pack.skip)");
                 continue;
@@ -397,6 +444,13 @@ public final class FrameExecutor {
             access(m, "TRANSFER_WRITE");
             gpu.copy(a, m);
             trace.add("copy " + t.name + "#alt -> #main (end of frame)");
+        }
+        if (in.depthTo() >= 0 && images.containsKey("depthtex0")) {
+            Integer d0 = images.get("depthtex0");
+            access(d0, "TRANSFER_READ");
+            access(in.depthTo(), "TRANSFER_WRITE");
+            gpu.blit(d0, in.depthTo());
+            trace.add("depth back depthtex0 -> scene depth");
         }
         if (presentTo >= 0) {
             Integer out = images.get("output");
@@ -541,6 +595,9 @@ public final class FrameExecutor {
     private Integer geoTexture(String res, PackFrameInputs in) {
         String k = res.startsWith("atlas normals") ? "normals" : res.startsWith("atlas specular") ? "specular" : "tex";
         String key = "geo:" + k;
+        Integer ext = in.geometryImages().get(key);
+        if (ext != null)
+            return ext; // owned by the renderer: never freed by the executor
         Integer h = images.get(key);
         if (h != null)
             return h;
@@ -612,7 +669,7 @@ public final class FrameExecutor {
         List<GpuBackend.GeoBatch> batches = new ArrayList<>();
         int quads = 0;
         for (PackFrameInputs.Geometry g : batchesFor(p, in)) {
-            Integer vb = vertexBuffers.get(g);
+            Integer vb = g.indirect() != null ? Integer.valueOf(-1) : vertexBuffers.get(g);
             if (vb == null) {
                 vb = gpu.createVertexBuffer("pack:geo " + g.geometryClass(), g.vertices().duplicate());
                 vertexBuffers.put(g, vb);
@@ -631,7 +688,7 @@ public final class FrameExecutor {
             per.put("blockEntityId", new double[]{-1});
             per.put("entityId", new double[]{-1});
             per.put("renderStage", new double[]{renderStage(g.geometryClass(), shadow)});
-            batches.add(new GpuBackend.GeoBatch(uniformBlock(u, overlay(in, per), false), vb, g.quads()));
+            batches.add(new GpuBackend.GeoBatch(uniformBlock(u, overlay(in, per), false), vb, g.quads(), 0L, 0L, g.indirect()));
             quads += g.quads();
         }
         gpu.drawGeometry(new GpuBackend.GeoDraw(p.id, pipe, colour, depth, viewport, set0, set1, batches));

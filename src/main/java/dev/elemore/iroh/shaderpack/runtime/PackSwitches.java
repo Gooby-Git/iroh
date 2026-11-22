@@ -19,6 +19,13 @@ public final class PackSwitches {
     public static final String SKIP = "iroh.pack.skip";
     public static final String LOG = "iroh.pack.log";
     public static final String GPU_TIMES = "iroh.pack.gpuTimes";
+    public static final String CPU = "iroh.pack.cpu";
+    // P3-6 FULL-mode sub-steps (bisecting; all runtime-safe)
+    public static final String FULL_TERRAIN = "iroh.pack.full.terrain";
+    public static final String FULL_SHADOW = "iroh.pack.full.shadow";
+    public static final String FULL_TRANSLUCENT = "iroh.pack.full.translucent";
+    public static final String FULL_RASTER_SKY = "iroh.pack.full.rasterSky";
+    public static final String FULL_DEPTH_BACK = "iroh.pack.full.depthBack";
 
     private static volatile boolean registered;
 
@@ -49,6 +56,18 @@ public final class PackSwitches {
             DebugSwitches.register(new Switch(LOG, "off", "one line per pack frame event (rebuilds, failures)", DebugSwitches.BOOL, v -> "ok"));
             DebugSwitches.register(new Switch(GPU_TIMES, "no samples yet", "READ-ONLY: per-pass GPU ms/frame of the pack path, 2 s average (IrohDebug.get)",
                     v -> "read-only (published by the renderer)", null));
+            DebugSwitches.register(new Switch(CPU, "no samples yet", "READ-ONLY: pack frame CPU ms and full-mode draw / shadow section counts, 2 s average",
+                    v -> "read-only (published by the renderer)", null));
+            DebugSwitches.register(new Switch(FULL_TERRAIN, "on", "full mode: terrain through Navidson (off: raster terrain + post mode for that frame on)",
+                    DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(FULL_SHADOW, "on", "full mode: the shadow pass (off: shadow maps stay cleared = lit)",
+                    DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(FULL_TRANSLUCENT, "on", "full mode: gbuffers_water for translucent terrain (off: no water/glass)",
+                    DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(FULL_RASTER_SKY, "on", "full mode: the raster sky is copied into colortex0 before gbuffers (off: the pack's clear colour)",
+                    DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(FULL_DEPTH_BACK, "on", "full mode: depthtex0 is copied into the scene depth so raster entities/particles/hand occlude correctly",
+                    DebugSwitches.BOOL, v -> "ok"));
             registered = true;
         }
     }
