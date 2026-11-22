@@ -75,8 +75,25 @@ public interface GpuBackend extends AutoCloseable {
     /** submits and waits */
     void endFrame();
 
-    /** mip 0 decoded to rgba floats */
+    /** mip 0 decoded to rgba floats (synchronous; offline backends only) */
     float[] readback(int image);
+
+    /**
+     * Copy mip 0 of src into dst; formats may differ when both are colour (a blit converts) or equal depth formats.
+     * Used to bring the raster path's scene colour/depth in (post mode) and to present the pack output.
+     */
+    void blit(int src, int dst);
+
+    /** Destroys a pipeline after in-flight frames (dimension change, disable) */
+    void freePipeline(int pipeline);
+
+    /** Frees an image the backend created (deferred until no in-flight frame uses it); imported images are only forgotten. */
+    void freeImage(int image);
+
+    /** An image the backend does not own (the raster path's scene colour / depth), for blit sources/destinations. */
+    default int importImage(Object external, String name) {
+        throw new UnsupportedOperationException(name() + " cannot import " + name);
+    }
 
     ImageDesc desc(int image);
 

@@ -828,6 +828,13 @@ public class VulkanImage {
                      VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT -> 4;
                 case VK_FORMAT_R8_UNORM -> 1;
+                // Iroh (P3-4): pack render target formats (only the pack path creates these)
+                case VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT -> 1;
+                case VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM, VK_FORMAT_R16_SFLOAT, VK_FORMAT_R16_UNORM, VK_FORMAT_R16_UINT -> 2;
+                case VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R32_SFLOAT,
+                     VK_FORMAT_R32_UINT, VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_A2B10G10R10_UNORM_PACK32 -> 4;
+                case VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R32G32_SFLOAT -> 8;
+                case VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_UINT -> 16;
 
                 default -> throw new IllegalArgumentException(String.format("Unxepcted format: %s", format));
 //                default -> 0;

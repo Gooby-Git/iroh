@@ -16,7 +16,8 @@ public final class TexelCodec {
             case "R8_UNORM", "R8_SNORM", "R8_UINT" -> 1;
             case "R8G8_UNORM", "R8G8_SNORM", "R16_SFLOAT", "R16_UNORM", "R16_UINT", "R16_SNORM" -> 2;
             case "R8G8B8A8_UNORM", "R8G8B8A8_SNORM", "R8G8B8A8_UINT", "R16G16_SFLOAT", "R16G16_UNORM", "R32_SFLOAT", "R32_UINT",
-                 "B10G11R11_UFLOAT_PACK32", "A2B10G10R10_UNORM_PACK32", "D32_SFLOAT" -> 4;
+                 "B10G11R11_UFLOAT_PACK32", "A2B10G10R10_UNORM_PACK32", "D32_SFLOAT", "D32_SFLOAT_S8_UINT",
+                 "D24_UNORM_S8_UINT", "X8_D24_UNORM_PACK32" -> 4;
             case "R16G16B16A16_SFLOAT", "R16G16B16A16_UNORM", "R16G16B16A16_SNORM", "R32G32_SFLOAT" -> 8;
             case "R32G32B32A32_SFLOAT", "R32G32B32A32_UINT" -> 16;
             default -> throw new IllegalArgumentException("no codec for " + vk);
@@ -54,8 +55,9 @@ public final class TexelCodec {
                 case "R16_UINT" -> out.putShort((short) Math.round(r));
                 case "R16G16_SFLOAT" -> out.putShort(half(r)).putShort(half(g));
                 case "R16G16_UNORM" -> out.putShort(unorm16(r)).putShort(unorm16(g));
-                case "R32_SFLOAT", "D32_SFLOAT" -> out.putFloat(r);
+                case "R32_SFLOAT", "D32_SFLOAT", "D32_SFLOAT_S8_UINT" -> out.putFloat(r);
                 case "R32_UINT" -> out.putInt(Math.round(r));
+                case "D24_UNORM_S8_UINT", "X8_D24_UNORM_PACK32" -> out.putInt(Math.round(clamp(r, 0, 1) * 16777215f));
                 case "B10G11R11_UFLOAT_PACK32" -> out.putInt(packB10G11R11(r, g, bl));
                 case "A2B10G10R10_UNORM_PACK32" -> out.putInt((Math.round(clamp(r, 0, 1) * 1023)) | (Math.round(clamp(g, 0, 1) * 1023) << 10)
                         | (Math.round(clamp(bl, 0, 1) * 1023) << 20) | (Math.round(clamp(a, 0, 1) * 3) << 30));
@@ -93,8 +95,9 @@ public final class TexelCodec {
                 case "R16_UINT" -> r = b.getShort() & 0xffff;
                 case "R16G16_SFLOAT" -> { r = unhalf(b.getShort()); g = unhalf(b.getShort()); }
                 case "R16G16_UNORM" -> { r = (b.getShort() & 0xffff) / 65535f; g = (b.getShort() & 0xffff) / 65535f; }
-                case "R32_SFLOAT", "D32_SFLOAT" -> r = b.getFloat();
+                case "R32_SFLOAT", "D32_SFLOAT", "D32_SFLOAT_S8_UINT" -> r = b.getFloat();
                 case "R32_UINT" -> r = b.getInt() & 0xffffffffL;
+                case "D24_UNORM_S8_UINT", "X8_D24_UNORM_PACK32" -> r = (b.getInt() & 0xFFFFFF) / 16777215f;
                 case "B10G11R11_UFLOAT_PACK32" -> {
                     int v = b.getInt();
                     r = uf11(v & 0x7ff);

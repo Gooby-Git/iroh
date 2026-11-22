@@ -1,0 +1,260 @@
+package dev.elemore.iroh.shaderpack.runtime;
+
+import dev.elemore.iroh.memory.MemoryGuard;
+import net.vulkanmod.vulkan.Renderer;
+import net.vulkanmod.vulkan.Vulkan;
+import net.vulkanmod.vulkan.device.DeviceManager;
+import net.vulkanmod.vulkan.memory.MemoryManager;
+import net.vulkanmod.vulkan.texture.VulkanImage;
+import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.util.vma.VmaAllocationCreateInfo;
+import org.lwjgl.util.vma.VmaAllocationInfo;
+import org.lwjgl.vulkan.*;
+
+import java.nio.LongBuffer;
+import java.util.function.Consumer;
+
+import static org.lwjgl.system.MemoryStack.stackPush;
+import static org.lwjgl.util.vma.Vma.*;
+import static org.lwjgl.vulkan.VK10.*;
+
+/**
+ * The pack path's backend on Iroh's own device (P3-4): the same {@link VkPackBackend} draw code the lavapipe replay
+ * runs, recording into Iroh's frame command buffer (outside the main render pass: the caller wraps a pack frame in
+ * {@link VulkanImage#endPassRunResume}).
+ * <ul>
+ *   <li>2D images: {@link VulkanImage} (named {@code pack:<target>}, owner {@code pack}, counted by MemoryManager and
+ *       visible to {@code -Diroh.imageTrace=pack:}), freed through {@link VulkanImage#FREE} (deferred, epoch-gated).
+ *       3D images (custom image.* volumes): VMA directly, destroyed through a frame op.</li>
+ *   <li>Every pack image is NON-essential: {@link MemoryGuard#allowOptional} first; a refusal throws
+ *       {@link Refused}, which the lifecycle turns into "pack path off for the session" (raster continues).</li>
+ *   <li>Views, framebuffers, pipelines, samplers: destroyed by {@code MemoryManager.addFrameOp}, i.e. when the current
+ *       frame slot comes round again (its fence has passed: no in-flight frame can use them).</li>
+ *   <li>Per-draw uniform buffers and upload staging: host-visible VMA buffers freed by a frame op of the frame that
+ *       used them. The frame command buffer never references the shared per-frame staging buffer (R-3 rule).</li>
+ *   <li>One descriptor pool per frame slot, reset at {@link #beginFrame} (the slot's previous frame has completed).</li>
+ *   <li>Orientation (RQ-16): pack targets are GL-row-order offscreen targets; fullscreen passes use a positive-height
+ *       viewport from the origin and no culling; the pack output is copied into the scene target, which RQ-16's
+ *       flipped blit presents.</li>
+ * </ul>
+ * UNVERIFIED until the game runs it (written 2026-11-22 without a launch).
+ */
+public final class IrohVkBackend extends VkPackBackend {
+
+    public static final class Refused extends RuntimeException {
+        public Refused(String m) {
+            super(m);
+        }
+    }
+
+    private final long[] pools;
+
+    public IrohVkBackend() {
+        pools = new long[Renderer.getFramesNum()];
+        initQuad();
+    }
+
+    @Override
+    public String name() {
+        return "iroh";
+    }
+
+    @Override
+    protected VkDevice device() {
+        return DeviceManager.vkDevice;
+    }
+
+    @Override
+    protected VkPhysicalDevice phys() {
+        return DeviceManager.physicalDevice;
+    }
+
+    @Override
+    protected long pipelineCache() {
+        return VK_NULL_HANDLE; // Pipeline.PIPELINE_CACHE is package-private to the base; pack pipelines are built once per load
+    }
+
+    @Override
+    protected VkCommandBuffer cmd() {
+        return Renderer.getCommandBuffer();
+    }
+
+    @Override
+    protected long descriptorPool() {
+        int f = Renderer.getCurrentFrame();
+        if (pools[f] == 0)
+            pools[f] = HeadlessVkBackend.createDescriptorPool(device());
+        return pools[f];
+    }
+
+    @Override
+    public void beginFrame() {
+        int f = Renderer.getCurrentFrame();
+        if (pools[f] != 0)
+            vkResetDescriptorPool(device(), pools[f], 0);
+    }
+
+    @Override
+    public void endFrame() {
+        // recorded into Iroh's frame command buffer; Iroh submits it
+    }
+
+    @Override
+    public float[] readback(int image) {
+        throw new UnsupportedOperationException("synchronous readback is offline only; use readbackAsync");
+    }
+
+    /** records a copy of mip 0 into a host buffer; {@code done} gets the decoded texels after the frame has executed */
+    public void readbackAsync(int image, Consumer<float[]> done) {
+        Img im = img(image);
+        long texels = (long) im.d.width() * im.d.height() * im.d.depth();
+        HostBuf st = hostBuffer(Math.max(16, texels * TexelCodec.bytes(im.d.vkFormat())), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        try (MemoryStack s = stackPush()) {
+            VkBufferImageCopy.Buffer r = VkBufferImageCopy.calloc(1, s);
+            r.imageSubresource().aspectMask(im.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+            r.imageExtent().width(im.d.width()).height(im.d.height()).depth(im.d.depth());
+            vkCmdCopyImageToBuffer(cmd(), im.image, VK_IMAGE_LAYOUT_GENERAL, st.buffer(), r);
+        }
+        String fmt = im.d.vkFormat();
+        MemoryManager.getInstance().addFrameOp(() -> {
+            float[] px = TexelCodec.decode(fmt, st.mapped(), (int) texels);
+            freeHostBuffer(st);
+            done.accept(px);
+        });
+    }
+
+    // ------------------------------------------------------------------------------------------------ images
+
+    @Override
+    protected Object[] allocImage(ImageDesc d, int fmt, int usage, boolean three) {
+        long bytes = d.bytes();
+        if (!MemoryGuard.allowOptional(bytes))
+            throw new Refused("MemoryGuard refused " + d.name() + " (" + (bytes >> 20) + " MiB)");
+        if (!three) {
+            VulkanImage vi = VulkanImage.builder(d.width(), d.height()).setName(d.name()).setOwner("pack").setFormat(fmt)
+                    .setUsage(usage).setMipLevels(d.mips()).setLinearFiltering(true).setClamp(true).createVulkanImage();
+            vi.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL); // createImage records UNDEFINED -> GENERAL next
+            // depth: VulkanImage's own view of a D24S8 image has DEPTH|STENCIL aspects, which cannot be sampled; the base
+            // class makes depth-only views instead (destroyed by releaseImage)
+            boolean depth = (vi.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
+            return new Object[]{vi.getId(), vi, depth ? null : vi.getImageView(), null};
+        }
+        MemoryGuard.beforeAllocation("pack 3D image " + d.name());
+        try (MemoryStack s = stackPush()) {
+            VkImageCreateInfo ci = VkImageCreateInfo.calloc(s).sType$Default().imageType(VK_IMAGE_TYPE_3D).format(fmt)
+                    .mipLevels(d.mips()).arrayLayers(1).samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL)
+                    .usage(usage).sharingMode(VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+            ci.extent().width(d.width()).height(d.height()).depth(d.depth());
+            VmaAllocationCreateInfo ai = VmaAllocationCreateInfo.calloc(s).usage(VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+            LongBuffer pImage = s.mallocLong(1);
+            PointerBuffer pAlloc = s.mallocPointer(1);
+            int r = MemoryGuard.check(vmaCreateImage(Vulkan.getAllocator(), ci, ai, pImage, pAlloc, null), "pack 3D image " + d.name());
+            if (r != VK_SUCCESS)
+                throw new Refused("vmaCreateImage " + d.name() + ": " + r);
+            return new Object[]{pImage.get(0), pAlloc.get(0)};
+        }
+    }
+
+    @Override
+    protected void releaseImage(long image, Object alloc, long[] views) {
+        if (alloc instanceof VulkanImage vi) {
+            // views are the VulkanImage's own (main view): VulkanImage.doFree destroys them
+            for (long v : views)
+                if (v != vi.getImageView())
+                    releaseLater(() -> vkDestroyImageView(device(), v, null));
+            VulkanImage.FREE.accept(vi);
+            return;
+        }
+        long a = (Long) alloc;
+        releaseLater(() -> {
+            for (long v : views)
+                vkDestroyImageView(device(), v, null);
+            vmaDestroyImage(Vulkan.getAllocator(), image, a);
+        });
+    }
+
+    @Override
+    protected void releaseLater(Runnable r) {
+        MemoryManager.getInstance().addFrameOp(r);
+    }
+
+    @Override
+    protected HostBuf hostBuffer(long size, int usage) {
+        try (MemoryStack s = stackPush()) {
+            VkBufferCreateInfo bi = VkBufferCreateInfo.calloc(s).sType$Default().size(size).usage(usage).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
+            VmaAllocationCreateInfo ai = VmaAllocationCreateInfo.calloc(s).usage(VMA_MEMORY_USAGE_AUTO)
+                    .flags(VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+            LongBuffer pBuf = s.mallocLong(1);
+            PointerBuffer pAlloc = s.mallocPointer(1);
+            VmaAllocationInfo info = VmaAllocationInfo.calloc(s);
+            int r = MemoryGuard.check(vmaCreateBuffer(Vulkan.getAllocator(), bi, ai, pBuf, pAlloc, info), "pack host buffer");
+            if (r != VK_SUCCESS)
+                throw new Refused("vmaCreateBuffer: " + r);
+            return new HostBuf(pBuf.get(0), pAlloc.get(0), size, MemoryUtil.memByteBuffer(info.pMappedData(), (int) size));
+        }
+    }
+
+    @Override
+    protected void freeHostBuffer(HostBuf b) {
+        vmaDestroyBuffer(Vulkan.getAllocator(), b.buffer(), (Long) b.alloc());
+    }
+
+    @Override
+    protected void freeHostBufferAfterFrame(HostBuf b) {
+        releaseLater(() -> freeHostBuffer(b));
+    }
+
+    /** imports an Iroh VulkanImage (scene colour / depth) as a blit source / destination; its layout is tracked by Iroh */
+    @Override
+    public int importImage(Object external, String name) {
+        VulkanImage vi = (VulkanImage) external;
+        String fmt = vkFormatName(vi.format);
+        ImageDesc d = new ImageDesc(name, fmt, vi.width, vi.height, 1, 1, java.util.Set.of("TRANSFER_SRC", "TRANSFER_DST"));
+        return importRaw(d, vi.getId(), vi.getImageView(), vi.format, new ImportedLayout() {
+            @Override
+            public int get() {
+                return vi.getCurrentLayout();
+            }
+
+            @Override
+            public void set(int layout) {
+                vi.setCurrentLayout(layout);
+            }
+        });
+    }
+
+    /** depth images take the scene depth format so the post path can copy the raster depth in (no format conversion for depth) */
+    @Override
+    public int createImage(ImageDesc d) {
+        if (d.vkFormat().startsWith("D") && Vulkan.getDefaultDepthFormat() != VK_FORMAT_D32_SFLOAT) {
+            String sceneFmt = vkFormatName(Vulkan.getDefaultDepthFormat());
+            ImageDesc dd = new ImageDesc(d.name(), sceneFmt, d.width(), d.height(), d.depth(), d.mips(), d.usage());
+            return createImage(dd, Vulkan.getDefaultDepthFormat());
+        }
+        return super.createImage(d);
+    }
+
+    static String vkFormatName(int format) {
+        for (java.lang.reflect.Field f : VK10.class.getFields())
+            if (f.getName().startsWith("VK_FORMAT_") && f.getType() == int.class)
+                try {
+                    if (f.getInt(null) == format)
+                        return f.getName().substring("VK_FORMAT_".length());
+                } catch (IllegalAccessException ignored) {
+                }
+        return "UNDEFINED";
+    }
+
+    @Override
+    public void close() {
+        destroyShared();
+        for (int i = 0; i < pools.length; i++) {
+            long p = pools[i];
+            if (p != 0)
+                releaseLater(() -> vkDestroyDescriptorPool(device(), p, null));
+            pools[i] = 0;
+        }
+    }
+}

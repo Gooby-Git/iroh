@@ -25,6 +25,11 @@ public final class RecordingBackend implements GpuBackend {
     private final List<String> pipelineIds = new ArrayList<>();
     private final Map<Integer, String> dirty = new HashMap<>(); // image -> "W" (written) or "R" (read) since last barrier
     private boolean inFrame;
+    public final java.util.Set<Integer> freed = new HashSet<>();
+    public final java.util.Set<Integer> imported = new HashSet<>();
+    /** frame counter and the frame each image was last used in (epoch rule: never freed while a frame using it is in flight) */
+    public int frameNo;
+    public final Map<Integer, Integer> lastUse = new HashMap<>();
 
     @Override
     public String name() {
@@ -45,6 +50,58 @@ public final class RecordingBackend implements GpuBackend {
     @Override
     public ImageDesc desc(int image) {
         return imageDescs.get(image);
+    }
+
+    private void use(int image, String what) {
+        if (freed.contains(image))
+            violations.add(what + " uses " + n(image) + " after it was freed");
+        lastUse.put(image, frameNo);
+    }
+
+    public final java.util.Set<Integer> freedPipelines = new HashSet<>();
+
+    @Override
+    public void freePipeline(int pipeline) {
+        if (!freedPipelines.add(pipeline))
+            violations.add("double free of pipeline " + pipeline);
+        calls.add("freePipeline " + pipeline);
+    }
+
+    public int livePipelines() {
+        return pipelineIds.size() - freedPipelines.size();
+    }
+
+    @Override
+    public void freeImage(int image) {
+        if (freed.contains(image))
+            violations.add("double free of " + n(image));
+        freed.add(image);
+        calls.add("freeImage " + n(image) + " (last used in frame " + lastUse.getOrDefault(image, -1) + ", now " + frameNo + ")");
+    }
+
+    @Override
+    public int importImage(Object external, String name) {
+        int h = createImage(new ImageDesc(name, "R8G8B8A8_UNORM", 8, 8, 1, 1, java.util.Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
+        imported.add(h);
+        return h;
+    }
+
+    /** owned images created and not freed */
+    public int live() {
+        int n = 0;
+        for (int i = 0; i < imageDescs.size(); i++)
+            if (!freed.contains(i) && !imported.contains(i))
+                n++;
+        return n;
+    }
+
+    @Override
+    public void blit(int src, int dst) {
+        use(src, "blit");
+        use(dst, "blit");
+        read(src, "blit");
+        write(dst, "blit");
+        calls.add("blit " + n(src) + " -> " + n(dst));
     }
 
     private String n(int image) {
@@ -85,6 +142,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void beginFrame() {
+        frameNo++;
         inFrame = true;
         dirty.clear();
         calls.add("beginFrame");
@@ -97,12 +155,14 @@ public final class RecordingBackend implements GpuBackend {
     }
 
     private void read(int image, String what) {
+        use(image, what);
         if ("W".equals(dirty.get(image)))
             violations.add(what + " reads " + n(image) + " written since its last barrier");
         dirty.putIfAbsent(image, "R");
     }
 
     private void write(int image, String what) {
+        use(image, what);
         if (dirty.containsKey(image))
             violations.add(what + " writes " + n(image) + " used since its last barrier (" + dirty.get(image) + ")");
         dirty.put(image, "W");
