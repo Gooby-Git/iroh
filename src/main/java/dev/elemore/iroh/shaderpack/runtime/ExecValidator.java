@@ -27,7 +27,7 @@ public final class ExecValidator {
         int start = FrameExecutor.STAGES.indexOf(in.startStage());
         List<PassGraph.Pass> expected = new ArrayList<>();
         for (PassGraph.Pass p : f.passes)
-            if (FrameExecutor.STAGES.indexOf(p.stage) >= start && p.kind.equals("fullscreen"))
+            if (FrameExecutor.STAGES.indexOf(p.stage) >= start && p.kind.equals("fullscreen") && !(ex.pruneDead && ex.deadPasses().contains(p.id)))
                 expected.add(p);
         if (expected.size() != rec.draws.size())
             errs.add("drew " + rec.draws.size() + " passes, the plan has " + expected.size() + " fullscreen passes from " + in.startStage());
