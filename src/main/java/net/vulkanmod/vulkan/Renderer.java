@@ -60,8 +60,11 @@ public class Renderer {
     public static void initRenderer() {
         INSTANCE = new Renderer();
         INSTANCE.init();
-        // api 4 (card V-M1): mod GPU buffers / compute / targets on Iroh's device
+        // api 4 (card V-M1): mod GPU buffers / compute / targets on Iroh's device. INT-2: only records the sizes; the
+        // device objects are created on a mod's first api-4 call (GpuCore.get)
         dev.elemore.iroh.gpu.game.GpuLifecycle.install(INSTANCE.framesNum, INSTANCE.swapChain.getWidth(), INSTANCE.swapChain.getHeight());
+        // INT-2 first-launch safety net: ONE line proving the state of the build (switches, device features, api, natives)
+        net.vulkanmod.Initializer.LOGGER.info(dev.elemore.iroh.diag.StartupReport.line());
     }
 
     public static Renderer getInstance() {

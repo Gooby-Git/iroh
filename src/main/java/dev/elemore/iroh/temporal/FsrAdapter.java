@@ -40,6 +40,7 @@ public final class FsrAdapter implements UpscalerAdapter {
 
     private final FsrSession session = new FsrSession(new FsrSession.Backend() {
         @Override public FsrUpscaler create(int flags, int shim, int rw, int rh, int dw, int dh) {
+            dev.elemore.iroh.diag.FeatureFailures.inject("fsr"); // INT-2 test seam: FsrSession turns a throw into bilinear + one line
             VkDevice d = Vulkan.getVkDevice();
             return FsrUpscaler.create(d.getPhysicalDevice().getInstance().address(), d.getPhysicalDevice().address(), d.address(), 0L,
                     flags, shim, rw, rh, dw, dh);

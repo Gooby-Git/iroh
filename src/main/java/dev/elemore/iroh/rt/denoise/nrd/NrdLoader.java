@@ -18,4 +18,9 @@ public final class NrdLoader {
     public static String unavailableReason() {
         return LIB.unavailableReason();
     }
+
+    /** INT-2: where the library would come from, without loading it (startup self-check) */
+    public static String locate() {
+        return LIB.locate();
+    }
 }

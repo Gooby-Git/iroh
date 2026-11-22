@@ -194,10 +194,26 @@ public abstract class DeviceManager {
             // Iroh P4-1a: FSR / velocity features, only when present AND requested (iroh.upscale.mode set at launch, or
             // iroh.upscale.features=on); otherwise nothing below changes the device (DeviceCaps only queries).
             // integration/next: float16 goes into api 4's Vulkan 1.2 struct (ONE struct per sType in the pNext chain)
-            dev.elemore.iroh.temporal.DeviceCaps.apply(stack, physicalDevice,
+            dev.elemore.iroh.temporal.DeviceCaps.applySafely(stack, physicalDevice,
                     device.availableFeatures.features(), deviceFeatures.features(), device.availableFeatures11, deviceVulkan11Features,
-                    deviceVulkan12Features);
+                    deviceVulkan12Features); // INT-2: a failure here logs one line and leaves the rc14 feature set
             net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", dev.elemore.iroh.temporal.DeviceCaps.report());
+            // INT-2 startup self-check: every feature bit this device is created with
+            enabledFeatures = "samplerAnisotropy=" + deviceFeatures.features().samplerAnisotropy()
+                    + " logicOp=" + deviceFeatures.features().logicOp()
+                    + " multiDrawIndirect=" + deviceFeatures.features().multiDrawIndirect()
+                    + " wideLines=" + deviceFeatures.features().wideLines()
+                    + " shaderDrawParameters=" + deviceVulkan11Features.shaderDrawParameters()
+                    + " drawIndirectCount=" + deviceVulkan12Features.drawIndirectCount()
+                    + " upscaleSet=" + (dev.elemore.iroh.temporal.DeviceCaps.requested
+                        ? "[storageImageExtendedFormats=" + deviceFeatures.features().shaderStorageImageExtendedFormats()
+                          + " writeWithoutFormat=" + deviceFeatures.features().shaderStorageImageWriteWithoutFormat()
+                          + " readWithoutFormat=" + deviceFeatures.features().shaderStorageImageReadWithoutFormat()
+                          + " int16=" + deviceFeatures.features().shaderInt16()
+                          + " storage16=" + deviceVulkan11Features.storageBuffer16BitAccess()
+                          + " float16=" + deviceVulkan12Features.shaderFloat16() + "]"
+                        : "off")
+                    + " dynamicRendering=" + Vulkan.DYNAMIC_RENDERING;
 
             VkDeviceCreateInfo createInfo = VkDeviceCreateInfo.calloc(stack);
             createInfo.sType$Default();
@@ -362,6 +378,9 @@ public abstract class DeviceManager {
 
         return stringBuilder.toString();
     }
+
+    /** INT-2: the feature bits the logical device was created with (startup self-check) */
+    public static String enabledFeatures = "device not created";
 
     /** api 4: vkCmdDrawIndexedIndirectCount enabled on the logical device. */
     public static boolean drawIndirectCountEnabled;

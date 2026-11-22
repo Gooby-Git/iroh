@@ -84,6 +84,29 @@ public final class NativeLib {
         return loaded;
     }
 
+    /**
+     * INT-2 startup self-check: where {@link #load} WOULD load from, without loading anything (no extraction, no
+     * System.load): "loaded &lt;source&gt;", "prop &lt;path&gt;" / "jar" / "vendor &lt;path&gt;" when found, else
+     * "missing (&lt;reason&gt;)". Never throws.
+     */
+    public synchronized String locate() {
+        try {
+            if (loaded) return "loaded " + source;
+            if (tried) return "failed (" + reason + ")";
+            String file = fileName(baseName);
+            String explicit = sysProp == null ? null : System.getProperty(sysProp);
+            if (explicit != null)
+                return Files.isRegularFile(Path.of(explicit)) ? "prop " + explicit : "missing (-D" + sysProp + "=" + explicit + " does not exist)";
+            String res = "/natives/" + platform() + "/" + file;
+            if (NativeLib.class.getResource(res) != null) return "jar";
+            Path vendor = Path.of(System.getProperty("iroh.vendor.dir", "config/iroh/vendor"), file);
+            if (Files.isRegularFile(vendor)) return "vendor " + vendor;
+            return "missing (not in this jar, not in " + vendor + ")";
+        } catch (Throwable t) {
+            return "missing (" + t.getClass().getSimpleName() + ": " + t.getMessage() + ")";
+        }
+    }
+
     public synchronized String unavailableReason() {
         return loaded ? "" : reason;
     }

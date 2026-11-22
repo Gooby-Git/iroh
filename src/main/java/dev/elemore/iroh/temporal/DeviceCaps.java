@@ -91,6 +91,36 @@ public final class DeviceCaps {
             enable12.shaderFloat16(true);
     }
 
+    /**
+     * INT-2: {@link #apply} that never throws: on any failure (forced by -Diroh.test.failInit=deviceCaps) the upscale
+     * features are reported off (velocity / FSR unavailable, render scale + bilinear still work) with ONE log line, and
+     * the bits it may already have set are cleared again, so the device is created with the rc14 feature set + api 4's
+     * drawIndirectCount.
+     */
+    public static void applySafely(MemoryStack stack, VkPhysicalDevice pd,
+                                   VkPhysicalDeviceFeatures available, VkPhysicalDeviceFeatures enable,
+                                   VkPhysicalDeviceVulkan11Features available11, VkPhysicalDeviceVulkan11Features enable11,
+                                   VkPhysicalDeviceVulkan12Features enable12) {
+        try {
+            dev.elemore.iroh.diag.FeatureFailures.inject("deviceCaps");
+            apply(stack, pd, available, enable, available11, enable11, enable12);
+        } catch (RuntimeException e) {
+            requested = false;
+            try {
+                if (enable != null) {
+                    enable.shaderStorageImageExtendedFormats(false);
+                    enable.shaderStorageImageWriteWithoutFormat(false);
+                    enable.shaderStorageImageReadWithoutFormat(false);
+                    enable.shaderInt16(false);
+                }
+                if (enable11 != null) enable11.storageBuffer16BitAccess(false);
+                if (enable12 != null) enable12.shaderFloat16(false);
+            } catch (RuntimeException ignored) {
+            }
+            dev.elemore.iroh.diag.FeatureFailures.record("deviceCaps", e, "upscale device features not enabled: velocity and FSR unavailable, render scale stays bilinear");
+        }
+    }
+
     /** the camera velocity compute pass can run */
     public static boolean velocityCapable() {
         return requested && storageExtendedFormats && rg16fStorage;

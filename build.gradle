@@ -743,6 +743,18 @@ tasks.register('integrationInertTest', JavaExec) {
 	workingDir = projectDir
 }
 
+// INT-2 first-launch safety net: every feature's init forced to fail (test seam) degrades with one line; startup
+// self-check line. ./gradlew firstLaunchTest ; last line "# firstlaunch PASS n/n"
+tasks.register('firstLaunchTest', JavaExec) {
+	group = 'verification'
+	description = 'Forced init failure of every optional feature degrades with one log line; startup self-check line'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.inttest.FirstLaunchSafetyTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
 // P6-0 NRD (NVIDIA RTX SDKs licence: built on request, NEVER bundled in the jar unless -PbundleNv=true): ./gradlew nrdNative
 tasks.register('nrdNative', Exec) {
 	group = 'build'
