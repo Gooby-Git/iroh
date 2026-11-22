@@ -85,6 +85,35 @@ public abstract class VkGpuDevice implements GpuDevice {
         if (r != VK_SUCCESS) throw new IllegalStateException(what + " failed: VkResult " + r);
     }
 
+    // ------------------------------------------------------------------------------------------------ raw access (P5-0)
+    // For Iroh-internal recorders that need more than the api-4 surface (the RT core: acceleration structures, ray-query
+    // pipelines). Not public api; callers live in dev.elemore.iroh.rt.vk and must follow the device's recording rules.
+
+    /** The Vulkan device. */
+    public final VkDevice vkDevice() {
+        return device();
+    }
+
+    /** The command buffer recording now (begins one on the headless device). */
+    public final VkCommandBuffer recordingCommandBuffer() {
+        return cmd();
+    }
+
+    /** A raw buffer with exactly these Vulkan usage flags, under the device's memory rules (cap, deferred free). */
+    public final VkBuf rawBuffer(long bytes, int vkUsage) {
+        return allocBuffer(bytes, vkUsage);
+    }
+
+    /** Run {@code r} once the GPU no longer uses what it frees (the device's deferred-free rule). */
+    public final void deferRelease(Runnable r) {
+        deferFree(r);
+    }
+
+    /** True when buffers may carry SHADER_DEVICE_ADDRESS (needed by acceleration structures). */
+    public boolean supportsDeviceAddress() {
+        return false;
+    }
+
     // ------------------------------------------------------------------------------------------------ buffers
 
     @Override

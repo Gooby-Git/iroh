@@ -1,0 +1,27 @@
+#version 460
+// Radiance cache resolve: blend this frame's sum into the resolved value (running mean capped at maxSamples, then an
+// exponential blend: old light fades in about maxSamples frames), clear the frame accumulators.
+layout(local_size_x = 64) in;
+#include "rt_frame.glsl"
+layout(std430, set = 0, binding = 1) readonly buffer FrameB { Frame fr; };
+layout(std430, set = 0, binding = 2) buffer Cache { uint cache[]; };
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    if (e > fr.counts.y) return;
+    uint b = e * 12u;
+    uint n = cache[b + 1u];
+    if (n == 0u) return;
+    vec3 mean = vec3(cache[b + 2u], cache[b + 3u], cache[b + 4u]) / (256.0 * float(n));
+    uint total = min(cache[b + 8u] + n, fr.counts.w);
+    vec3 old = vec3(uintBitsToFloat(cache[b + 5u]), uintBitsToFloat(cache[b + 6u]), uintBitsToFloat(cache[b + 7u]));
+    vec3 r = cache[b + 8u] == 0u ? mean : mix(old, mean, float(n) / float(total));
+    cache[b + 5u] = floatBitsToUint(r.x);
+    cache[b + 6u] = floatBitsToUint(r.y);
+    cache[b + 7u] = floatBitsToUint(r.z);
+    cache[b + 8u] = total;
+    cache[b + 9u] = fr.dims.z;
+    cache[b + 1u] = 0u;
+    cache[b + 2u] = 0u;
+    cache[b + 3u] = 0u;
+    cache[b + 4u] = 0u;
+}

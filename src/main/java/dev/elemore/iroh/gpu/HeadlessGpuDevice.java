@@ -31,6 +31,8 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private final VkCommandBuffer cmd;
     private final VkPhysicalDeviceMemoryProperties memProps;
     private final boolean drawIndirectCount;
+    /** P5-0: acceleration structures + ray query + buffer device address enabled (rtReplay). */
+    public final boolean rayTracing;
     public final String deviceName;
     public final long cap;
     private long allocated;
@@ -42,7 +44,16 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
 
     /** {@code forceNoIndirectCount}: test the fallback path even where the feature exists. */
     public HeadlessGpuDevice(long capBytes, boolean forceNoIndirectCount) {
+        this(capBytes, forceNoIndirectCount, false);
+    }
+
+    /**
+     * {@code rayTracing}: also enable VK_KHR_acceleration_structure + VK_KHR_ray_query (+ deferred host operations) and
+     * bufferDeviceAddress (P5-0 offline RT harness). Throws when the CPU device lacks them.
+     */
+    public HeadlessGpuDevice(long capBytes, boolean forceNoIndirectCount, boolean rayTracing) {
         this.cap = capBytes;
+        this.rayTracing = rayTracing;
         try (MemoryStack s = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(s).sType$Default().pApplicationName(s.UTF8("iroh-api-replay")).apiVersion(VK_API_VERSION_1_2);
             VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(s).sType$Default().pApplicationInfo(app);
@@ -89,9 +100,32 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             VkPhysicalDeviceVulkan12Features want12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default().drawIndirectCount(drawIndirectCount);
             VkPhysicalDeviceFeatures2 want = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(want12.address());
             want.features().multiDrawIndirect(have.features().multiDrawIndirect());
+            PointerBuffer exts = null;
+            if (rayTracing) {
+                VkPhysicalDeviceAccelerationStructureFeaturesKHR haveAs = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default();
+                VkPhysicalDeviceRayQueryFeaturesKHR haveRq = VkPhysicalDeviceRayQueryFeaturesKHR.calloc(s).sType$Default().pNext(haveAs.address());
+                VkPhysicalDeviceFeatures2 have2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(haveRq.address());
+                vkGetPhysicalDeviceFeatures2(phys, have2);
+                if (!haveAs.accelerationStructure() || !haveRq.rayQuery() || !have12.bufferDeviceAddress()) {
+                    vkDestroyInstance(instance, null);
+                    throw new IllegalStateException("CPU Vulkan device lacks accelerationStructure/rayQuery/bufferDeviceAddress");
+                }
+                want12.bufferDeviceAddress(true).shaderInt8(have12.shaderInt8()).storageBuffer8BitAccess(have12.storageBuffer8BitAccess());
+                want.features().shaderInt64(have.features().shaderInt64()).fragmentStoresAndAtomics(have.features().fragmentStoresAndAtomics())
+                        .drawIndirectFirstInstance(have.features().drawIndirectFirstInstance());
+                VkPhysicalDeviceAccelerationStructureFeaturesKHR wantAs = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default()
+                        .accelerationStructure(true);
+                VkPhysicalDeviceRayQueryFeaturesKHR wantRq = VkPhysicalDeviceRayQueryFeaturesKHR.calloc(s).sType$Default().rayQuery(true)
+                        .pNext(wantAs.address());
+                want12.pNext(wantRq.address());
+                exts = s.pointers(s.UTF8(KHRAccelerationStructure.VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME),
+                        s.UTF8(KHRRayQuery.VK_KHR_RAY_QUERY_EXTENSION_NAME),
+                        s.UTF8(KHRDeferredHostOperations.VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME));
+            }
             VkDeviceQueueCreateInfo.Buffer qci = VkDeviceQueueCreateInfo.calloc(1, s).sType$Default().queueFamilyIndex(family)
                     .pQueuePriorities(s.floats(1f));
-            VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(s).sType$Default().pNext(want.address()).pQueueCreateInfos(qci);
+            VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(s).sType$Default().pNext(want.address()).pQueueCreateInfos(qci)
+                    .ppEnabledExtensionNames(exts);
             check(vkCreateDevice(phys, dci, null, pp), "vkCreateDevice");
             device = new VkDevice(pp.get(0), phys, dci);
             vkGetDeviceQueue(device, family, 0, pp);
@@ -118,6 +152,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     }
 
     @Override public String name() { return "headless:" + deviceName; }
+    @Override public boolean supportsDeviceAddress() { return rayTracing; }
     @Override public boolean supportsDrawIndirectCount() { return drawIndirectCount; }
     @Override public long capBytes() { return cap; }
     @Override public boolean canRecordOutsideMainPass() { return !inRendering; }
@@ -154,18 +189,26 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     }
 
     private long allocate(VkMemoryRequirements req, int flags, String what) {
+        return allocate(req, flags, what, false);
+    }
+
+    private long allocate(VkMemoryRequirements req, int flags, String what, boolean deviceAddress) {
         if (allocated + req.size() > cap)
             throw new IllegalStateException("headless device memory cap " + (cap >> 20) + " MiB reached allocating " + what);
         try (MemoryStack s = stackPush()) {
             LongBuffer lb = s.mallocLong(1);
-            check(vkAllocateMemory(device, VkMemoryAllocateInfo.calloc(s).sType$Default().allocationSize(req.size())
-                    .memoryTypeIndex(memoryType(req.memoryTypeBits(), flags)), null, lb), "vkAllocateMemory " + what);
+            VkMemoryAllocateInfo ai = VkMemoryAllocateInfo.calloc(s).sType$Default().allocationSize(req.size())
+                    .memoryTypeIndex(memoryType(req.memoryTypeBits(), flags));
+            if (deviceAddress)
+                ai.pNext(VkMemoryAllocateFlagsInfo.calloc(s).sType$Default().flags(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT).address());
+            check(vkAllocateMemory(device, ai, null, lb), "vkAllocateMemory " + what);
             allocated += req.size();
             return lb.get(0);
         }
     }
 
     private VkBuf buffer(long bytes, int usage, int memFlags) {
+        boolean bda = rayTracing && (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
         try (MemoryStack s = stackPush()) {
             LongBuffer lb = s.mallocLong(1);
             check(vkCreateBuffer(device, VkBufferCreateInfo.calloc(s).sType$Default().size(bytes).usage(usage)
@@ -173,7 +216,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             long b = lb.get(0);
             VkMemoryRequirements req = VkMemoryRequirements.calloc(s);
             vkGetBufferMemoryRequirements(device, b, req);
-            long mem = allocate(req, memFlags, "buffer");
+            long mem = allocate(req, memFlags, "buffer", bda);
             vkBindBufferMemory(device, b, mem, 0);
             return new VkBuf(b, bytes, new Mem(mem, req.size()));
         }
@@ -272,7 +315,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     @Override
     public ByteBuffer readback(Object image) {
         VkImg im = (VkImg) image;
-        long bytes = (long) im.width * im.height * 4;
+        long bytes = (long) im.width * im.height * texelBytes(im.format);
         VkBuf st = buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         try (MemoryStack s = stackPush()) {
             barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -291,6 +334,25 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         }
         freeBuf(st);
         return out;
+    }
+
+    private static int texelBytes(int format) {
+        return switch (format) {
+            case VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_SINT -> 16;
+            case VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32_UINT -> 8;
+            default -> 4;
+        };
+    }
+
+    /** Offline (P5-0): records a copy of a colour/depth image (GENERAL layout) into a buffer, tightly packed. */
+    public void copyImageToBuffer(Object image, Object buffer) {
+        VkImg im = (VkImg) image;
+        try (MemoryStack s = stackPush()) {
+            VkBufferImageCopy.Buffer r = VkBufferImageCopy.calloc(1, s);
+            r.imageSubresource().aspectMask(im.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+            r.imageExtent().width(im.width).height(im.height).depth(1);
+            vkCmdCopyImageToBuffer(cmd(), im.image, VK_IMAGE_LAYOUT_GENERAL, ((VkBuf) buffer).buffer(), r);
+        }
     }
 
     /** Offline: reads a buffer back (tests). */

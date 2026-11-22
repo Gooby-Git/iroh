@@ -1,0 +1,72 @@
+#version 460
+// (e) reflections, roughness-gated: water = mirror (+ the sun disc) with Fresnel, plus a straight transmission ray to
+// the bed with Beer-Lambert extinction (no refraction bend in v1); glossy materials = one GGX VNDF sample (Heitz 2018).
+// Hits are shaded direct-only (emission + sun + one light sample). Out: specular radiance (water: its whole radiance).
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) writeonly buffer Out { vec4 outv[]; };
+
+float lambdaGGX(float c, float a2) { float c2 = max(c * c, 1e-8); return 0.5 * (-1.0 + sqrt(1.0 + a2 * (1.0 - c2) / c2)); }
+
+vec3 sampleVNDF(vec3 Ve, float alpha, float u1, float u2) {
+    vec3 Vh = normalize(vec3(alpha * Ve.x, alpha * Ve.y, Ve.z));
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    vec3 T1 = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 T2 = cross(Vh, T1);
+    float r = sqrt(u1), phi = 2.0 * PI * u2;
+    float t1 = r * cos(phi), t2 = r * sin(phi);
+    float s = 0.5 * (1.0 + Vh.z);
+    t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
+    vec3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+    return normalize(vec3(alpha * Nh.x, alpha * Nh.y, max(0.0, Nh.z)));
+}
+
+vec3 traceShade(vec3 o, vec3 d, bool mirror, inout uint rays, out float dist) {
+    rays++;
+    Hit h = traceClosest(o, d, TMAX, MASK_SOLID);
+    if (!h.hit) { dist = TMAX; return sky(d) + (mirror ? sunDisc(d) : vec3(0.0)); }
+    dist = h.t;
+    return shadeDirect(h, rays);
+}
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    Surf s = surface(px);
+    uint rays = 0u;
+    vec4 o = vec4(0.0);
+    if (s.valid) {
+        vec4 m0 = mat0(s.tile), m1 = mat1(s.tile);
+        vec3 v = -s.dir;
+        float nv = max(dot(s.n, v), 1e-4);
+        rngInit(px, fr.dims.z, 4u);
+        if (m0.z != 0.0) {                       // water
+            float F = schlick(m1.w, nv);
+            float dr, dt;
+            vec3 Lr = traceShade(s.pos + s.n * EPS, reflect(s.dir, s.n), true, rays, dr);
+            vec3 Lt = traceShade(s.pos - s.n * EPS, s.dir, false, rays, dt);
+            vec3 T = exp(-fr.water.rgb * min(dt, 64.0));
+            o = vec4(F * Lr + (1.0 - F) * T * Lt, dr);
+        } else if (m0.w != 0.0) {                // glossy
+            float rough = fr.params.w > 0.0 ? fr.params.w : m0.x;
+            float alpha = rough * rough, a2 = alpha * alpha;
+            vec3 t, b;
+            onb(s.n, t, b);
+            vec3 Ve = vec3(dot(v, t), dot(v, b), nv);
+            vec3 Hh = sampleVNDF(Ve, alpha, rnd(), rnd());
+            vec3 h = t * Hh.x + b * Hh.y + s.n * Hh.z;
+            vec3 l = reflect(-v, h);
+            float nl = dot(s.n, l);
+            if (nl > 0.0) {
+                float F = schlick(m1.w, max(dot(v, h), 0.0));
+                float w = F * (1.0 + lambdaGGX(nv, a2)) / (1.0 + lambdaGGX(nv, a2) + lambdaGGX(nl, a2));
+                float dist;
+                vec3 L = traceShade(s.pos + s.n * EPS, l, false, rays, dist);
+                o = vec4(w * L, dist);
+            }
+        }
+    }
+    outv[i] = o;
+    if (rays > 0u) atomicAdd(counters[4], rays);
+}

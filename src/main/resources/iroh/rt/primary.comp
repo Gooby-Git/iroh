@@ -1,0 +1,14 @@
+#version 460
+// (a) primary-visibility debug view: one camera ray per pixel through the TLAS; must match the raster G-buffer.
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) writeonly buffer Out { uvec4 outv[]; };
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    vec3 d = primaryDir(px);
+    Hit h = traceClosest(fr.camPos.xyz, d, TMAX, MASK_ALL);
+    uint i = px.y * fr.dims.x + px.x;
+    outv[i] = h.hit ? uvec4(floatBitsToUint(dot(h.pos - fr.camPos.xyz, fr.camFwd.xyz)), h.ci, h.prim, uint(h.tile)) : uvec4(0u);
+    atomicAdd(counters[0], 1u);
+}

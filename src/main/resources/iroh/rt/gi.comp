@@ -1,0 +1,47 @@
+#version 460
+// (d) one-bounce diffuse GI: 1 cosine ray; at the secondary hit either the radiance cache (cell resolved with enough
+// samples and the hit farther than one cell: footprint test) or direct lighting there (sun + 1 light sample), which
+// also feeds the cache. Misses take the sky. Out: irradiance (rgb) + hit distance (NRD's hitDist guide).
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) buffer Cache { uint cache[]; };
+layout(std430, set = 0, binding = 10) writeonly buffer Out { vec4 outv[]; };
+#include "rt_cache.glsl"
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    Surf s = surface(px);
+    uint rays = 0u, cacheHits = 0u, surfHits = 0u;
+    vec4 o = vec4(0.0);
+    if (s.valid && mat0(s.tile).z == 0.0) {
+        rngInit(px, fr.dims.z, 3u);
+        vec3 d = cosineDir(s.n);
+        rays++;
+        Hit h = traceClosest(s.pos + s.n * EPS, d, TMAX, MASK_SOLID);
+        vec3 L;
+        if (!h.hit) {
+            L = sky(d);
+            o.w = TMAX;
+        } else {
+            o.w = h.t;
+            surfHits++;
+            bool useCache = (fr.dims.w & F_CACHE) != 0u;
+            bool cached = false;
+            if (useCache && h.t > cacheCell(h.pos)) {
+                vec4 c = cacheLookup(h.pos, h.n);
+                if (c.w >= float(fr.counts.z)) { L = c.rgb; cached = true; cacheHits++; }
+            }
+            if (!cached || (fr.dims.w & F_CACHE_UPDATE_ALL) != 0u) {
+                vec3 Ld = h.albedo / PI * (sunIrradiance(h.pos, h.n, rays) + emitIrradiance(h.pos, h.n, rays));
+                if (useCache) cacheAdd(h.pos, h.n, Ld);
+                if (!cached) L = Ld;
+            }
+        }
+        o.rgb = L * PI;
+    }
+    outv[i] = o;
+    if (rays > 0u) atomicAdd(counters[3], rays);
+    if (cacheHits > 0u) atomicAdd(counters[8], cacheHits);
+    if (surfHits > 0u) atomicAdd(counters[9], surfHits);
+}

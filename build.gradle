@@ -164,6 +164,40 @@ tasks.register('coreOverrideTest', JavaExec) {
 	if (project.hasProperty('pack')) args project.property('pack')
 }
 
+// lavapipe (CPU Vulkan) for offline GPU harnesses: the system ICD when vulkan-swrast is installed, else the flatpak GL
+// runtime's libvulkan_lvp.so through a build-local ICD file. Never a GPU ICD (VK_DRIVER_FILES restricts the loader).
+ext.useLavapipe = { JavaExec t, String label ->
+	def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
+	def icd = null
+	def ld = null
+	if (sys != null) {
+		icd = sys
+	} else {
+		def lvp = null
+		new File('/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64').eachDirRecurse { d ->
+			def f = new File(d, 'libvulkan_lvp.so')
+			if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
+		}
+		if (lvp == null) throw new GradleException('no lavapipe found: install vulkan-swrast (owner) or a flatpak GL runtime')
+		def dir = file("${buildDir}/lvp/lib")
+		dir.mkdirs()
+		lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
+			def link = new File(dir, src.name)
+			link.delete()
+			java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
+		}
+		def json = file("${buildDir}/lvp/lvp_icd.json")
+		json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
+		icd = json.absolutePath
+		ld = dir.absolutePath
+	}
+	t.environment 'VK_DRIVER_FILES', icd
+	t.environment 'VK_ICD_FILENAMES', icd
+	t.environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
+	if (ld != null) t.environment 'LD_LIBRARY_PATH', ld
+	logger.lifecycle("${label}: lavapipe ICD ${icd}")
+}
+
 // api 4 (card V-M1): GPU api exerciser on lavapipe (CPU Vulkan only, 1 GiB cap). ./gradlew apiReplay [-Pgolden=sha]
 // lavapipe from the system ICD or, until vulkan-swrast is installed, the flatpak GL runtime through an ICD file under
 // build/lvp (same approach as the pack replay in iroh-wt-p3; nothing is installed).
@@ -175,37 +209,7 @@ tasks.register('apiReplay', JavaExec) {
 	mainClass = 'dev.elemore.iroh.apitest.ApiReplay'
 	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
 	if (project.hasProperty('golden')) jvmArgs "-Dgolden=${project.property('golden')}"
-	doFirst {
-		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
-		def icd = null
-		def ld = null
-		if (sys != null) {
-			icd = sys
-		} else {
-			def lvp = null
-			new File('/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64').eachDirRecurse { d ->
-				def f = new File(d, 'libvulkan_lvp.so')
-				if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
-			}
-			if (lvp == null) throw new GradleException('no lavapipe found: install vulkan-swrast (owner) or a flatpak GL runtime')
-			def dir = file("${buildDir}/lvp/lib")
-			dir.mkdirs()
-			lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
-				def link = new File(dir, src.name)
-				link.delete()
-				java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
-			}
-			def json = file("${buildDir}/lvp/lvp_icd.json")
-			json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
-			icd = json.absolutePath
-			ld = dir.absolutePath
-		}
-		environment 'VK_DRIVER_FILES', icd
-		environment 'VK_ICD_FILENAMES', icd
-		environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
-		if (ld != null) environment 'LD_LIBRARY_PATH', ld
-		logger.lifecycle("apiReplay: lavapipe ICD ${icd}")
-	}
+	doFirst { useLavapipe(it, 'apiReplay') }
 }
 
 // rc14 (td-f57b86): camera states x fog option -> expected vanilla fog. ./gradlew fogDecisionTest
@@ -390,4 +394,41 @@ tasks.register('chunkDeferTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
+}
+
+// P5-0: offline ray-tracing prototype on lavapipe (CPU Vulkan only, 1 GiB cap): voxel test scene meshed in Iroh's 16-byte
+// terrain format, raster G-buffer, BLAS/TLAS from the raster vertex buffer, ray-query passes (sun, block light, GI +
+// radiance cache, reflections, alpha test), temporal accumulation, composition, PNGs; each pass checked against a CPU
+// reference path tracer. ./gradlew rtReplay [-Pstep=a..h|all] [-Pquick] ; images + metrics under build/rt ; last line
+// "# rtreplay PASS n/n". Never touches a GPU (HeadlessGpuDevice refuses non-CPU devices).
+tasks.register('rtReplay', JavaExec) {
+	group = 'verification'
+	description = 'P5-0 RT prototype on lavapipe against a CPU reference path tracer'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	['step', 'quick', 'golden', 'frames', 'res', 'compact'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
+	doFirst { useLavapipe(it, 'rtReplay') }
+}
+
+// P5-0: RT seams without a device (BLAS queue budget, memory model, presets, inert-when-off). ./gradlew rtSeamTest ;
+// last line "# rtseam PASS n/n".
+tasks.register('rtSeamTest', JavaExec) {
+	group = 'verification'
+	description = 'P5-0 RT seams: build queue budgets, memory model, presets, inert when off'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtSeamTest'
+	jvmArgs '-ea'
+}
+
+// P5-0: minimal acceleration-structure smoke test on lavapipe (one quad, one ray). ./gradlew rtProbe ; "# rtprobe PASS 4/4"
+tasks.register('rtProbe', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtProbe'
+	doFirst { useLavapipe(it, 'rtProbe') }
 }
