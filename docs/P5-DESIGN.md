@@ -15,6 +15,13 @@ Provisional calls (the orchestrator's, the owner can change them): rasterised pr
 only; stock NRD with a temporal fallback; FSR 3.1 after denoising; Vista far terrain raster-only behind the RT image in
 v1; RX 9070 XT, 1440p output, ~1707x960 render, ~13.5 ms (rt-radiance.md section 7, UNVERIFIED).
 
+**Provisional decisions (coordinator, 2026-11-22, owner asleep; reversible):**
+- Entities in v1 receive RT light but cast no RT shadows and are absent from reflections ONLY as a stepping stone:
+  entity shadows matter for the look. The entity BLAS is a P5 card (per-entity-type static BLAS with instance
+  transforms, or a per-frame refit set for nearby entities), built offline first (synthetic moving box + quad "mob").
+- RT residency radius 8 chunks with raster beyond; configurable, tied to the quality preset and the `iroh-rt` memory cap.
+- Sun: default slightly soft (Navidson-like) as a preset parameter; physical 0.27 deg as an option.
+
 ## 1. Frame graph
 
 ```

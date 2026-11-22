@@ -36,3 +36,12 @@ run/
 reference/
 logs/
 run/
+iroh-native/natives/
+iroh-native/build-fsr/
+iroh-native/fsr/sdk-src/
+iroh-native/fsr/.sdk-cache/
+iroh-native/natives-nv/
+iroh-native/build-nrd/
+iroh-native/nrd/nrd-src/
+iroh-native/nrd/.nrd-cache/
+hs_err_pid*.log
