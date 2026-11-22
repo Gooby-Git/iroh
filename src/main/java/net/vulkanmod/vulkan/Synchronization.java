@@ -132,29 +132,64 @@ public class Synchronization {
         }
     }
 
-    /** Blocks until the oldest in-flight epoch finished (staging budget exhausted). Returns false if nothing was in flight. */
+    /**
+     * Blocks until the oldest in-flight epoch's UPLOAD command buffers finished (staging budget exhausted). rc12: the
+     * epoch is completed (its staging blocks and deferred frees released) only if its FRAME has finished too; otherwise
+     * its upload buffers are recycled and the epoch waits for {@link #frameSlotDone}. Returns false if nothing waited.
+     */
     public synchronized boolean waitOldest() {
-        Epoch e = this.inFlight.pollFirst();
+        Epoch e = this.inFlight.peekFirst();
         if (e == null) return false;
+        boolean waited = !e.cbs.isEmpty();
         waitAll(e.cbs);
-        complete(e);
-        return true;
+        recycle(e.cbs);
+        if (e.frameDone) {
+            this.inFlight.pollFirst();
+            complete(e);
+            return true;
+        }
+        return waited;
     }
 
-    /** Blocking: waits for every upload command buffer submitted so far (current and in-flight epochs). Counted. */
+    /**
+     * Blocking: waits for every upload command buffer submitted so far (current and in-flight epochs). Counted.
+     * rc12 (td-7799fa): this does NOT complete epochs whose frame command buffer may still be executing. The base
+     * version called ring.completeAll() here, so a readback (flushCmds), a swapchain recreation or the preInitFrame
+     * recursion guard released staging and deferred image/buffer frees that the in-flight FRAME still used:
+     * vkDestroyImage / vkDestroyImageView "in use by VkCommandBuffer" at world load (GPUBooster's window-sized
+     * targets recreated on resize). Epochs complete only once their frame is known finished (frameSlotDone) or the
+     * device is idle ({@link #deviceIdle}).
+     */
     public synchronized void waitFences() {
         ObjectArrayList<CommandPool.CommandBuffer> all = new ObjectArrayList<>(this.current.cbs);
         for (Epoch e : this.inFlight) all.addAll(e.cbs);
         if (all.isEmpty()) return;
         waitAll(all);
-        for (CommandPool.CommandBuffer cb : all) {
+        recycle(this.current.cbs);
+        for (Epoch e : this.inFlight) recycle(e.cbs);
+        // complete only the leading epochs whose frames are done
+        while (!this.inFlight.isEmpty() && this.inFlight.peekFirst().frameDone)
+            complete(this.inFlight.pollFirst());
+    }
+
+    /**
+     * rc12: the device is idle (vkDeviceWaitIdle returned): every SUBMITTED frame has finished, so every ended epoch is
+     * complete. The current (open) epoch is not: its frame command buffer may still be recording.
+     */
+    public synchronized void deviceIdle() {
+        waitFences();
+        for (Epoch e : this.inFlight) e.frameDone = true;
+        while (!this.inFlight.isEmpty())
+            complete(this.inFlight.pollFirst());
+    }
+
+    /** Resets finished upload command buffers (keeping those whose semaphore signal is still unwaited) and empties the list. */
+    private void recycle(ObjectArrayList<CommandPool.CommandBuffer> cbs) {
+        for (CommandPool.CommandBuffer cb : cbs) {
             if (this.signalUnconsumed.contains(cb)) this.resetAfterSubmit.add(cb);
             else cb.reset();
         }
-        this.current.cbs.clear();
-        this.inFlight.clear();
-        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
-        if (ring != null) ring.completeAll();
+        cbs.clear();
     }
 
     private void waitAll(ObjectArrayList<CommandPool.CommandBuffer> cbs) {

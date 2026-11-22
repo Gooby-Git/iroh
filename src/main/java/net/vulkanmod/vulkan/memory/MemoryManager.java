@@ -376,14 +376,22 @@ public class MemoryManager {
             stackTraces[currentFrame].add(new Throwable().getStackTrace());
     }
 
+    /** rc13: images waiting in the epoch-gated free list (tests, memStats). */
+    public synchronized int pendingEpochImages() {
+        return epochImages.size();
+    }
+
     public synchronized void addToFreeable(VulkanImage image) {
         var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
         if (ring != null) {
             epochImages.add(image);
             epochImageTags.add(ring.epoch());
+            if (image.traced)
+                dev.elemore.iroh.diag.ImageTrace.queued(image, "deferred free at epoch " + ring.epoch() + " (completed " + ring.completedEpoch() + ")");
             return;
         }
         freeableImages[currentFrame].add(image);
+        if (image.traced) dev.elemore.iroh.diag.ImageTrace.queued(image, "frame-slot free (slot " + currentFrame + ", no ring)");
     }
 
     public synchronized void addFrameOp(Runnable runnable) {

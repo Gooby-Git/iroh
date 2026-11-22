@@ -267,6 +267,7 @@ public class Renderer {
         dev.elemore.iroh.diag.LoadWatch.tick(); // rc5 (td-30c049): evidence if a world load hangs
         dev.elemore.iroh.memory.MemoryGuard.tick(); // rc8: device-memory cap / out-of-memory exit
         if (dev.elemore.iroh.diag.MemStats.ON) dev.elemore.iroh.diag.MemStats.frame(); // rc7
+        if (dev.elemore.iroh.diag.ImageTrace.ON) dev.elemore.iroh.diag.ImageTrace.frame(); // rc13
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.push("Frame_fence");
@@ -619,9 +620,12 @@ public class Renderer {
     }
 
     @SuppressWarnings("UnreachableCode")
+    private int lastResizeW = -1, lastResizeH = -1;
+
     private void recreateSwapChain() {
         waitFences();
         Vulkan.waitIdle();
+        Synchronization.INSTANCE.deviceIdle(); // rc12: submitted frames are done: complete their epochs
 
         commandBuffers.forEach(commandBuffer -> vkResetCommandBuffer(commandBuffer, 0));
         recordingCmds = false;
@@ -655,8 +659,17 @@ public class Renderer {
         createSyncObjects();
         this.mainPass.onResize();
 
+        // rc12 (td-598433): only a REAL size change resizes the game's render targets. The base called resizeDisplay()
+        // on every swapchain recreation, including OUT_OF_DATE / SUBOPTIMAL ones at the same extent (gamescope, focus
+        // changes), so every post chain and mod render target (Satin, GPUBooster...) was destroyed and recreated, the
+        // "resize storm" that multiplies any per-resize leak.
+        int newW = swapChain.getWidth(), newH = swapChain.getHeight();
+        boolean sizeChanged = newW != this.lastResizeW || newH != this.lastResizeH;
+        this.lastResizeW = newW;
+        this.lastResizeH = newH;
         this.onResizeCallbacks.forEach(Runnable::run);
-        ((WindowAccessor) (Object) Minecraft.getInstance().getWindow()).getEventHandler().resizeDisplay();
+        if (sizeChanged)
+            ((WindowAccessor) (Object) Minecraft.getInstance().getWindow()).getEventHandler().resizeDisplay();
 
         currentFrame = 0;
     }

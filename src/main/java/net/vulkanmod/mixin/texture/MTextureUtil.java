@@ -52,6 +52,7 @@ public class MTextureUtil {
         }
 
         if (image == null || image.mipLevels != mipLevels || image.width != width || image.height != height) {
+            VulkanImage old = image;
             if (image != null)
                 image.free();
 
@@ -66,6 +67,8 @@ public class MTextureUtil {
 
             glTexture.setVulkanImage(image);
             VTextureSelector.bindTexture(image);
+            if (dev.elemore.iroh.diag.ImageTrace.ON) // rc13
+                dev.elemore.iroh.diag.ImageTrace.created(id, image, old, width, height, image.format);
         }
     }
 

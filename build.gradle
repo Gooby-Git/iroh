@@ -164,6 +164,16 @@ tasks.register('coreOverrideTest', JavaExec) {
 	if (project.hasProperty('pack')) args project.property('pack')
 }
 
+// rc14 (td-f57b86): camera states x fog option -> expected vanilla fog. ./gradlew fogDecisionTest
+tasks.register('fogDecisionTest', JavaExec) {
+	group = 'verification'
+	description = 'Distance fog option: only vanilla atmospheric/thick fog removed, special fogs vanilla'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.configtest.FogDecisionTest'
+	jvmArgs '-ea'
+}
+
 // Headless test of config/iroh.json and the pack migration (P1-6). ./gradlew irohConfigTest [-Pconfig=dir]; last line "# configtest PASS n/n"
 tasks.register('irohConfigTest', JavaExec) {
 	group = 'verification'
@@ -258,6 +268,16 @@ tasks.register('glRegistryTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// rc13: GL name spaces, Satin still-depth guard, image trace, deferred free of never-used images. ./gradlew imageLifetimeTest
+tasks.register('imageLifetimeTest', JavaExec) {
+	group = 'verification'
+	description = 'Image lifetimes: raw-GL vs GlStateManager names, Satin x GPUBooster leak guard, imageTrace, never-used deferred free'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.ImageLifetimeTest'
+	jvmArgs '-ea', '-Diroh.imageTrace=satin', '-Dverbose=' + (project.findProperty('verbose') ?: 'false')
+}
+
 // rc8: device-memory policy state machine. ./gradlew memoryBudgetTest; last line "# memorybudget PASS n/n".
 tasks.register('memoryBudgetTest', JavaExec) {
 	group = 'verification'
@@ -285,6 +305,15 @@ tasks.register('planeSnapTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.chunktest.PlaneSnapTest'
+	jvmArgs '-ea'
+}
+
+// WaterMedia video path (td-75c89e), offline. ./gradlew videoFrameTest ; last line "# videoframe PASS n/n".
+tasks.register('videoFrameTest', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.compattest.VideoFrameTest'
 	jvmArgs '-ea'
 }
 

@@ -42,12 +42,30 @@ public class MLightTexture {
     @Overwrite
     public void turnOnLightLayer() {
         RenderSystem.setShaderTexture(2, this.lightTexture.getId());
+        // rc14 (td-5fd20c): vanilla sets GL_LINEAR min/mag here every time (the upload left it NEAREST); the base dropped
+        // that. Full sky light (uv 240/256) lies on the texel 14/15 boundary, so LINEAR gives their blend: without it the
+        // pack's terrain was 12% brighter than OpenGL (Alex's Caves replaces updateLightTexture, so the upload-side
+        // restore below never ran there).
+        VkGlTexture tex = VkGlTexture.getTexture(this.lightTexture.getId());
+        if (tex != null && tex.getVulkanImage() != null)
+            tex.getVulkanImage().updateTextureSampler(true, false, false);
     }
 
     // P1-1b: the vanilla CPU lightmap loop is left intact (it was cancelled before) so other mods' injectors into it
     // keep working: Enderscape (light colour, End lighting, gamma: ModifyArgs / WrapOperation on Vector3f.set / lerp),
     // Origins/apoli (night vision strength). Iroh only adds the Vulkan image-layout transition after the upload.
     private static final String UPLOAD = "Lnet/minecraft/client/renderer/texture/DynamicTexture;upload()V";
+
+    /**
+     * rc14 (td-5fd20c): remember the lightmap's GL id so EVERY upload of it keeps linear filtering (MNativeImage._upload),
+     * also when another mod replaces the vanilla loop: Alex's Caves HEAD-cancels updateLightTexture (biome ambient light
+     * colouring, default on) and uploads the DynamicTexture itself, so the injects below never ran, the upload left the
+     * lightmap NEAREST, and full-sky-light terrain sampled texel 15 instead of the 14/15 blend: +12% brighter than GL.
+     */
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void irohRememberLightmap(GameRenderer renderer, Minecraft minecraft, CallbackInfo ci) {
+        dev.elemore.iroh.compat.LightmapFilter.lightmapTextureId = this.lightTexture.getId();
+    }
 
     @Inject(method = "updateLightTexture", at = @At(value = "INVOKE", target = UPLOAD))
     private void irohBeforeUpload(float f, CallbackInfo ci) {

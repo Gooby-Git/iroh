@@ -68,6 +68,7 @@
     "render.particle.ParticleEngineStatsM",
     "render.target.MainTargetMixin",
     "render.target.RenderTargetMixin",
+    "render.target.RenderTargetLifecycleM",
     "render.vertex.BufferBuilderM",
     "render.vertex.FaceBakeryM",
     "render.vertex.IndexTypeMixin",

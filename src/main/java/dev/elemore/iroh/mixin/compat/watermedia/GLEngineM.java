@@ -47,7 +47,7 @@ public abstract class GLEngineM extends GFXEngine {
         this.width = width;
         this.height = height;
         this.bits = bits;
-        this.iroh$video.format(fmt == PixelFormat.BGRA, width, height);
+        this.iroh$video.format(fmt == PixelFormat.BGRA, String.valueOf(fmt), width, height);
         ci.cancel();
     }
 

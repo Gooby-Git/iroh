@@ -5,7 +5,6 @@ import dev.elemore.iroh.glshim.GlShim;
 import net.vulkanmod.gl.VkGlTexture;
 import net.vulkanmod.vulkan.texture.SamplerManager;
 import net.vulkanmod.vulkan.texture.VulkanImage;
-import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
 
@@ -27,11 +26,9 @@ import static org.lwjgl.vulkan.VK10.VK_FORMAT_B8G8R8A8_UNORM;
  */
 public final class IrohVideoTexture {
     private final Object lock = new Object();
-    private int width, height;
-    private ByteBuffer pending;       // tightly packed BGRA, width*4 per row
+    private final VideoFrameBuffer buf = new VideoFrameBuffer(); // tightly packed BGRA, width*4 per row
     private volatile boolean dirty;
     private boolean scheduled, released;
-    private boolean warnedFormat;
 
     // render thread only
     private int texId;
@@ -43,41 +40,25 @@ public final class IrohVideoTexture {
         GlShim.LOGGER.info("Iroh: WaterMedia GLEngine runs on Iroh's video path (BGRA frames -> Vulkan image)");
     }
 
-    public void format(boolean bgra, int w, int h) {
+    /**
+     * Decode thread. A non-BGRA announcement is transient (see {@link VideoFrameBuffer}): the buffer is parked and the
+     * next BGRA announcement, which FFMediaPlayer makes before it uploads anything, re-arms it. No warning here.
+     */
+    public void format(boolean bgra, String name, int w, int h) {
         synchronized (lock) {
-            if (!bgra) {
-                if (!warnedFormat) GlShim.LOGGER.warn("Iroh: WaterMedia asked for a non-BGRA video format; frames ignored");
-                warnedFormat = true;
-                width = height = 0;
-                return;
-            }
-            if (w != width || h != height) {
-                width = w;
-                height = h;
-                if (pending != null) MemoryUtil.memFree(pending);
-                pending = w > 0 && h > 0 ? MemoryUtil.memAlloc(w * h * 4) : null;
-                dirty = false;
-            }
+            if (buf.announce(bgra, name, w, h)) dirty = false;
         }
     }
 
     /** Decode thread: copy plane 0 (BGRA, {@code strides[0]} bytes per row) before WaterMedia reuses its buffer. */
     public void upload(ByteBuffer[] planes, int[] strides) {
-        if (planes == null || planes.length == 0 || planes[0] == null) return;
         boolean schedule;
         synchronized (lock) {
-            if (released || pending == null || width <= 0 || height <= 0) return;
-            ByteBuffer src = planes[0];
-            int row = width * 4;
-            int stride = strides != null && strides.length > 0 && strides[0] > 0 ? strides[0] : row;
-            long srcAddr = MemoryUtil.memAddress(src);
-            long dstAddr = MemoryUtil.memAddress(pending);
-            long avail = src.remaining();
-            if (stride == row) {
-                MemoryUtil.memCopy(srcAddr, dstAddr, Math.min(avail, (long) row * height));
-            } else {
-                for (int y = 0; y < height && (long) y * stride + row <= avail; y++)
-                    MemoryUtil.memCopy(srcAddr + (long) y * stride, dstAddr + (long) y * row, row);
+            if (released) return;
+            if (!buf.copy(planes, strides)) {
+                if (buf.shouldWarnDrop())
+                    GlShim.LOGGER.warn("Iroh: WaterMedia delivered frames in non-BGRA format {} (supports() said BGRA only); frames dropped until it announces BGRA", buf.parkedFormat);
+                return;
             }
             dirty = true;
             schedule = !scheduled;
@@ -90,9 +71,9 @@ public final class IrohVideoTexture {
     public void flush() {
         synchronized (lock) {
             scheduled = false;
-            if (released || !dirty || pending == null) return;
-            if (image == null || imageW != width || imageH != height) allocate(width, height);
-            image.uploadSubTextureAsync(0, width, height, 0, 0, 0, 0, width, pending);
+            if (released || !dirty || buf.pending == null) return;
+            if (image == null || imageW != buf.width || imageH != buf.height) allocate(buf.width, buf.height);
+            image.uploadSubTextureAsync(0, buf.width, buf.height, 0, 0, 0, 0, buf.width, buf.pending);
             dirty = false;
             uploadedOnce = true;
         }
@@ -124,10 +105,7 @@ public final class IrohVideoTexture {
     public void release() {
         synchronized (lock) {
             released = true;
-            if (pending != null) {
-                MemoryUtil.memFree(pending);
-                pending = null;
-            }
+            buf.free();
         }
         if (RenderSystem.isOnRenderThread()) freeGpu();
         else RenderSystem.recordRenderCall(this::freeGpu);

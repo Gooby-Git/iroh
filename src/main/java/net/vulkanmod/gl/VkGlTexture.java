@@ -84,6 +84,10 @@ public class VkGlTexture {
             boundTexture = null;
         }
         VkGlTexture glTexture = map.remove(i);
+        if (dev.elemore.iroh.diag.ImageTrace.ON)
+            dev.elemore.iroh.diag.ImageTrace.deleteRequest(i, glTexture != null, glTexture != null ? glTexture.vulkanImage : null);
+        if (glTexture != null)
+            VkGlFramebuffer.onAttachmentDeleted(i, false); // rc12: no framebuffer keeps the deleted image's view
         VulkanImage image = glTexture != null ? glTexture.vulkanImage : null;
         if (image != null)
             image.free(); // rc8: one free path (deferred, epoch-gated)
@@ -565,6 +569,7 @@ public class VkGlTexture {
             }
             return;
         }
+        VulkanImage old = this.vulkanImage;
         if (this.vulkanImage != null)
             this.vulkanImage.free();
 
@@ -587,6 +592,8 @@ public class VkGlTexture {
                     .createVulkanImage();
         }
         this.imageGeneration++;
+        if (dev.elemore.iroh.diag.ImageTrace.ON)
+            dev.elemore.iroh.diag.ImageTrace.created(this.id, this.vulkanImage, old, width, height, vkFormat);
     }
 
     /** rc9: test seam: when set, allocateImage gets its images here instead of the device. */

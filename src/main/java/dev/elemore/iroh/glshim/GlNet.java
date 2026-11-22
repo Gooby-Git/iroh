@@ -84,6 +84,13 @@ public final class GlNet {
         HANDLERS.put(fn, new Registered(sig, h));
     }
 
+    /** rc13: a registered handler by name (offline registry test: raw-GL names vs GlStateManager deletes). */
+    public static synchronized Handler handlerForTest(String fn) {
+        GlState.register();
+        Registered r = HANDLERS.get(fn);
+        return r == null ? null : r.handler();
+    }
+
     // ---------------------------------------------------------------- argument access for handlers
 
     private static long slot(long args, int n) {

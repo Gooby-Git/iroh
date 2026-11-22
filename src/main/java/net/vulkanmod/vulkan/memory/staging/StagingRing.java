@@ -60,6 +60,8 @@ public final class StagingRing {
         int pending;
         long lastEpoch = -1;
         boolean retired;
+        /** rc12: some reservation in this block is read by a FRAME command buffer (in-frame upload), not only uploads. */
+        boolean frameUse;
 
         Slot(Block block, boolean dedicated) {
             this.block = block;
@@ -156,6 +158,34 @@ public final class StagingRing {
         byAddress.remove(a.address);
     }
 
+    /** rc12: like {@link #consumed} for a copy recorded into the FRAME command buffer (released only with the frame). */
+    public synchronized void consumedByFrame(Alloc a) {
+        consumed(a);
+        a.slot.frameUse = true;
+    }
+
+    /**
+     * rc12: the device is idle and every upload command buffer of the OPEN epoch {@code e} has finished (its frame is
+     * still recording): retired blocks of that epoch that no frame command buffer reads can be reused now.
+     */
+    public synchronized void uploadsCompleted(long e) {
+        for (int i = live.size() - 1; i >= 0; i--) {
+            Slot s = live.get(i);
+            if (s.retired && s.pending == 0 && s.lastEpoch <= e && !s.frameUse) {
+                live.remove(i);
+                if (s.dedicated) {
+                    totalBytes -= s.block.size();
+                    factory.destroy(s.block);
+                } else {
+                    s.used = 0;
+                    s.lastEpoch = -1;
+                    s.frameUse = false;
+                    pool.addFirst(s);
+                }
+            }
+        }
+    }
+
     /** The reservation will never be read (task cancelled, result dropped). */
     public synchronized void cancel(Alloc a) {
         if (a.done) return;
@@ -206,6 +236,7 @@ public final class StagingRing {
                 } else {
                     s.used = 0;
                     s.lastEpoch = -1;
+                    s.frameUse = false;
                     pool.addFirst(s);
                 }
             }

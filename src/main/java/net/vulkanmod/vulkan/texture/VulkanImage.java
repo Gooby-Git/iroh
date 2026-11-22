@@ -34,6 +34,8 @@ public class VulkanImage {
     public final String name;
     /** rc9: owner key for the growth monitor: creator + calling mod (digits folded), e.g. "GlTexture depth by vista". */
     public String owner = "?";
+    /** rc13: followed by -Diroh.imageTrace (creation, delete request, deferred free, destroy). */
+    public boolean traced;
     public final int format;
     public final int aspect;
     public final int mipLevels;
@@ -325,7 +327,7 @@ public class VulkanImage {
         var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
         long bufferId = alloc.bufferId;
         long srcOffset = alloc.offset;
-        StagingBuffer.ring().consumed(alloc); // read by this frame's command buffer: released after the frame
+        StagingBuffer.ring().consumedByFrame(alloc); // read by this frame's command buffer: released after the frame
 
         Framebuffer boundFb = Renderer.getInstance().getBoundFramebuffer();
         if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {
@@ -669,6 +671,7 @@ public class VulkanImage {
     }
 
     public void doFree() {
+        if (this.traced) dev.elemore.iroh.diag.ImageTrace.destroyed(this);
         if (this.id == 0L)
             return;
 
