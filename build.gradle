@@ -462,3 +462,12 @@ tasks.register('packReplay', JavaExec) {
 		logger.lifecycle("packReplay: lavapipe ICD ${icd}")
 	}
 }
+
+// P3-3 PACK terrain vertex (36 B) packing vs hand-computed fields. ./gradlew wideVertexTest ; last line "# widevertex PASS n/n"
+tasks.register('wideVertexTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the 36-byte pack terrain vertex packing (positions identical to the 16-byte PlaneSnap rounding)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.WideVertexTest'
+}

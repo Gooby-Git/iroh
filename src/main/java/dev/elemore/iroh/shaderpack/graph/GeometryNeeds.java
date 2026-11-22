@@ -30,7 +30,7 @@ public final class GeometryNeeds {
     public static final List<Field> WIDE_TERRAIN = List.of(
             new Field("position", 0, 6, "int16 x3, 1/2048 block, -4 block offset (same grid and PlaneSnap as today)",
                     "gl_Vertex / vaPosition (+ chunkOffset)", "mesher float position"),
-            new Field("light", 6, 2, "uint8 block, uint8 sky, light level x 16 + 8 (unbaked, vanilla lightmap coordinate)",
+            new Field("light", 6, 2, "uint8 block, uint8 sky: the raw vanilla lightmap coordinate 0..240 (unbaked); gl_TextureMatrix[1] maps it as in Iris",
                     "gl_MultiTexCoord1/2, vaUV2", "smooth/flat light pipeline before baking"),
             new Field("uv0", 8, 4, "unorm16 x2 (same 1/32768 scale as today)", "gl_MultiTexCoord0, vaUV0", "sprite uv"),
             new Field("colour", 12, 4, "RGBA8: vertex tint x face shade; with separateAo=true alpha = AO, else AO multiplied into rgb (Iris rule)",
