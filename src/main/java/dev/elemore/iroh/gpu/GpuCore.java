@@ -443,6 +443,11 @@ public final class GpuCore {
         return t;
     }
 
+    /** The device's object behind a buffer (offline readback in tests: HeadlessGpuDevice.readBuffer). */
+    public Object nativeBuffer(GpuBuffer b) {
+        return buf(b).dev;
+    }
+
     /** The device's object behind a target (in-game helpers such as MainDepth). */
     public Object nativeImage(RenderTargetHandle t) {
         return target(t).dev;
