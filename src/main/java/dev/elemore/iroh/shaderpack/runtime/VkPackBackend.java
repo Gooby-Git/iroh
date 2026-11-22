@@ -439,12 +439,23 @@ public abstract class VkPackBackend implements GpuBackend {
             st.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fm).pName(main);
             Geo geo = d.geo();
             boolean wide = geo != null && "wide-terrain".equals(geo.layout());
-            VkVertexInputBindingDescription.Buffer vb = VkVertexInputBindingDescription.calloc(1, s);
-            vb.get(0).binding(0).stride(wide ? dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.BYTES : QUAD_STRIDE)
+            VanillaLayout vl = geo != null && VanillaLayout.is(geo.layout()) ? VanillaLayout.of(geo.layout()) : null;
+            VkVertexInputBindingDescription.Buffer vb = VkVertexInputBindingDescription.calloc(vl != null ? 2 : 1, s);
+            vb.get(0).binding(0).stride(wide ? dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.BYTES : vl != null ? vl.stride : QUAD_STRIDE)
                     .inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
+            if (vl != null)
+                vb.get(1).binding(1).stride(0).inputRate(VK_VERTEX_INPUT_RATE_VERTEX); // zeros for missing inputs
             VkVertexInputAttributeDescription.Buffer va = VkVertexInputAttributeDescription.calloc(d.inputs().size(), s);
             for (int i = 0; i < d.inputs().size(); i++) {
                 VertexInput in = d.inputs().get(i);
+                if (vl != null) {
+                    VanillaLayout.Attr a = vl.attribute(in.location(), in.type());
+                    if (a != null)
+                        va.get(i).location(in.location()).binding(0).offset(a.offset()).format(a.format());
+                    else
+                        va.get(i).location(in.location()).binding(1).offset(0).format(VanillaLayout.zeroFormat(in.type()));
+                    continue;
+                }
                 if (wide) {
                     int[] a = wideAttribute(in.location(), in.type());
                     va.get(i).location(in.location()).binding(0).offset(a[0]).format(a[1]);
@@ -805,6 +816,7 @@ public abstract class VkPackBackend implements GpuBackend {
     }
 
     private final List<HostBuf> vbufs = new ArrayList<>();
+    private HostBuf zeroVertex;
     private HostBuf quadIndex;
     private int quadIndexQuads;
 
@@ -903,6 +915,12 @@ public abstract class VkPackBackend implements GpuBackend {
                     boundQuadIndex = true;
                 }
                 vkCmdBindDescriptorSets(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout(), 0, s.longs(ds[i][0], ds[i][1]), null);
+                if (zeroVertex == null)
+                {
+                    zeroVertex = hostBuffer(64, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                    zeroVertex.mapped().put(0, new byte[64]);
+                }
+                vkCmdBindVertexBuffers(cmd(), 1, s.longs(zeroVertex.buffer()), s.longs(0)); // P3-9: zero binding (vanilla layouts)
                 if (gb.vertexBuffer() >= 0)
                     vkCmdBindVertexBuffers(cmd(), 0, s.longs(vbufs.get(gb.vertexBuffer()).buffer()), s.longs(0));
                 else
@@ -949,6 +967,9 @@ public abstract class VkPackBackend implements GpuBackend {
         vbufs.clear();
         if (quadIndex != null)
             bs.add(quadIndex);
+        if (zeroVertex != null)
+            bs.add(zeroVertex);
+        zeroVertex = null;
         quadIndex = null;
         quadIndexQuads = 0;
         HostBuf q = quad;

@@ -40,9 +40,14 @@ public interface PackFrameInputs {
      * {@code layout} "wide-terrain" = WideTerrainVertex quads; {@code origin} = section origin minus camera position
      * (blocks, camera-relative, as Iris' chunkOffset).
      */
-    record Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin, Indirect indirect) {
+    record Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin, Indirect indirect,
+                    Map<String, double[]> uniforms) {
         public Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin) {
-            this(geometryClass, layout, vertices, quads, origin, null);
+            this(geometryClass, layout, vertices, quads, origin, null, null);
+        }
+
+        public Geometry(String geometryClass, String layout, java.nio.ByteBuffer vertices, int quads, double[] origin, Indirect indirect) {
+            this(geometryClass, layout, vertices, quads, origin, indirect, null);
         }
     }
 
@@ -56,6 +61,14 @@ public interface PackFrameInputs {
 
     default java.util.List<Geometry> geometry() {
         return java.util.List.of();
+    }
+
+    /**
+     * P3-9: changes whenever the geometry list's CONTENT changes (the executor caches batches per pass on the list's
+     * identity + this version; GameInputs refills one list every frame, so it bumps this every frame)
+     */
+    default long geometryVersion() {
+        return 0;
     }
 
     /**

@@ -77,7 +77,8 @@ public final class PackReplay {
             h = in.height();
         } else if (opt.containsKey("full")) {
             // P3-5 FULL mode: real geometry through the shadow pass and gbuffers programs
-            SyntheticFullScene fs = new SyntheticFullScene(data, plan.frames.get(folder), plan.resources.get(folder), w, h);
+            java.util.Set<String> cls = opt.containsKey("classes") ? new java.util.TreeSet<>(java.util.Arrays.asList(opt.get("classes").split(","))) : java.util.Set.of();
+            SyntheticFullScene fs = new SyntheticFullScene(data, plan.frames.get(folder), plan.resources.get(folder), w, h, cls);
             System.out.println("# full mode: " + fs.geometry().size() + " batches, " + fs.quads() + " quads");
             in = fs;
         } else {
@@ -275,7 +276,8 @@ public final class PackReplay {
             String kind = opt.containsKey("capture")
                     ? "capture-" + PackHarness.safe(Paths.get(opt.get("capture")).getFileName().toString().replace(".irohframe", ""))
                     : (opt.containsKey("post") ? "synthetic-post" : opt.containsKey("full") ? "synthetic-full" : "synthetic")
-                    + (opt.containsKey("upscale") ? "-up" + opt.get("upscale") : "");
+                    + (opt.containsKey("upscale") ? "-up" + opt.get("upscale") : "")
+                    + (opt.containsKey("classes") ? "-" + opt.get("classes").replace(',', '+') : "");
             Path golden = Paths.get("src/test/replay").resolve(PackHarness.safe(name) + "-" + folder + "-" + w + "x" + h + "-" + kind + ".golden");
             String mode = opt.get("golden");
             if (mode != null) {

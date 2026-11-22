@@ -251,7 +251,17 @@ public final class FrameExecutor {
                 continue;
             }
             try {
-                pipelines.put(p.id, gpu.createPipeline(pipelineDesc(p, u)));
+                List<String> layouts = new ArrayList<>();
+                if (p.kind.equals("geometry"))
+                    for (PackFrameInputs.Geometry g : batchesFor(p, in))
+                        if (g.layout() != null && !layouts.contains(g.layout()))
+                            layouts.add(g.layout());
+                if (layouts.isEmpty())
+                    layouts.add("wide-terrain");
+                passLayouts.put(p.id, layouts);
+                // P3-9 (S): one pipeline per (program, vertex layout) over the same SPIR-V; the first under the pass id
+                for (int li = 0; li < layouts.size(); li++)
+                    pipelines.put(li == 0 ? p.id : p.id + "|" + layouts.get(li), gpu.createPipeline(pipelineDesc(p, u, layouts.get(li))));
             } catch (IOException | RuntimeException e) {
                 problems.add(p.id + ": pipeline not created: " + e);
             }
@@ -326,8 +336,8 @@ public final class FrameExecutor {
     private boolean hasBatches(PassGraph.Pass p, PackFrameInputs in) {
         List<PackFrameInputs.Geometry> all = in.geometry();
         Object[] c = hasBatchesCache.get(p);
-        if (c == null || c[0] != all) {
-            c = new Object[]{all, !batchesFor(p, in).isEmpty()};
+        if (c == null || c[0] != all || (Long) c[2] != in.geometryVersion()) {
+            c = new Object[]{all, !batchesFor(p, in).isEmpty(), in.geometryVersion()};
             hasBatchesCache.put(p, c);
         }
         return (Boolean) c[1];
@@ -337,7 +347,10 @@ public final class FrameExecutor {
         return p.id.startsWith("shadow:");
     }
 
-    private GpuBackend.PipelineDesc pipelineDesc(PassGraph.Pass p, PackData.Unit u) throws IOException {
+    /** P3-9: vertex layout of each geometry pass, from its supplied batches at prepare ("wide-terrain" default) */
+    private final Map<String, List<String>> passLayouts = new HashMap<>();
+
+    private GpuBackend.PipelineDesc pipelineDesc(PassGraph.Pass p, PackData.Unit u, String layout) throws IOException {
         JsonObject r = u.reflection();
         List<GpuBackend.VertexInput> inputs = new ArrayList<>();
         if (r.has("vertexInputs"))
@@ -384,7 +397,11 @@ public final class FrameExecutor {
             boolean shadow = shadowPass(p);
             Integer dh = images.get(shadow ? "shadowtex0" : "depthtex0");
             String df = dh != null ? gpu.desc(dh).vkFormat() : "D32_SFLOAT";
-            geo = new GpuBackend.Geo("wide-terrain", df, true, true, !shadow, false);
+            boolean sky = p.geometry.stream().anyMatch(g -> g.startsWith("sky_"));
+            boolean terrain = layout.equals("wide-terrain");
+            // P3-9: sky draws test nothing and write no depth (vanilla: depthMask false, drawn first); vanilla-format
+            // classes keep culling off (entity models, particles and the hand are drawn without GL_CULL_FACE often)
+            geo = new GpuBackend.Geo(layout, df, !sky, !sky, terrain && !shadow, false);
         }
         return new GpuBackend.PipelineDesc(p.id, data.spirv(u, "vertex"), data.spirv(u, "fragment"), null, inputs, formats, blend, slots, geo);
     }
@@ -690,10 +707,11 @@ public final class FrameExecutor {
         int depth = -1;
         int[] viewport;
         List<PackFrameInputs.Geometry> geoRef;
+        long geoVersion;
         List<PackFrameInputs.Geometry> geo;
         final List<ByteBuffer> batchUbos = new ArrayList<>();
         final List<GpuBackend.GeoBatch> batches = new ArrayList<>();
-        GpuBackend.GeoDraw geoDraw;
+        List<GpuBackend.GeoDraw> geoDraws;
         // capture
         int capSrc = -1, capDst = -1;
     }
@@ -1051,7 +1069,7 @@ public final class FrameExecutor {
     // per-batch uniform scratch (P3-8: reused; the backend copies each block when it records the draw)
     private final double[] gDecode = new double[4], gViewInv = new double[16], gProjInv = new double[16], gMvp = new double[16],
             gNormal = new double[9], gTmp = new double[16], gStage = new double[1];
-    private static final double[] MINUS_ONE = {-1};
+    private static final double[] MINUS_ONE = {-1}, ZERO1 = {0}, NORMAL_IDENTITY = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     private final Map<String, double[]> gPer = new HashMap<>();
     private final MutableLayered gLayer = new MutableLayered(gPer);
 
@@ -1135,12 +1153,13 @@ public final class FrameExecutor {
             return;
         }
         List<PackFrameInputs.Geometry> all = in.geometry();
-        boolean sameList = c.geoRef == all;
+        boolean sameList = c.geoRef == all && c.geoVersion == in.geometryVersion();
         if (!sameList) {
             c.geoRef = all;
+            c.geoVersion = in.geometryVersion();
             c.geo = batchesFor(p, in);
             c.batches.clear();
-            c.geoDraw = null;
+            c.geoDraws = null;
         }
         Mat.invert(view, gViewInv);
         Mat.invert(proj, gProjInv);
@@ -1166,13 +1185,35 @@ public final class FrameExecutor {
                 c.batchUbos.add(newBlock(u));
             ByteBuffer ub = c.batchUbos.get(i);
             double[] o = g.origin();
-            gDecode[0] = 1.0 / 2048;
-            gDecode[1] = 4 + o[0];
-            gDecode[2] = 4 + o[1];
-            gDecode[3] = 4 + o[2];
+            boolean wideV = "wide-terrain".equals(g.layout());
+            gDecode[0] = wideV ? 1.0 / 2048 : 1;
+            gDecode[1] = (wideV ? 4 : 0) + o[0];
+            gDecode[2] = (wideV ? 4 : 0) + o[1];
+            gDecode[3] = (wideV ? 4 : 0) + o[2];
             gPer.put("chunkOffset", o);
             gStage[0] = renderStage(g.geometryClass(), shadow);
+            boolean viewSpace = g.geometryClass().startsWith("hand");
+            if (viewSpace) { // the hand is drawn in view space (vanilla: its own model-view, identity camera rotation)
+                gPer.put("iroh_ModelViewMatrix", IDENTITY);
+                gPer.put("iroh_ModelViewMatrixInverse", IDENTITY);
+                gPer.put("iroh_ModelViewProjectionMatrix", proj);
+                gPer.put("iroh_NormalMatrix", NORMAL_IDENTITY);
+            }
+            Map<String, double[]> extra = g.uniforms();
+            if (extra != null)
+                gPer.putAll(extra);
             fillUniforms(u, ub, gLayer, false, vw, vh);
+            if (extra != null)
+                for (String k : extra.keySet()) { // back to the frame's value (or the per-draw default) for the next batch
+                    double[] bv = base.get(k);
+                    gPer.put(k, bv != null ? bv : k.equals("entityId") || k.equals("blockEntityId") ? MINUS_ONE : ZERO1);
+                }
+            if (viewSpace) {
+                gPer.put("iroh_ModelViewMatrix", view);
+                gPer.put("iroh_ModelViewMatrixInverse", gViewInv);
+                gPer.put("iroh_ModelViewProjectionMatrix", gMvp);
+                gPer.put("iroh_NormalMatrix", gNormal);
+            }
             if (c.batches.size() <= i) {
                 Integer vb = g.indirect() != null ? Integer.valueOf(-1) : vertexBuffers.get(g);
                 if (vb == null) {
@@ -1184,9 +1225,29 @@ public final class FrameExecutor {
             quads += g.quads();
         }
         gLayer.base = Map.of();
-        if (c.geoDraw == null)
-            c.geoDraw = new GpuBackend.GeoDraw(p.id, pipe, c.colour, c.depth, c.viewport, c.set0, c.set1, c.batches);
-        gpu.drawGeometry(c.geoDraw);
+        if (c.geoDraws == null) {
+            // one GeoDraw (render pass instance) per vertex layout, each with its pipeline variant
+            c.geoDraws = new ArrayList<>();
+            List<String> lays = passLayouts.getOrDefault(p.id, List.of("wide-terrain"));
+            for (int li = 0; li < lays.size(); li++) {
+                List<GpuBackend.GeoBatch> sub = new ArrayList<>();
+                for (int i = 0; i < c.geo.size(); i++)
+                    if (lays.get(li).equals(c.geo.get(i).layout()) || (li == 0 && c.geo.get(i).layout() == null))
+                        sub.add(c.batches.get(i));
+                Integer lp = pipelines.get(li == 0 ? p.id : p.id + "|" + lays.get(li));
+                if (!sub.isEmpty() && lp != null)
+                    c.geoDraws.add(new GpuBackend.GeoDraw(p.id, lp, c.colour, c.depth, c.viewport, c.set0, c.set1, sub));
+            }
+        }
+        for (int di = 0; di < c.geoDraws.size(); di++) {
+            if (di > 0) { // the next render pass instance writes the same attachments (and storage images)
+                accessBinds(c.set0, "STORAGE_WRITE");
+                for (int h : c.colour)
+                    access(h, "ATTACHMENT_WRITE");
+                access(c.depth, "ATTACHMENT_WRITE");
+            }
+            gpu.drawGeometry(c.geoDraws.get(di));
+        }
         if (tracing) trace.add("geometry " + p.id + " + " + (shadow ? "shadowtex0" : "depthtex0") + " batches " + c.batches.size()
                 + " quads " + quads + " reads " + readKeys(p));
         drawCount++;
@@ -1721,6 +1782,7 @@ public final class FrameExecutor {
         lastAccess.clear();
         passCache.clear();
         hasBatchesCache.clear();
+        passLayouts.clear();
         bindArrays.clear();
         flippedCache.clear();
         clearPlan = null;

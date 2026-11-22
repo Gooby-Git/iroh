@@ -225,6 +225,13 @@ final class GameInputs implements PackFrameInputs {
     boolean full;
     int depthTo = -1;
 
+    long geometryVersion;
+
+    @Override
+    public long geometryVersion() {
+        return geometryVersion;
+    }
+
     @Override
     public java.util.List<Geometry> geometry() {
         return full ? geometry : java.util.List.of();

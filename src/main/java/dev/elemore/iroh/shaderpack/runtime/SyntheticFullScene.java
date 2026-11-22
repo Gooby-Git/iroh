@@ -33,6 +33,14 @@ public final class SyntheticFullScene implements PackFrameInputs {
     static final int GRASS = 0, STONE = 1, WOOD = 2, GLOW = 3, WATER = 4;
 
     public SyntheticFullScene(PackData data, PassGraph.Frame frame, ResourcePlan plan, int width, int height) {
+        this(data, frame, plan, width, height, Set.of());
+    }
+
+    /**
+     * P3-9: {@code classes} adds vanilla-format draws (program substitution's inputs) for: sky, entities, block,
+     * hand, particles, weather, outline, breaking, beacon, glint (any subset; terrain is always there)
+     */
+    public SyntheticFullScene(PackData data, PassGraph.Frame frame, ResourcePlan plan, int width, int height, Set<String> classes) {
         base = new SyntheticScene(data, frame, plan, width, height);
         uniforms = new HashMap<>(base.uniforms());
         double dist = parse(frame.directives.get("shadowDistance"), 96);
@@ -45,6 +53,158 @@ public final class SyntheticFullScene implements PackFrameInputs {
         PackIdMaps ids = PackIdMaps.of(data);
         buildAtlas();
         buildWorld(ids);
+        buildVanilla(ids, classes);
+    }
+
+    // ------------------------------------------------------------------------------------------------ P3-9 vanilla-format draws
+
+    public static final String NEW_ENTITY = "vanilla:Position,Color,UV0,UV1,UV2,Normal", POSITION_COLOR = "vanilla:Position,Color",
+            POSITION_TEX = "vanilla:Position,UV0", PARTICLE = "vanilla:Position,UV0,Color,UV2",
+            POSITION_TEX_COLOR_LIGHTMAP = "vanilla:Position,UV0,Color,UV2", POSITION_COLOR_NORMAL = "vanilla:Position,Color,Normal";
+
+    /** quads in a vanilla format, positions relative to {@code origin} (camera-relative) */
+    private final class VBatch {
+        final String cls, layout;
+        final List<float[]> quads = new ArrayList<>(); // per quad: 4 x (x,y,z) + rgba + uv rect + light + normal
+        VBatch(String cls, String layout) {
+            this.cls = cls;
+            this.layout = layout;
+        }
+
+        void quad(float[][] p, float[] rgba, float[] uv, int light, float[] n) {
+            float[] q = new float[12 + 4 + 4 + 1 + 3];
+            for (int i = 0; i < 4; i++)
+                System.arraycopy(p[i], 0, q, i * 3, 3);
+            System.arraycopy(rgba, 0, q, 12, 4);
+            System.arraycopy(uv, 0, q, 16, 4);
+            q[20] = light;
+            System.arraycopy(n, 0, q, 21, 3);
+            quads.add(q);
+        }
+
+        Geometry build(double[] origin, Map<String, double[]> uniforms) {
+            VanillaLayout vl = VanillaLayout.of(layout);
+            ByteBuffer b = ByteBuffer.allocate(quads.size() * 4 * vl.stride).order(ByteOrder.LITTLE_ENDIAN);
+            float[][] uvc = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
+            for (int qi = 0; qi < quads.size(); qi++) {
+                float[] q = quads.get(qi);
+                for (int v = 0; v < 4; v++) {
+                    int o = (qi * 4 + v) * vl.stride;
+                    for (String e : layout.substring(8).split(",")) {
+                        int eo = vl.offsets.get(e);
+                        switch (e) {
+                            case "Position" -> b.putFloat(o + eo, q[v * 3]).putFloat(o + eo + 4, q[v * 3 + 1]).putFloat(o + eo + 8, q[v * 3 + 2]);
+                            case "Color" -> b.put(o + eo, u8(q[12])).put(o + eo + 1, u8(q[13])).put(o + eo + 2, u8(q[14])).put(o + eo + 3, u8(q[15]));
+                            case "UV0" -> b.putFloat(o + eo, q[16] + (q[18] - q[16]) * uvc[v][0]).putFloat(o + eo + 4, q[17] + (q[19] - q[17]) * uvc[v][1]);
+                            case "UV1" -> b.putShort(o + eo, (short) 0).putShort(o + eo + 2, (short) 10);
+                            case "UV2" -> b.putShort(o + eo, (short) ((int) q[20] & 0xFFFF)).putShort(o + eo + 2, (short) ((int) q[20] >>> 16));
+                            case "Normal" -> b.put(o + eo, (byte) Math.round(q[21] * 127)).put(o + eo + 1, (byte) Math.round(q[22] * 127))
+                                    .put(o + eo + 2, (byte) Math.round(q[23] * 127)).put(o + eo + 3, (byte) 0);
+                            default -> {
+                            }
+                        }
+                    }
+                }
+            }
+            return new Geometry(cls, layout, b, quads.size(), origin, null, uniforms);
+        }
+    }
+
+    static byte u8(float v) {
+        return (byte) Math.round(Math.max(0, Math.min(1, v)) * 255);
+    }
+
+    private static final float[] WHITE = {1, 1, 1, 1};
+    private static final int FULL_LIGHT = 240 | 240 << 16;
+
+    /** a box as 6 quads (outward, counter-clockwise), camera-relative coordinates */
+    private void box(VBatch b, double x0, double y0, double z0, double x1, double y1, double z1, float[] uv, int light) {
+        float a = (float) (x0 - SyntheticScene.CAM[0]), bb = (float) (y0 - SyntheticScene.CAM[1]), c = (float) (z0 - SyntheticScene.CAM[2]);
+        float d = (float) (x1 - SyntheticScene.CAM[0]), e = (float) (y1 - SyntheticScene.CAM[1]), f = (float) (z1 - SyntheticScene.CAM[2]);
+        b.quad(new float[][]{{a, e, c}, {a, e, f}, {d, e, f}, {d, e, c}}, WHITE, uv, light, new float[]{0, 1, 0});
+        b.quad(new float[][]{{a, bb, f}, {a, bb, c}, {d, bb, c}, {d, bb, f}}, WHITE, uv, light, new float[]{0, -1, 0});
+        b.quad(new float[][]{{d, e, c}, {d, bb, c}, {a, bb, c}, {a, e, c}}, WHITE, uv, light, new float[]{0, 0, -1});
+        b.quad(new float[][]{{a, e, f}, {a, bb, f}, {d, bb, f}, {d, e, f}}, WHITE, uv, light, new float[]{0, 0, 1});
+        b.quad(new float[][]{{a, e, c}, {a, bb, c}, {a, bb, f}, {a, e, f}}, WHITE, uv, light, new float[]{-1, 0, 0});
+        b.quad(new float[][]{{d, e, f}, {d, bb, f}, {d, bb, c}, {d, e, c}}, WHITE, uv, light, new float[]{1, 0, 0});
+    }
+
+    private void buildVanilla(PackIdMaps ids, Set<String> classes) {
+        double[] zero = {0, 0, 0};
+        if (classes.contains("sky")) {
+            VBatch up = new VBatch("sky_basic", POSITION_COLOR);
+            float r = 64;
+            up.quad(new float[][]{{-r, 16, -r}, {-r, 16, r}, {r, 16, r}, {r, 16, -r}}, new float[]{0.47f, 0.65f, 1f, 1}, sprite(GLOW), 0, new float[]{0, -1, 0});
+            up.quad(new float[][]{{-r, -16, r}, {-r, -16, -r}, {r, -16, -r}, {r, -16, r}}, new float[]{0.05f, 0.05f, 0.1f, 1}, sprite(GLOW), 0, new float[]{0, 1, 0});
+            geometry.add(up.build(zero, null));
+            VBatch sun = new VBatch("sky_textured", POSITION_TEX);
+            double[] sd = SyntheticScene.SUN;
+            float cx = (float) sd[0] * 90, cy = (float) sd[1] * 90, cz = (float) sd[2] * 90, h = 8;
+            sun.quad(new float[][]{{cx - h, cy, cz - h}, {cx - h, cy, cz + h}, {cx + h, cy, cz + h}, {cx + h, cy, cz - h}}, WHITE, sprite(GLOW), 0, new float[]{0, -1, 0});
+            geometry.add(sun.build(zero, null));
+        }
+        if (classes.contains("entities")) {
+            VBatch e = new VBatch("entities", NEW_ENTITY);
+            box(e, 4.05, 64, -3.45, 4.95, 65.8, -2.55, sprite(WOOD), FULL_LIGHT);
+            geometry.add(e.build(zero, Map.of("entityId", new double[]{ids.entity("minecraft:zombie")}, "entityColor", new double[4])));
+        }
+        if (classes.contains("block")) {
+            VBatch b = new VBatch("block_entities", NEW_ENTITY);
+            box(b, -5.94, 64, -6.94, -5.06, 64.875, -6.06, sprite(WOOD), FULL_LIGHT);
+            geometry.add(b.build(zero, Map.of("blockEntityId", new double[]{ids.block("minecraft:chest")})));
+        }
+        if (classes.contains("hand")) {
+            VBatch hb = new VBatch("hand_solid", NEW_ENTITY);
+            hb.quad(new float[][]{{0.35f, -0.25f, -0.7f}, {0.35f, -0.75f, -0.75f}, {0.6f, -0.75f, -0.8f}, {0.6f, -0.25f, -0.75f}}, WHITE, sprite(WOOD),
+                    FULL_LIGHT, new float[]{0, 0, 1});
+            geometry.add(hb.build(zero, null));
+        }
+        if (classes.contains("particles")) {
+            VBatch pb = new VBatch("particles_opaque", PARTICLE);
+            for (int i = 0; i < 6; i++) {
+                float x = (float) (0.5 + i * 0.4 - SyntheticScene.CAM[0]), y = (float) (65.2 + (i % 3) * 0.3 - SyntheticScene.CAM[1]),
+                        z = (float) (-4 - SyntheticScene.CAM[2]), s = 0.1f;
+                pb.quad(new float[][]{{x - s, y + s, z}, {x - s, y - s, z}, {x + s, y - s, z}, {x + s, y + s, z}}, new float[]{1, 0.6f, 0.2f, 1}, sprite(GLOW),
+                        FULL_LIGHT, new float[]{0, 0, 1});
+            }
+            geometry.add(pb.build(zero, null));
+        }
+        if (classes.contains("weather")) {
+            uniforms.put("rainStrength", new double[]{1});
+            uniforms.put("wetness", new double[]{1});
+            VBatch w = new VBatch("weather", POSITION_TEX_COLOR_LIGHTMAP);
+            for (int i = -3; i <= 3; i++) {
+                float x = i * 1.5f, z = -6;
+                w.quad(new float[][]{{x, 6, z}, {x, -3, z}, {x + 1, -3, z}, {x + 1, 6, z}}, new float[]{0.7f, 0.75f, 0.9f, 0.6f}, sprite(WATER), FULL_LIGHT,
+                        new float[]{0, 0, 1});
+            }
+            geometry.add(w.build(zero, null));
+        }
+        if (classes.contains("outline")) {
+            VBatch o = new VBatch("outline", POSITION_COLOR_NORMAL);
+            float x0 = (float) (-3 - SyntheticScene.CAM[0]), x1 = (float) (0 - SyntheticScene.CAM[0]), y = (float) (67.002 - SyntheticScene.CAM[1]),
+                    z0 = (float) (-4 - SyntheticScene.CAM[2]), z1 = (float) (-1 - SyntheticScene.CAM[2]), t = 0.02f;
+            o.quad(new float[][]{{x0, y, z0}, {x0, y, z0 + t}, {x1, y, z0 + t}, {x1, y, z0}}, new float[]{0, 0, 0, 0.4f}, sprite(STONE), 0, new float[]{0, 1, 0});
+            o.quad(new float[][]{{x0, y, z1 - t}, {x0, y, z1}, {x1, y, z1}, {x1, y, z1 - t}}, new float[]{0, 0, 0, 0.4f}, sprite(STONE), 0, new float[]{0, 1, 0});
+            geometry.add(o.build(zero, null));
+        }
+        if (classes.contains("breaking")) {
+            VBatch d = new VBatch("damaged_block", NEW_ENTITY);
+            float x0 = (float) (-3 - SyntheticScene.CAM[0]), x1 = (float) (0 - SyntheticScene.CAM[0]), y0 = (float) (64 - SyntheticScene.CAM[1]),
+                    y1 = (float) (67 - SyntheticScene.CAM[1]), z = (float) (-0.999 - SyntheticScene.CAM[2]);
+            d.quad(new float[][]{{x0, y1, z}, {x0, y0, z}, {x1, y0, z}, {x1, y1, z}}, new float[]{0.3f, 0.3f, 0.3f, 1}, sprite(STONE), FULL_LIGHT, new float[]{0, 0, 1});
+            geometry.add(d.build(zero, null));
+        }
+        if (classes.contains("beacon")) {
+            VBatch bb = new VBatch("beacon_beam", NEW_ENTITY);
+            box(bb, 6.3, 64, -10.7, 6.7, 90, -10.3, sprite(GLOW), FULL_LIGHT);
+            geometry.add(bb.build(zero, null));
+        }
+        if (classes.contains("glint")) {
+            VBatch g = new VBatch("armor_glint", NEW_ENTITY);
+            box(g, 4.04, 64, -3.46, 4.96, 65.81, -2.54, sprite(WATER), FULL_LIGHT);
+            geometry.add(g.build(zero, null));
+        }
     }
 
     static double parse(String s, double dflt) {

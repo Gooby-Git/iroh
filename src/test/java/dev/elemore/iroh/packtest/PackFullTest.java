@@ -127,6 +127,35 @@ public final class PackFullTest {
                     && terrainDraw.get().batches().get(0).indirect() == ind);
             check("water pass draws the translucent batch", rec.geoDraws.stream().anyMatch(g -> g.pass().equals("gbuffers_water:translucent")));
             check("the atlas is the imported image", terrainDraw.isPresent() && terrainDraw.get().set0().values().stream().anyMatch(b -> b.image() == atlas));
+            // P3-9: a REUSED list whose content changes must not hit the executor's per-pass batch cache (GameInputs case)
+            {
+                RecordingBackend r2 = new RecordingBackend();
+                java.util.List<dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry> reused = new java.util.ArrayList<>();
+                long[] ver = {0};
+                var ind2 = new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Indirect(21, 22, 0, 23, 128, 9, 32);
+                var in2 = new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs() {
+                    public int width() { return syn.width(); }
+                    public int height() { return syn.height(); }
+                    public java.util.Map<String, double[]> uniforms() { return syn.uniforms(); }
+                    public java.util.Set<String> suppliedImages() { return java.util.Set.of(); }
+                    public float[] image(String n) { return null; }
+                    public int[] extent(String n) { return null; }
+                    public String startStage() { return "begin"; }
+                    public double frameSeconds() { return 1 / 60.0; }
+                    public List<Geometry> geometry() { return reused; }
+                    public long geometryVersion() { return ver[0]; }
+                };
+                FrameExecutor e2 = new FrameExecutor(data, plan, "world0", r2, FrameExecutor.cap(1L << 30));
+                reused.add(new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry("terrain_cutout_mipped", "wide-terrain", null, 0, new double[]{0, 0, 0}, ind));
+                e2.frame(in2);
+                reused.clear();
+                reused.add(new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry("terrain_cutout_mipped", "wide-terrain", null, 0, new double[]{0, 0, 0}, ind2));
+                ver[0]++;
+                e2.frame(in2);
+                var last = r2.geoDraws.stream().filter(g -> g.pass().equals("gbuffers_terrain")).reduce((x, y) -> y).orElseThrow();
+                check("reused geometry list + version bump: the new batch is drawn", last.batches().get(0).indirect() == ind2);
+                e2.close();
+            }
             int db = idx(rec.calls, "blit pack:depthtex0 -> scene depth");
             check("depth back to the scene depth after the chain", db > idx(rec.calls, "draw final"));
             ex.close();
@@ -154,6 +183,26 @@ public final class PackFullTest {
                     && tr.indexOf("upscale bilinear") < tr.indexOf("draw composite7"));
             ex.close();
             check("upscale: close frees everything", rec.live() == 0 && rec.livePipelines() == 0);
+        }
+        // P3-9 (S): vanilla-format classes through their gbuffers programs; the shadow pass mixes layouts
+        if (plan.frames.containsKey("world0")) {
+            RecordingBackend rec = new RecordingBackend();
+            SyntheticFullScene in = new SyntheticFullScene(data, plan.frames.get("world0"), plan.resources.get("world0"), 160, 90,
+                    java.util.Set.of("sky", "entities", "block", "hand", "particles", "weather", "outline", "breaking", "beacon", "glint"));
+            FrameExecutor ex = new FrameExecutor(data, plan, "world0", rec, FrameExecutor.cap(1L << 30));
+            ex.frame(in);
+            ex.frame(in);
+            check("classes: no problems " + ex.problems, ex.problems.isEmpty());
+            check("classes: no violations " + rec.violations, rec.violations.isEmpty());
+            for (String prog : new String[]{"gbuffers_skybasic", "gbuffers_skytextured", "gbuffers_entities", "gbuffers_block", "gbuffers_hand",
+                    "gbuffers_textured", "gbuffers_weather:translucent", "gbuffers_line", "gbuffers_damagedblock", "gbuffers_beaconbeam", "gbuffers_armor_glint"})
+                check("classes: " + prog + " drawn", rec.geoDraws.stream().anyMatch(g -> g.pass().equals(prog)));
+            long shadowDraws = rec.geoDraws.stream().filter(g -> g.pass().equals("shadow:shadow")).count();
+            check("classes: shadow pass = 2 render pass instances per frame (terrain layout + entity layout): " + shadowDraws, shadowDraws == 4);
+            int sky = idx(rec.calls, "geometry gbuffers_skybasic"), terrain = idx(rec.calls, "geometry gbuffers_terrain");
+            check("classes: sky before terrain", sky >= 0 && sky < terrain);
+            ex.close();
+            check("classes: close frees everything", rec.live() == 0 && rec.livePipelines() == 0);
         }
         System.out.println("# packfull " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);

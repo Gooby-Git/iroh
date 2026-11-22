@@ -244,6 +244,7 @@ final class PackRuntimeImpl {
         inputs.update(FrameHooks.context(), st.getWidth(), st.getHeight(), copies, clears, sunPath);
         if (full) {
             inputs.geometry.clear();
+            inputs.geometryVersion++; // the list object is reused: tell the executor its content changed
             var c = FrameHooks.context().cameraPos();
             boolean shadow = DebugSwitches.on(PackSwitches.FULL_SHADOW);
             // P3-7 C: reuse last frame's shadow maps while the shadow camera barely moved (bounded staleness)
