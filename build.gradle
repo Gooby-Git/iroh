@@ -427,3 +427,74 @@ tasks.register('fsrReplay', JavaExec) {
 		logger.lifecycle("fsrReplay: lavapipe ICD ${icd}")
 	}
 }
+
+// P6-0 NRD (NVIDIA RTX SDKs licence: built on request, NEVER bundled in the jar unless -PbundleNv=true): ./gradlew nrdNative
+tasks.register('nrdNative', Exec) {
+	group = 'build'
+	description = 'Build libiroh_nrd (NVIDIA NRD v4.18.0 stock + shim) with iroh-native/build-nrd.sh'
+	workingDir = projectDir
+	environment 'IROH_JAVA_HOME', System.getenv('IROH_JAVA_HOME') ?: '/usr/lib/jvm/java-21-openjdk'
+	def a = ['./iroh-native/build-nrd.sh']
+	if (project.hasProperty('nrdArgs')) a.addAll(project.property('nrdArgs').toString().split(' ') as List)
+	commandLine a
+}
+def nrdLib = file(project.findProperty('nrdLib') ?: 'iroh-native/natives-nv/linux-x64/libiroh_nrd.so')
+if (project.findProperty('bundleNv') == 'true') jar { from(file('iroh-native/natives-nv')) { into 'natives'; exclude '*.txt' } }
+
+// P6-0 pure denoiser parts (+ library cross-checks when libiroh_nrd is built): ./gradlew denoiseTest ; last line "# denoise PASS n/n"
+tasks.register('denoiseTest', JavaExec) {
+	group = 'verification'
+	description = 'Denoiser interface parts; NRD instance description checks when the library is present'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.DenoiseTest'
+	jvmArgs '-ea'
+	doFirst { if (nrdLib.exists()) systemProperty 'iroh.nrd.lib', nrdLib.absolutePath }
+}
+
+// P6-0 NRD + the temporal fallback on lavapipe (CPU Vulkan; never the GPU). ./gradlew nrdReplay [-Pgolden=check|update] [-Pdump=dir] [-PnrdLib=path]
+tasks.register('nrdReplay', JavaExec) {
+	group = 'verification'
+	description = 'NRD RELAX/REBLUR/SIGMA through the JNI shim on lavapipe against a synthetic noisy scene'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.NrdReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['golden', 'dump'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	args a
+	doFirst {
+		if (!nrdLib.exists()) throw new GradleException("${nrdLib} missing: run ./gradlew nrdNative")
+		systemProperty 'iroh.nrd.lib', nrdLib.absolutePath
+		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
+		def icd = null
+		def ld = null
+		if (sys != null) {
+			icd = sys
+		} else {
+			def lvp = null
+			new File('/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64').eachDirRecurse { d ->
+				def f = new File(d, 'libvulkan_lvp.so')
+				if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
+			}
+			if (lvp == null) throw new GradleException('no lavapipe found: install vulkan-swrast (owner) or a flatpak GL runtime')
+			def dir = file("${buildDir}/lvp/lib")
+			dir.mkdirs()
+			lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
+				def link = new File(dir, src.name)
+				link.delete()
+				java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
+			}
+			def json = file("${buildDir}/lvp/lvp_icd.json")
+			json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
+			icd = json.absolutePath
+			ld = dir.absolutePath
+		}
+		environment 'VK_DRIVER_FILES', icd
+		environment 'VK_ICD_FILENAMES', icd
+		environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
+		if (ld != null) environment 'LD_LIBRARY_PATH', ld
+		logger.lifecycle("nrdReplay: lavapipe ICD ${icd}")
+	}
+}
