@@ -198,7 +198,9 @@ public final class IrohGpuDevice extends VkGpuDevice {
     public void endMainRendering() {
         inRendering = false; // the main pass goes on
         Renderer.getInstance().invalidateBoundPipeline();
-        reapplyIrohState(); // INT-3: Iroh's own viewport / scissor / depth bias, not the mod's full-target ones
+        // INT-3: Iroh's own viewport / scissor, not the mod's full-target ones. int-2b: depth bias / line width are
+        // stale after the mod's pipeline (invalidateBoundPipeline) and set by Iroh's next bind that declares them
+        dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
     }
 
     @Override
