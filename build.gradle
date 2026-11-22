@@ -398,3 +398,16 @@ tasks.register('customEvalTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.packtest.CustomEvalTest'
 	workingDir = projectDir
 }
+
+// P3-3 frame executor on a recording fake device (no Vulkan): order, halves, bindings, mips, clears, barriers vs the plan.
+// ./gradlew packExecTest [-Ppack=<pack>] ; last line "# packexec PASS n/n"
+tasks.register('packExecTest', JavaExec) {
+	group = 'verification'
+	description = 'Run the pack frame executor against a recording fake device and validate it against the plan'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackExecTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	if (project.hasProperty('pack')) args "--pack=${project.property('pack')}"
+}

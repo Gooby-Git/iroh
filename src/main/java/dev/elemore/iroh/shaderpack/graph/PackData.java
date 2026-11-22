@@ -109,6 +109,8 @@ public final class PackData {
 
     public final String name;
     public final JsonObject pack;
+    /** the dump folder (build/packHarness/<pack>/) */
+    public Path dump;
     public final Map<String, Unit> units = new TreeMap<>();
 
     private PackData(String name, JsonObject pack) {
@@ -119,6 +121,7 @@ public final class PackData {
     public static PackData load(Path dump) throws IOException {
         JsonObject pack = JsonParser.parseString(Files.readString(dump.resolve("pack.json"), StandardCharsets.UTF_8)).getAsJsonObject();
         PackData d = new PackData(pack.get("pack").getAsString(), pack);
+        d.dump = dump;
         Path progs = dump.resolve("programs");
         if (Files.isDirectory(progs)) {
             try (Stream<Path> s = Files.walk(progs)) {
@@ -129,6 +132,17 @@ public final class PackData {
             }
         }
         return d;
+    }
+
+    /** SPIR-V of one stage of a unit (vertex, fragment, compute), from the dump */
+    public byte[] spirv(Unit u, String stage) throws IOException {
+        String rel = u.id.contains("/") ? u.id : "_root/" + u.id;
+        return Files.readAllBytes(dump.resolve("spirv").resolve(rel + "." + stage + ".spv"));
+    }
+
+    /** where the pack itself lies (pack.json "origin"), for custom texture files */
+    public String origin() {
+        return pack.get("origin").getAsString();
     }
 
     public JsonObject properties() {
