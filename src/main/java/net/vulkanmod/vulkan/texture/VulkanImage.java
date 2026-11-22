@@ -424,7 +424,7 @@ public class VulkanImage {
         // Iroh (G1 fix): order + state invalidation in PassResume (tested offline by passResumeTest)
         dev.elemore.iroh.render.PassResume.run(new dev.elemore.iroh.render.PassResume.Hooks() {
             public boolean passBound() {
-                return boundPass[0] != null;
+                return renderer.getBoundRenderPass() != null;
             }
 
             public void endPass() {
@@ -440,19 +440,11 @@ public class VulkanImage {
                 }
             }
 
-            public void invalidateBoundState() {
-                renderer.invalidateBoundState();
+            public void reapplyViewportAndScissor() {
+                // Framebuffer.beginRenderPass reset viewport and scissor to full size
+                dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
             }
-
-            public void reapplyDynamicState() {
-                // depth bias / line width: legal outside a pass, and no pass begin sets them again
-                net.vulkanmod.vulkan.VRenderSystem.reapplyDepthBias();
-                if (renderer.getBoundRenderPass() != null)
-                    // Framebuffer.beginRenderPass reset viewport and scissor to full size
-                    dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
-                dev.elemore.iroh.glshim.GlState.reapplyDynamicState();
-            }
-        }, record);
+        }, renderer.cmdState(), record); // int-2b: Iroh's pipeline bound again, only the dynamic states it declares set
     }
 
     public void readOnlyLayout() {

@@ -78,9 +78,12 @@ public final class WorldPassTest {
                 public boolean passBound() { return bound; }
                 public void endPass() { endIrohPass(); }
                 public void resumePass() { resumeIrohPass(); }
-                public void invalidateBoundState() { FakeIroh.this.invalidateBoundState(); }
-                public void reapplyDynamicState() { FakeIroh.this.reapplyDynamicState(); }
-            }, r);
+                public void reapplyViewportAndScissor() { FakeIroh.this.invalidateBoundState(); FakeIroh.this.reapplyDynamicState(); }
+            }, new dev.elemore.iroh.render.CmdState(new dev.elemore.iroh.render.CmdState.Backend() {
+                public void bindPipeline(long h) {}
+                public void depthBias(float c, float s) {}
+                public void lineWidth(float w) {}
+            }), r); // int-2b: the dynamic-state rules themselves are tested by passResumeTest
         }
     }
 

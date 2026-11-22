@@ -64,12 +64,15 @@ public final class MainPassArbiter {
 
         /** begin Iroh's main pass (LOAD) on the active set */
         void resumeMain();
+
+        /** int-2b: the frame command buffer's bound pipeline + dynamic state (PassResume binds Iroh's pipeline again) */
+        CmdState cmdState();
     }
 
     /** O / P: end the bound pass (W first), record, resume, invalidate, re-apply */
     public static void runOutside(Hooks h, Runnable work) {
         h.closePackWorldPass();
-        PassResume.run(h, work);
+        PassResume.run(h, h.cmdState(), work);
     }
 
     /** J: make Iroh's main target the bound pass, or refuse. W yields first. */
