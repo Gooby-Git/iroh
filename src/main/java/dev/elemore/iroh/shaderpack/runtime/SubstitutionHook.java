@@ -84,6 +84,23 @@ public final class SubstitutionHook {
         }
     }
 
+    /**
+     * INT-3: DefaultMainPass.end with the world pass still live (WorldRenderEvents.END did not run): close its attachments,
+     * mark it failed (PackRuntimeImpl turns it off for the session at the next world frame) and take the hook bit down.
+     */
+    public static void frameEnded() {
+        WorldPass w = active;
+        if (w == null)
+            return;
+        try {
+            w.closeForForeign();
+        } finally {
+            w.failNow("the frame ended inside the world pass (WorldRenderEvents.END did not run)");
+            active = null;
+            Substitution.setBit(Substitution.WORLD, false);
+        }
+    }
+
     /** a render pass begin/end or an out-of-pass recording of Iroh's: close the world pass's attachments first */
     public static void closeForForeign() {
         WorldPass w = active;

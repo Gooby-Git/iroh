@@ -62,6 +62,26 @@ public final class GpuCore {
         return instance;
     }
 
+    /**
+     * INT-3: api 4.1 (card V-M3) can be withdrawn on its own (test seam {@code -Diroh.test.failInit=api41}, or a 4.1
+     * failure at install): IrohApi.apiMinor() then answers 0 and every 4.1 addition throws UnsupportedOperationException
+     * with the reason, so a mod that needs 4.1 (Vista's Vulkan renderer) keeps its fallback; api 4.0 stays.
+     */
+    private static volatile String api41Withdrawn;
+
+    public static void withdraw41(String why) {
+        api41Withdrawn = why;
+    }
+
+    public static boolean api41() {
+        return api41Withdrawn == null;
+    }
+
+    public static void require41(String what) {
+        String w = api41Withdrawn;
+        if (w != null) throw new UnsupportedOperationException("Iroh api 4.1 is withdrawn (" + w + "): " + what);
+    }
+
     public static synchronized GpuCore install(GpuDevice device) {
         instance = new GpuCore(device);
         return instance;
@@ -561,6 +581,14 @@ public final class GpuCore {
     private int outside;
 
     public void runOutsideMainPass(Runnable work) {
+        require41("runOutsideMainPass");
+        // INT-3 interaction matrix (MainPassArbiter): never inside an open beginRendering (the main join included)
+        if (inMain || passColor != null || passDepth != null)
+            throw new IllegalStateException("runOutsideMainPass inside an open beginRendering: endRendering first");
+        if (outside > 0) { // nested: already outside every pass
+            work.run();
+            return;
+        }
         device.runOutsideMainPass(() -> {
             outside++;
             try {
@@ -686,6 +714,7 @@ public final class GpuCore {
     // ================================================================================================ api 4.1 textures / main
 
     public GpuTexture externalTexture(String key) {
+        require41("Iroh textures");
         return externals.computeIfAbsent(key, Ext::new);
     }
 
@@ -697,6 +726,7 @@ public final class GpuCore {
     }
 
     public GpuTexture createTexture(String ownerId, String name, int w, int h, int levels, ByteBuffer texels, boolean linear) {
+        require41("IrohTextures.create");
         Owner o = owner(ownerId);
         if (w < 1 || h < 1 || w > 16384 || h > 16384 || levels < 1 || levels > 32 - Integer.numberOfLeadingZeros(Math.max(w, h)))
             throw new IllegalArgumentException("texture " + w + "x" + h + " with " + levels + " levels");
@@ -719,10 +749,12 @@ public final class GpuCore {
     }
 
     public RenderTargetHandle mainColor() {
+        require41("mainColor");
         return mainColor;
     }
 
     public RenderTargetHandle mainDepth() {
+        require41("mainDepth");
         return mainDepth;
     }
 
@@ -735,6 +767,7 @@ public final class GpuCore {
     }
 
     public void copyTarget(RenderTargetHandle src, RenderTargetHandle dst) {
+        require41("IrohTargets.copy");
         Target a = target(src), b = target(dst);
         if (a != b) fitPhase(b); // INT-3: the written side follows the phase (the source keeps its contents and size)
         if (a == b || a.format != b.format || a.width != b.width || a.height != b.height)
@@ -797,6 +830,7 @@ public final class GpuCore {
 
     /** GPU time of {@code pass} of {@code owner} from here to {@link #profileEnd}; nothing where timestamps are unsupported. */
     public void profileBegin(String ownerId, String pass) {
+        require41("IrohProfile");
         if (queriesFailed || device.timestampCapacity() == 0) return;
         if (!queriesReset) {
             if (!device.resetTimestamps()) {

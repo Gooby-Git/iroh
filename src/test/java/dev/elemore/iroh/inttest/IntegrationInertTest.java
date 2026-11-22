@@ -53,6 +53,9 @@ public final class IntegrationInertTest {
         PINNED.put("Renderer.beginRendering", "Substitution.HOOK x1 (volatile int, bit WORLD; INT-3: P3-11)");
         PINNED.put("Framebuffer.beginRenderPass", "");
         PINNED.put("DefaultMainPass.begin", "");
+        PINNED.put("DefaultMainPass.end", "Substitution.HOOK x1 (volatile int; WORLD is a constant): a world pass still live at frame end turns off (INT-3)");
+        PINNED.put("IrohDrawIdsM.* / IrohBlockEntityIdsM.*", "Substitution.HOOK x1 at HEAD and x1 at RETURN per entity / block entity render (volatile int; INT-3: P3-11 draw ids)");
+        PINNED.put("IrohWeatherContextM.*", "Substitution.HOOK x1 at renderSnowAndRain HEAD, a plain static store at RETURN (INT-3: P3-11)");
         PINNED.put("DefaultMainPass.rebindMainTarget", "");
         PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog), PackRuntime.onTranslucentTerrain x1 (only inside the pack-terrain branch; first statement !active; INT-3: P3-11)");
         PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1 (plain static)");
@@ -174,7 +177,10 @@ public final class IntegrationInertTest {
         expect.put("Framebuffer.beginRenderPass", "{}");
         expect.put("SceneTarget.getFramebufferId", "{}");
         expect.put("DefaultMainPass.begin", "{}");
-        expect.put("DefaultMainPass.end", "{}");
+        expect.put("DefaultMainPass.end", "{Substitution.HOOK=1, Substitution.WORLD=1}"); // INT-3: W live at frame end
+        expect.put("IrohDrawIdsM.*", "{Substitution.HOOK=2, Substitution.WORLD=2}"); // INT-3: P3-11 per entity
+        expect.put("IrohBlockEntityIdsM.*", "{Substitution.HOOK=2, Substitution.WORLD=2}"); // INT-3: P3-11 per block entity
+        expect.put("IrohWeatherContextM.*", "{Substitution.HOOK=1, Substitution.WORLD=1}"); // INT-3: P3-11 weather HEAD
         expect.put("DefaultMainPass.rebindMainTarget", "{}");
         expect.put("Pipeline.needsUpdate", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.mipBias=1}");
         expect.put("Pipeline.updateDescriptorSet", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.mipBias=1}");

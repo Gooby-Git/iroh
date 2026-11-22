@@ -374,8 +374,17 @@ final class PackRuntimeImpl {
     /** WorldRenderEvents.START: segment 0 (clears + inputs) and the hooks go live; false = not a world-pass frame */
     boolean worldBegin() {
         worldFrame = false;
+        if (world != null && world.failure() != null) // INT-3: failed outside worldEndFrame (e.g. frame ended inside it)
+            failWorld(world.failure());
         if (!worldWanted())
             return false;
+        // INT-3 interaction matrix rule 1: never together with render scale's world phase (pack wins; defensive)
+        String refuse = dev.elemore.iroh.render.MainPassArbiter.worldPassRefusal(
+                net.vulkanmod.vulkan.Renderer.getInstance().getMainPass() instanceof net.vulkanmod.vulkan.pass.DefaultMainPass d && d.inWorldPhase());
+        if (refuse != null) {
+            failWorld(refuse);
+            return false;
+        }
         String f = setup(true, true);
         if (f == null)
             return false;
@@ -391,9 +400,15 @@ final class PackRuntimeImpl {
         }
         boolean subst = DebugSwitches.on(PackSwitches.WORLD_SUBSTITUTE);
         if (world == null || world.executor() != ex || subst != worldSubst) {
-            if (worldGame == null)
-                worldGame = new WorldPassGame(gpu);
-            world = new WorldPass(ex, gpu, worldGame, worldGame, SubstitutionHook.rasterMods(), subst);
+            try {
+                dev.elemore.iroh.diag.FeatureFailures.inject("worldPass"); // INT-3 test seam
+                if (worldGame == null)
+                    worldGame = new WorldPassGame(gpu);
+                world = new WorldPass(ex, gpu, worldGame, worldGame, SubstitutionHook.rasterMods(), subst);
+            } catch (RuntimeException e) {
+                failWorld(e.getClass().getSimpleName() + ": " + e.getMessage());
+                return false;
+            }
             worldSubst = subst;
         }
         ex.rasterOver = hColour;
@@ -500,7 +515,9 @@ final class PackRuntimeImpl {
         worldFrame = false;
         SubstitutionHook.active = null;
         Substitution.setBit(Substitution.WORLD, false);
-        log("world pass OFF for this session, terrain-only full mode continues: " + why);
+        // INT-3: ONE line in the feature-failure format (grep "Iroh: .* failed (" finds it; listed in failures{})
+        dev.elemore.iroh.diag.FeatureFailures.record("worldPass", new IllegalStateException(why),
+                "world pass OFF for this session, terrain-only full mode continues");
     }
 
     // reused per frame (P3-6: no per-frame maps in the hook)

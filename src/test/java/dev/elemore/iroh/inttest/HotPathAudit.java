@@ -21,6 +21,9 @@ public final class HotPathAudit {
     static {
         HOT.put("net/vulkanmod/vulkan/Renderer.java", new String[]{"bindGraphicsPipeline", "preInitFrame", "preInitFrame0", "beginFrame", "beginFrame0", "endFrame", "beginRendering", "endRenderPass", "beginRenderPass", "uploadAndBindUBOs"});
         HOT.put("net/vulkanmod/vulkan/texture/VulkanImage.java", new String[]{"endPassRunResume"}); // INT-3: P3-11 close hook
+        HOT.put("net/vulkanmod/mixin/render/IrohDrawIdsM.java", new String[]{"*"});            // INT-3: P3-11, per entity
+        HOT.put("net/vulkanmod/mixin/render/IrohBlockEntityIdsM.java", new String[]{"*"});     // INT-3: P3-11, per block entity
+        HOT.put("net/vulkanmod/mixin/render/IrohWeatherContextM.java", new String[]{"*"});     // INT-3: P3-11, per frame
         HOT.put("net/vulkanmod/vulkan/framebuffer/Framebuffer.java", new String[]{"beginRenderPass"});
         HOT.put("net/vulkanmod/vulkan/framebuffer/SceneTarget.java", new String[]{"getFramebufferId"});
         HOT.put("net/vulkanmod/vulkan/pass/DefaultMainPass.java", new String[]{"begin", "end", "rebindMainTarget"});

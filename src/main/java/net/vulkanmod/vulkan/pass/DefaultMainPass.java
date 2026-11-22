@@ -45,6 +45,10 @@ import static org.lwjgl.vulkan.VK10.*;
  *       {@link #cleanUp} force the display set first; they run between frames only.</li>
  *   <li><b>{@link #end} closes whatever is open</b> (world phase, and the P3-11 pass if it adds one) before the
  *       swapchain copy, so a phase left open by an exception never reaches present.</li>
+ *   <li><b>INT-3:</b> P3-11's world pass did NOT become a nested pair here: it binds pack attachments (gbuffers), never
+ *       the main target, and yields to every foreign recording through the Substitution.HOOK reads in Renderer.beginRendering /
+ *       endRenderPass and VulkanImage.endPassRunResume. Who may be active together and who wins (render scale, world
+ *       pass, api 4.1 main join, runOutsideMainPass, PassResume): {@code dev.elemore.iroh.render.MainPassArbiter}.</li>
  *   <li><b>Every phase change notifies api 4</b> ({@code GpuLifecycle.worldPhase}): scaled mod targets follow the
  *       phase they are drawn in (knowledge/api.md).</li>
  * </ol>
@@ -140,6 +144,10 @@ public class DefaultMainPass implements MainPass {
 
     @Override
     public void end(VkCommandBuffer commandBuffer) {
+        // INT-3 (contract rule 4, MainPassArbiter rule 7): the pack world pass still live here means WorldRenderEvents.END
+        // did not run (renderLevel threw): close it and turn it off for the session, never carry it into the next frame
+        if ((dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK & dev.elemore.iroh.shaderpack.runtime.Substitution.WORLD) != 0)
+            dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.frameEnded();
         // P4-1a safety: a world phase left open (renderLevel threw, a mod skipped the GUI) is closed before the copy
         if (this.sceneTarget.isWorldActive())
             endWorld();

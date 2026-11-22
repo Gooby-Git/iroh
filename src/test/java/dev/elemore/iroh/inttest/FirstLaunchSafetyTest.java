@@ -141,6 +141,43 @@ public final class FirstLaunchSafetyTest {
         check("pack failure: path off, raster terrain kept, one reason (" + r[0] + ")", r[0] != null && r[0].startsWith("error:")
                 && !PackRuntime.active() && !net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive && FeatureFailures.reason("pack") != null);
 
+        // ---- INT-3: pack world pass (P3-11): forced create failure -> terrain-only full mode, ONE feature-failure line
+        String pri = Files.readString(Path.of("src/main/java/dev/elemore/iroh/shaderpack/runtime/PackRuntimeImpl.java"));
+        String wb = HotPathAudit.bodies(pri, "worldBegin").get(0), fw = HotPathAudit.bodies(pri, "failWorld").get(0);
+        int wSeam = wb.indexOf("FeatureFailures.inject(\"worldPass\")"), wNew = wb.indexOf("new WorldPass("), wCatch = wb.indexOf("failWorld(e.getClass()");
+        check("worldPass: seam, create and catch in order; a failure returns raster for the frame",
+                wSeam >= 0 && wSeam < wNew && wNew < wCatch && wb.indexOf("return false", wCatch) > wCatch);
+        check("worldPass: every world-pass failure is ONE FeatureFailures line, once per session (worldFailed guard)",
+                fw.contains("FeatureFailures.record(\"worldPass\"") && fw.contains("worldFailed != null") && !fw.contains("log("));
+        FeatureFailures.resetForTest("worldPass");
+        boolean wThrows = false;
+        try {
+            FeatureFailures.inject("worldPass");
+        } catch (IllegalStateException e) {
+            wThrows = true;
+        }
+        check("worldPass seam fires when listed", wThrows);
+
+        // ---- INT-3: api 4.1 withdrawn on its own (seam api41): apiMinor 0, 4.1 calls refused with the reason, 4.0 stays
+        FeatureFailures.resetForTest("api41");
+        GpuLifecycle.resetForTest();
+        GpuLifecycle.install(2, 800, 600);
+        check("api41 forced failure: apiMinor 0, one reason, api 4.0 still offered (lazy)", dev.elemore.iroh.api.IrohApi.apiMinor() == 0
+                && FeatureFailures.reason("api41") != null && FeatureFailures.snapshot().size() == 1 && GpuLifecycle.available());
+        String m41 = "";
+        try {
+            dev.elemore.iroh.gpu.GpuCore.require41("mainColor"); // the first statement of every 4.1 entry in GpuCore
+        } catch (UnsupportedOperationException e) {
+            m41 = e.getMessage();
+        }
+        check("api41 withdrawn: a 4.1 call says why (" + m41 + ")", m41.contains("api 4.1 is withdrawn"));
+        check("api41 withdrawn: the self-check line says so", StartupReport.line().contains("api41=withdrawn"));
+        FeatureFailures.resetForTest("");
+        GpuLifecycle.resetForTest();
+        GpuLifecycle.install(2, 800, 600);
+        check("api41 default: apiMinor 1, self-check api41=on", dev.elemore.iroh.api.IrohApi.apiMinor() == 1 && StartupReport.line().contains("api41=on"));
+        GpuLifecycle.resetForTest();
+
         // ---- device features: forced failure at device creation
         FeatureFailures.resetForTest("deviceCaps");
         check("deviceCaps forced failure: applySafely never throws", noThrow(() -> DeviceCaps.applySafely(null, null, null, null, null, null, null)));

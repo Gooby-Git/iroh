@@ -870,6 +870,17 @@ tasks.register('substitutionTest', JavaExec) {
 	workingDir = projectDir
 }
 
+// INT-3: interaction matrix of render scale / pack world pass / api 4.1 main join + runOutsideMainPass / PassResume on fakes.
+// ./gradlew interactionTest ; last line "# interaction PASS n/n"
+tasks.register('interactionTest', JavaExec) {
+	group = 'verification'
+	description = 'Who may end/resume/redirect the main pass together, who wins (MainPassArbiter, GpuCore on the recording device)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.apitest.InteractionTest'
+	workingDir = projectDir
+}
+
 // P3-11: the (S) world pass frame order + decision path on the fake device. ./gradlew worldPassTest ; last line "# worldpass PASS n/n"
 tasks.register('worldPassTest', JavaExec) {
 	group = 'verification'

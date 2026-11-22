@@ -30,6 +30,12 @@ public final class GpuLifecycle {
         failure = null;
         ready = true;
         GpuCore.setLazyInstaller(GpuLifecycle::createNow);
+        try { // INT-3: api 4.1 can fail on its own (seam api41): minor version 0, api 4.0 stays
+            FeatureFailures.inject("api41");
+            GpuCore.withdraw41(null);
+        } catch (RuntimeException e) {
+            GpuCore.withdraw41(FeatureFailures.record("api41", e, "api 4.1 withdrawn (apiMinor 0): mods needing 4.1 keep their fallback, api 4.0 stays"));
+        }
     }
 
     /** the lazy create (GpuCore.get, render thread, once) */
@@ -133,6 +139,7 @@ public final class GpuLifecycle {
     /** tests only: back to "never installed" */
     public static void resetForTest() {
         GpuCore.setLazyInstaller(null);
+        GpuCore.withdraw41(null);
         device = null;
         ready = false;
         failure = null;

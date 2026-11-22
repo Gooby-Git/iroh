@@ -10,7 +10,8 @@ import java.util.TreeMap;
  * where each optional native library would load from (nothing is loaded for the report), and any feature that already
  * failed. Reading it in the first in-game log answers "is this jar inert?" without a second run.
  * Line format (one line, sections separated by " | "):
- * {@code Iroh self-check: inert=<yes|NO> | switches{k=v,..} | props{k=v,..} | device{..} | api 4.0 api4=<state> | natives{fsr=..,nrd=..} | failures{..}}
+ * {@code Iroh self-check: inert=<yes|NO> | switches{k=v,..} | props{k=v,..} | device{..} | api 4.1 api4=<state> api41=<on|withdrawn> | natives{fsr=..,nrd=..} | failures{..}}
+ * (INT-3: switches include iroh.pack.world.split / iroh.pack.world.substitute from the pack registry.)
  */
 public final class StartupReport {
     private StartupReport() {}
@@ -62,12 +63,15 @@ public final class StartupReport {
                 defaults.put(e.getKey(), e.getValue().defaultValue());
             }
             // read-only values published by the renderer are not switches a user set
-            switches.keySet().removeIf(k -> k.equals("iroh.pack.gpuTimes"));
+            switches.keySet().removeIf(k -> k.equals("iroh.pack.gpuTimes") // INT-3: + the P3-10/P3-11 report keys
+                    || k.equals(dev.elemore.iroh.shaderpack.runtime.PackSwitches.WORLD_REPORT)
+                    || k.equals(dev.elemore.iroh.shaderpack.runtime.PackSwitches.SUBST_REPORT));
             Map<String, String> natives = new TreeMap<>();
             natives.put("fsr", dev.elemore.iroh.upscale.fsr.NativeLoader.locate());
             natives.put("nrd", dev.elemore.iroh.rt.denoise.nrd.NrdLoader.locate());
             String api = "api " + dev.elemore.iroh.api.IrohApi.API_VERSION + "." + dev.elemore.iroh.api.IrohApi.API_MINOR
                     + " api4=" + dev.elemore.iroh.gpu.game.GpuLifecycle.state()
+                    + " api41=" + (dev.elemore.iroh.gpu.GpuCore.api41() ? "on" : "withdrawn")
                     + " slowFrames=" + (dev.elemore.iroh.diag.SlowFrames.ON ? "on" : "off")
                     + " upscaleDeviceFeatures=" + (dev.elemore.iroh.temporal.DeviceCaps.requested ? "requested" : "not requested");
             return build(switches, defaults, otherIrohProps(switches), net.vulkanmod.vulkan.device.DeviceManager.enabledFeatures,

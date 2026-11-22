@@ -57,7 +57,7 @@ public final class IrohApi {
 
     /** The minor api version of the running Iroh (api 3.1+; absent before, so look it up reflectively). Any thread. */
     public static int apiMinor() {
-        return API_MINOR;
+        return dev.elemore.iroh.gpu.GpuCore.api41() ? API_MINOR : 0; // INT-3: 0 when api 4.1 was withdrawn (one log line)
     }
 
     /** Iroh's mod version string, for logs. Any thread. */

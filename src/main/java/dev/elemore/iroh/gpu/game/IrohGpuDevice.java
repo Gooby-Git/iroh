@@ -69,8 +69,35 @@ public final class IrohGpuDevice extends VkGpuDevice {
         return cap > 0 ? cap : 2L << 30;
     }
 
+    /** INT-3 (MainPassArbiter rule 2): the shader pack's world pass yields before any api-4 recording; one volatile read when off */
+    private static void closePackWorldPass() {
+        if ((dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK & dev.elemore.iroh.shaderpack.runtime.Substitution.WORLD) != 0)
+            dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.closeForForeign();
+    }
+
+    /** INT-3: the renderer as the arbiter sees it (main join) */
+    private static final dev.elemore.iroh.render.MainPassArbiter.Hooks GAME = new dev.elemore.iroh.render.MainPassArbiter.Hooks() {
+        public void closePackWorldPass() { IrohGpuDevice.closePackWorldPass(); }
+        public boolean mainTargetBound() { return Renderer.getInstance().getMainPass().isMainTargetBound(); }
+        public void resumeMain() { Renderer.getInstance().getMainPass().rebindMainTarget(); }
+        public boolean passBound() { return Renderer.getInstance().getBoundRenderPass() != null; }
+        public void endPass() { Renderer.getInstance().endRenderPass(); }
+        public void resumePass() { resumeMain(); }
+        public void invalidateBoundState() { Renderer.getInstance().invalidateBoundState(); }
+        public void reapplyDynamicState() { reapplyIrohState(); }
+    };
+
+    /** Iroh's dynamic state after a foreign recording (same set as VulkanImage.endPassRunResume) */
+    private static void reapplyIrohState() {
+        net.vulkanmod.vulkan.VRenderSystem.reapplyDepthBias();
+        if (Renderer.getInstance().getBoundRenderPass() != null)
+            dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+        dev.elemore.iroh.glshim.GlState.reapplyDynamicState();
+    }
+
     @Override
     public boolean canRecordOutsideMainPass() {
+        closePackWorldPass();
         return !inRendering && Renderer.getInstance().getBoundRenderPass() == null && Renderer.recordingCommandBuffer("api4") != null;
     }
 
@@ -146,13 +173,25 @@ public final class IrohGpuDevice extends VkGpuDevice {
     @Override public int mainColorFormat() { return net.vulkanmod.vulkan.framebuffer.SceneTarget.COLOR_FORMAT; }
     @Override public int mainDepthFormat() { return Vulkan.getDefaultDepthFormat(); }
 
-    /** Joins the bound main pass (world stages): the pipelines' render pass has the main formats, so it is compatible. */
+    /**
+     * Joins the bound main pass (world stages): the pipelines' render pass has the main formats, so it is compatible.
+     * INT-3: through MainPassArbiter.prepareJoin (the pack world pass yields; a mod framebuffer bound = refused); the
+     * size is the main target's NOW (DefaultMainPass MAIN TARGET CONTRACT: render size inside the render-scale world phase).
+     */
     @Override
     public void beginMainRendering() {
-        if (Renderer.getInstance().getBoundRenderPass() == null) Renderer.getInstance().getMainPass().rebindMainTarget();
-        var mp = Renderer.getInstance().getMainPass();
-        var t = mp.getDepthAttachment();
-        int w = t != null ? t.getVulkanImage().width : 1, h = t != null ? t.getVulkanImage().height : 1;
+        dev.elemore.iroh.render.MainPassArbiter.prepareJoin(GAME);
+        int w = 1, h = 1;
+        if (Renderer.getInstance().getMainPass() instanceof net.vulkanmod.vulkan.pass.DefaultMainPass dmp) {
+            w = dmp.mainTarget().getWidth();
+            h = dmp.mainTarget().getHeight();
+        } else {
+            var t = Renderer.getInstance().getMainPass().getDepthAttachment();
+            if (t != null) {
+                w = t.getVulkanImage().width;
+                h = t.getVulkanImage().height;
+            }
+        }
         try (MemoryStack s = stackPush()) {
             vkCmdSetViewport(cmd(), 0, VkViewport.calloc(1, s).x(0).y(0).width(w).height(h).minDepth(0).maxDepth(1));
             VkRect2D.Buffer sc = VkRect2D.calloc(1, s);
@@ -164,24 +203,23 @@ public final class IrohGpuDevice extends VkGpuDevice {
 
     @Override
     public void endMainRendering() {
-        inRendering = false; // the main pass goes on (viewport left full-window, as Iroh's world stages have it)
+        inRendering = false; // the main pass goes on
         Renderer.getInstance().invalidateBoundPipeline();
+        reapplyIrohState(); // INT-3: Iroh's own viewport / scissor / depth bias, not the mod's full-target ones
     }
 
     @Override
     public void runOutsideMainPass(Runnable work) {
-        VkCommandBuffer c = cmd();
-        boolean was = Renderer.getInstance().getBoundRenderPass() != null;
-        if (was) Renderer.getInstance().endRenderPass(c);
-        try {
-            work.run();
-        } finally {
-            if (was) Renderer.getInstance().getMainPass().rebindMainTarget();
-        }
+        cmd(); // throws when no frame is recording
+        // INT-3: ONE mechanism with Iroh's own out-of-pass recordings: closes the pack world pass first, ends the bound
+        // pass, runs, resumes THAT pass (main target on the active set, or a mod framebuffer), drops Iroh's bound-state
+        // cache and re-applies dynamic state (PassResume order, passResumeTest / interactionTest)
+        VulkanImage.endPassRunResume(work);
     }
 
     @Override
     protected VkCommandBuffer cmd() {
+        closePackWorldPass(); // INT-3: never record inside the pack world pass's attachments
         VkCommandBuffer c = Renderer.recordingCommandBuffer("api4");
         if (c == null) throw new IllegalStateException("api 4: no frame is recording (call from a frame stage)");
         return c;
