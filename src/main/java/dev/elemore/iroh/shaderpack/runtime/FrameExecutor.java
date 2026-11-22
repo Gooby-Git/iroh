@@ -1169,6 +1169,13 @@ public final class FrameExecutor {
         gPer.put("iroh_ModelViewMatrixInverse", gViewInv);
         gPer.put("iroh_ProjectionMatrix", proj);
         gPer.put("iroh_ProjectionMatrixInverse", gProjInv);
+        // P3-10: the core-profile names (Iris "implicit uniforms": modelViewMatrix, projectionMatrix, normalMatrix) used
+        // by core-style programs such as Navidson's gbuffers_line (vaPosition/vaNormal)
+        gPer.put("modelViewMatrix", view);
+        gPer.put("modelViewMatrixInverse", gViewInv);
+        gPer.put("projectionMatrix", proj);
+        gPer.put("projectionMatrixInverse", gProjInv);
+        gPer.put("normalMatrix", gNormal);
         gPer.put("iroh_ModelViewProjectionMatrix", gMvp);
         gPer.put("iroh_NormalMatrix", gNormal);
         gPer.put("iroh_TextureMatrix", LIGHTMAP_TEXTURE_MATRICES);
@@ -1191,9 +1198,15 @@ public final class FrameExecutor {
             gDecode[2] = (wideV ? 4 : 0) + o[1];
             gDecode[3] = (wideV ? 4 : 0) + o[2];
             gPer.put("chunkOffset", o);
+            // P3-10 fix: gl_TextureMatrix[0] scales uv0 only for the wide terrain vertex (x32768 grid read as UNORM16);
+            // vanilla formats carry float uvs: identity
+            gPer.put("iroh_TextureMatrix", wideV ? LIGHTMAP_TEXTURE_MATRICES : VANILLA_TEXTURE_MATRICES);
             gStage[0] = renderStage(g.geometryClass(), shadow);
             boolean viewSpace = g.geometryClass().startsWith("hand");
             if (viewSpace) { // the hand is drawn in view space (vanilla: its own model-view, identity camera rotation)
+                gPer.put("modelViewMatrix", IDENTITY);
+                gPer.put("modelViewMatrixInverse", IDENTITY);
+                gPer.put("normalMatrix", NORMAL_IDENTITY);
                 gPer.put("iroh_ModelViewMatrix", IDENTITY);
                 gPer.put("iroh_ModelViewMatrixInverse", IDENTITY);
                 gPer.put("iroh_ModelViewProjectionMatrix", proj);
@@ -1209,6 +1222,9 @@ public final class FrameExecutor {
                     gPer.put(k, bv != null ? bv : k.equals("entityId") || k.equals("blockEntityId") ? MINUS_ONE : ZERO1);
                 }
             if (viewSpace) {
+                gPer.put("modelViewMatrix", view);
+                gPer.put("modelViewMatrixInverse", gViewInv);
+                gPer.put("normalMatrix", gNormal);
                 gPer.put("iroh_ModelViewMatrix", view);
                 gPer.put("iroh_ModelViewMatrixInverse", gViewInv);
                 gPer.put("iroh_ModelViewProjectionMatrix", gMvp);
@@ -1256,6 +1272,10 @@ public final class FrameExecutor {
     /** gl_TextureMatrix[0] identity, [1] the lightmap matrix (0..240 raw light -> texel centres of the 16x16 lightmap) */
     static final double[] LIGHTMAP_TEXTURE_MATRICES = {dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.UV0_TO_UNIT, 0, 0, 0,
             0, dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.UV0_TO_UNIT, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+            1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 8 / 256.0, 8 / 256.0, 8 / 256.0, 1};
+
+    /** gl_TextureMatrix[0] identity (float uvs), [1] the lightmap matrix */
+    static final double[] VANILLA_TEXTURE_MATRICES = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
             1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 8 / 256.0, 8 / 256.0, 8 / 256.0, 1};
 
     /** Iris renderStage constants (MC_RENDER_STAGE_*) for the classes Iroh draws; 0 = none */
