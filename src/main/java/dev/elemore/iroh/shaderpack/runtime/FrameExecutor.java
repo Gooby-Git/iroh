@@ -310,8 +310,16 @@ public final class FrameExecutor {
                 continue;
             }
             switch (p.kind) {
-                case "fullscreen" -> fullscreen(p, in);
-                case "compute" -> compute(p, in);
+                case "fullscreen" -> {
+                    gpu.timeBegin(p.id);
+                    fullscreen(p, in);
+                    gpu.timeEnd(p.id);
+                }
+                case "compute" -> {
+                    gpu.timeBegin(p.id);
+                    compute(p, in);
+                    gpu.timeEnd(p.id);
+                }
                 case "geometry" -> trace.add("skip " + p.id + " (geometry: needs the game)");
                 case "capture" -> trace.add("skip " + p.id + " (depth capture: supplied)");
                 case "flip" -> trace.add("flip " + p.id + " " + p.flipsAfter + " (frozen in the plan)");

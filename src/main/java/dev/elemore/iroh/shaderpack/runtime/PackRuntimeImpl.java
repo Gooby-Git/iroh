@@ -128,6 +128,8 @@ final class PackRuntimeImpl {
         }
         if (gpu == null) {
             gpu = new IrohVkBackend();
+            IrohVkBackend g = gpu;
+            dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = () -> g.times.last();
             lc = new PackLifecycle(gpu, (name, bytes) -> true); // MemoryGuard is asked per image inside IrohVkBackend
             lc.enable(loaded.data(), loaded.plan());
         }
@@ -228,6 +230,7 @@ final class PackRuntimeImpl {
             lc.disable();
         if (gpu != null)
             gpu.close();
+        dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = null;
         gpu = null;
         lc = null;
         lastFolder = null;

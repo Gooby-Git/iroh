@@ -516,3 +516,13 @@ tasks.register('imageTracePackTest', JavaExec) {
 	jvmArgs '-Diroh.imageTrace=pack:'
 	workingDir = projectDir
 }
+
+// G1 item 4: per-pass GPU times of the pack path. ./gradlew packGpuTimesTest
+tasks.register('packGpuTimesTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack per-pass GPU time accounting'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackGpuTimesTest'
+	workingDir = projectDir
+}

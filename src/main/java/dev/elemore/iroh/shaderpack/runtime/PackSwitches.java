@@ -18,6 +18,7 @@ public final class PackSwitches {
     public static final String PRESENT = "iroh.pack.present";
     public static final String SKIP = "iroh.pack.skip";
     public static final String LOG = "iroh.pack.log";
+    public static final String GPU_TIMES = "iroh.pack.gpuTimes";
 
     private static volatile boolean registered;
 
@@ -46,6 +47,8 @@ public final class PackSwitches {
             DebugSwitches.register(new Switch(SKIP, "", "comma-separated pass ids not executed (bisecting), e.g. composite6,composite7",
                     null, v -> "ok"));
             DebugSwitches.register(new Switch(LOG, "off", "one line per pack frame event (rebuilds, failures)", DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(GPU_TIMES, "no samples yet", "READ-ONLY: per-pass GPU ms/frame of the pack path, 2 s average (IrohDebug.get)",
+                    v -> "read-only (published by the renderer)", null));
             registered = true;
         }
     }

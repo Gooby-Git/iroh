@@ -51,9 +51,71 @@ public final class IrohVkBackend extends VkPackBackend {
 
     private final long[] pools;
 
+    // per-pass GPU timestamps (G1 item 4): one query pool, MAXQ per frame slot, read when the slot comes round again
+    private static final int MAXQ = 128;
+    private long queryPool;
+    private double periodNs;
+    private final java.util.List<java.util.List<String>> slotNames = new java.util.ArrayList<>();
+    private int slot = -1;
+    public final PackGpuTimes times = new PackGpuTimes();
+    private long lastRoll = System.nanoTime();
+
     public IrohVkBackend() {
         pools = new long[Renderer.getFramesNum()];
         initQuad();
+        try (MemoryStack s = stackPush()) {
+            periodNs = DeviceManager.deviceProperties.limits().timestampPeriod();
+            LongBuffer p = s.mallocLong(1);
+            if (periodNs > 0 && vkCreateQueryPool(device(), VkQueryPoolCreateInfo.calloc(s).sType$Default()
+                    .queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(MAXQ * pools.length), null, p) == VK_SUCCESS)
+                queryPool = p.get(0);
+        }
+        for (int i = 0; i < pools.length; i++)
+            slotNames.add(new java.util.ArrayList<>());
+    }
+
+    private void readTimes(int f) {
+        java.util.List<String> names = slotNames.get(f);
+        if (queryPool == 0 || names.isEmpty())
+            return;
+        int n = names.size() * 2;
+        try (MemoryStack s = stackPush()) {
+            LongBuffer res = s.mallocLong(n * 2);
+            int r = vkGetQueryPoolResults(device(), queryPool, f * MAXQ, n, res, 16,
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (r == VK_SUCCESS || r == VK_NOT_READY) {
+                long[] t = new long[n];
+                boolean[] ok = new boolean[n];
+                for (int i = 0; i < n; i++) {
+                    t[i] = res.get(2 * i);
+                    ok[i] = res.get(2 * i + 1) != 0;
+                }
+                times.addFrame(names, t, ok, periodNs);
+            }
+        }
+        names.clear();
+        long now = System.nanoTime();
+        if (now - lastRoll > 2_000_000_000L) {
+            lastRoll = now;
+            dev.elemore.iroh.debug.DebugSwitches.publish(PackSwitches.GPU_TIMES, times.roll());
+        }
+    }
+
+    @Override
+    public void timeBegin(String pass) {
+        java.util.List<String> names = slot >= 0 ? slotNames.get(slot) : null;
+        if (queryPool == 0 || names == null || names.size() * 2 + 2 > MAXQ)
+            return;
+        vkCmdWriteTimestamp(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, slot * MAXQ + names.size() * 2);
+        names.add(pass);
+    }
+
+    @Override
+    public void timeEnd(String pass) {
+        java.util.List<String> names = slot >= 0 ? slotNames.get(slot) : null;
+        if (queryPool == 0 || names == null || names.isEmpty() || !names.get(names.size() - 1).equals(pass))
+            return;
+        vkCmdWriteTimestamp(cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, slot * MAXQ + names.size() * 2 - 1);
     }
 
     @Override
@@ -94,6 +156,11 @@ public final class IrohVkBackend extends VkPackBackend {
         int f = Renderer.getCurrentFrame();
         if (pools[f] != 0)
             vkResetDescriptorPool(device(), pools[f], 0);
+        // the slot's previous frame has completed (Renderer waited its fence): its timestamps are ready
+        readTimes(f);
+        if (queryPool != 0)
+            vkCmdResetQueryPool(cmd(), queryPool, f * MAXQ, MAXQ); // outside any render pass (endPassRunResume)
+        slot = f;
     }
 
     @Override
@@ -252,6 +319,11 @@ public final class IrohVkBackend extends VkPackBackend {
     @Override
     public void close() {
         destroyShared();
+        if (queryPool != 0) {
+            long q = queryPool;
+            queryPool = 0;
+            releaseLater(() -> vkDestroyQueryPool(device(), q, null));
+        }
         for (int i = 0; i < pools.length; i++) {
             long p = pools[i];
             if (p != 0)

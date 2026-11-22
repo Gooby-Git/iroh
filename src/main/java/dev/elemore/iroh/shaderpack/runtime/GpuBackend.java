@@ -91,6 +91,13 @@ public interface GpuBackend extends AutoCloseable {
     void freeImage(int image);
 
     /** An image the backend does not own (the raster path's scene colour / depth), for blit sources/destinations. */
+    /** GPU timestamp before / after one pass (in game: timestamp queries, read without waiting two frames later) */
+    default void timeBegin(String pass) {
+    }
+
+    default void timeEnd(String pass) {
+    }
+
     default int importImage(Object external, String name) {
         throw new UnsupportedOperationException(name() + " cannot import " + name);
     }

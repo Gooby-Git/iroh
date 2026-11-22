@@ -23,6 +23,8 @@ import static org.lwjgl.vulkan.VK10.*;
  */
 public final class FrameProfiler {
     public static final boolean ON = Boolean.getBoolean("iroh.profile");
+    /** P3-4: extra text appended to each profile line (the pack path's per-pass GPU times), null = none */
+    public static volatile java.util.function.Supplier<String> EXTRA;
     private static final FrameStage[] STAGES = FrameStage.values();
     private static final int N = STAGES.length;
 
@@ -129,6 +131,8 @@ public final class FrameProfiler {
             sb.append(" | gpu ms/frame");
             for (int s = 0; s < N; s++) if (gpuMs[s] > 0) sb.append(' ').append(STAGES[s]).append('=').append(String.format("%.3f", gpuMs[s] / gpuFrames));
         }
+        java.util.function.Supplier<String> extra = EXTRA;
+        if (extra != null) sb.append(" | ").append(extra.get());
         Initializer.LOGGER.info(sb.toString());
         java.util.Arrays.fill(cpuNs, 0);
         java.util.Arrays.fill(gpuMs, 0);

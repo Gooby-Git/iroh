@@ -63,6 +63,24 @@ public final class RecordingBackend implements GpuBackend {
 
     public final java.util.Set<Integer> freedPipelines = new HashSet<>();
 
+    private String timing;
+
+    @Override
+    public void timeBegin(String pass) {
+        if (timing != null)
+            violations.add("timer " + pass + " begun inside " + timing);
+        timing = pass;
+        calls.add("time begin " + pass);
+    }
+
+    @Override
+    public void timeEnd(String pass) {
+        if (!pass.equals(timing))
+            violations.add("timer end " + pass + " without its begin (open: " + timing + ")");
+        timing = null;
+        calls.add("time end " + pass);
+    }
+
     @Override
     public void freePipeline(int pipeline) {
         if (!freedPipelines.add(pipeline))

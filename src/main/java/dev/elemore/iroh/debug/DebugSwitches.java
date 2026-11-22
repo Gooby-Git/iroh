@@ -64,6 +64,11 @@ public final class DebugSwitches {
         }
     }
 
+    /** a read-only value published by the renderer (e.g. iroh.pack.gpuTimes); set() on it is refused by its validator */
+    public static void publish(String key, String value) {
+        VALUES.put(key, value);
+    }
+
     public static Map<String, String> snapshot() {
         return new TreeMap<>(VALUES);
     }
