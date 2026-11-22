@@ -48,6 +48,12 @@ public class Config {
     /** Intent carried over from iris.properties; read-only until the shader pack loader exists. */
     public String shaderPack = "";
     public boolean shadersEnabled = false;
+    /** P4-1b: OFF / FSR3 / FSR4 / DLSS (Iroh section of the video settings). OFF = the rc14 path. */
+    public String upscaler = "OFF";
+    /** P4-1b: NATIVE_AA / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE */
+    public String upscaleQuality = "QUALITY";
+    /** P4-1b: FSR sharpening 0 (off) .. 100 */
+    public int upscaleSharpness = 0;
 
     public void write() {
         IrohOptions.save();

@@ -191,6 +191,12 @@ public abstract class DeviceManager {
                 VRenderSystem.canSetLineWidth = true;
             }
 
+            // Iroh P4-1a: FSR / velocity features, only when present AND requested (iroh.upscale.mode set at launch, or
+            // iroh.upscale.features=on); otherwise nothing below changes the device (DeviceCaps only queries).
+            VkPhysicalDeviceVulkan12Features upscale12 = dev.elemore.iroh.temporal.DeviceCaps.apply(stack, physicalDevice,
+                    device.availableFeatures.features(), deviceFeatures.features(), device.availableFeatures11, deviceVulkan11Features);
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", dev.elemore.iroh.temporal.DeviceCaps.report());
+
             VkDeviceCreateInfo createInfo = VkDeviceCreateInfo.calloc(stack);
             createInfo.sType$Default();
             createInfo.sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
@@ -214,6 +220,12 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.dynamicRendering(true);
 //                createInfo.pNext(deviceVulkan13Features);
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
+            }
+
+            // after the dynamic-rendering chain so neither overwrites the other
+            if (upscale12 != null) {
+                upscale12.pNext(deviceVulkan11Features.pNext());
+                deviceVulkan11Features.pNext(upscale12.address());
             }
 
             createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));

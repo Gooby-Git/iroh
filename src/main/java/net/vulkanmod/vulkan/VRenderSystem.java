@@ -98,7 +98,11 @@ public abstract class VRenderSystem {
     }
 
     public static void applyProjectionMatrix(Matrix4f mat) {
-        mat.get(projectionMatrix.buffer.asFloatBuffer());
+        // Iroh P4-1a: the GPU copy gets the upscaler jitter in the world phase (perspective matrices only); the Java
+        // side (RenderSystem.getProjectionMatrix, Fabric event matrices, culling) keeps the unjittered matrix.
+        org.joml.Matrix4fc m = dev.elemore.iroh.temporal.TemporalFrame.JITTER_ON
+                ? dev.elemore.iroh.temporal.TemporalFrame.gpuProjection(mat) : mat;
+        m.get(projectionMatrix.buffer.asFloatBuffer());
     }
 
     public static void calculateMVP() {

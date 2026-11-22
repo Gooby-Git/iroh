@@ -14,8 +14,37 @@ public final class UniformSlots {
     private UniformSlots() {}
 
     public static void connect(UBO ubo, Map<String, com.mojang.blaze3d.shaders.Uniform> uniformMap) {
-        for (Uniform member : ubo.getUniforms())
-            member.setSupplier(supplier(uniformMap.get(member.getName()), member.getSize() * 4));
+        for (Uniform member : ubo.getUniforms()) {
+            Supplier<MappedBuffer> s = supplier(uniformMap.get(member.getName()), member.getSize() * 4);
+            if ("ProjMat".equals(member.getName()) && member.getSize() == 16)
+                s = jittered(s);
+            member.setSupplier(s);
+        }
+    }
+
+    /**
+     * Iroh P4-1a: a converted shader's ProjMat (vanilla's Uniform, set from the unjittered RenderSystem matrix) gets
+     * the upscaler jitter in the world phase, like the built-in shaders' ProjMat (VRenderSystem). Off: the vanilla
+     * buffer itself, after two boolean reads.
+     */
+    public static Supplier<MappedBuffer> jitteredForTest(Supplier<MappedBuffer> src) {
+        return jittered(src);
+    }
+
+    static Supplier<MappedBuffer> jittered(Supplier<MappedBuffer> src) {
+        MappedBuffer out = new MappedBuffer(64);
+        float[] m = new float[16];
+        return () -> {
+            MappedBuffer b = src.get();
+            if (!dev.elemore.iroh.temporal.TemporalFrame.JITTER_ON || !dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD)
+                return b;
+            for (int i = 0; i < 16; i++)
+                m[i] = b.getFloat(i * 4);
+            dev.elemore.iroh.temporal.TemporalFrame.gpuProjection(m);
+            for (int i = 0; i < 16; i++)
+                out.putFloat(i * 4, m[i]);
+            return out;
+        };
     }
 
     /**

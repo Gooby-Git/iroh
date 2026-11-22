@@ -95,7 +95,7 @@ public final class MemoryGuard {
             for (int i = 0; i < heaps; i++)
                 if ((props.memoryHeaps(i).flags() & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
                     iroh += b.get(i).statistics().blockBytes();
-            BUDGET.sample(largestSize, b.get(largest).budget(), b.get(largest).usage(), iroh);
+            BUDGET.sample(largestSize, b.get(largest).budget(), b.get(largest).usage(), iroh + EXTERNAL.get());
         }
     }
 
@@ -108,6 +108,16 @@ public final class MemoryGuard {
     public static void worldStarted() {
         GROWTH.worldStarted(System.nanoTime());
         growthEscalated = false;
+    }
+
+    /**
+     * P4-1b: device memory Iroh holds OUTSIDE VMA (FidelityFX contexts allocate with vkAllocateMemory themselves);
+     * counted in Iroh's usage at the next sample. Add on create, subtract on destroy.
+     */
+    public static final java.util.concurrent.atomic.AtomicLong EXTERNAL = new java.util.concurrent.atomic.AtomicLong();
+
+    public static void addExternal(long bytes) {
+        EXTERNAL.addAndGet(bytes);
     }
 
     /** Non-essential allocation check (optional caches, dynamic textures nobody samples, extra targets). */

@@ -19,12 +19,18 @@ public final class WorldStages {
         WorldRenderEvents.START.register(ctx -> {
             Vec3 c = ctx.camera().getPosition();
             FrameHooks.setWorld(c.x, c.y, c.z, ctx.positionMatrix(), ctx.projectionMatrix());
+            if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD) // P4-1a: camera history for motion vectors
+                dev.elemore.iroh.temporal.TemporalRuntime.onWorldStart(c.x, c.y, c.z, ctx.positionMatrix(), ctx.projectionMatrix());
             FrameHooks.setInWorld(true);
             FrameHooks.dispatch(FrameStage.WORLD_START);
         });
         WorldRenderEvents.AFTER_SETUP.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_SKY));
         WorldRenderEvents.BEFORE_ENTITIES.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_OPAQUE_TERRAIN));
-        WorldRenderEvents.AFTER_ENTITIES.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_ENTITIES));
+        WorldRenderEvents.AFTER_ENTITIES.register(ctx -> {
+            FrameHooks.dispatch(FrameStage.AFTER_ENTITIES);
+            if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD) // P4-1b: opaque copy for the reactive / T&C masks
+                dev.elemore.iroh.temporal.TemporalRuntime.onAfterEntities();
+        });
         WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_TRANSLUCENT));
         WorldRenderEvents.LAST.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_WEATHER));
         WorldRenderEvents.END.register(ctx -> {

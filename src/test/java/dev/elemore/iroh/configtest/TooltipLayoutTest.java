@@ -66,6 +66,12 @@ public final class TooltipLayoutTest {
             if (e.getKey().contains("tooltip")) texts.add(e.getValue().getAsString());
         String longest = texts.stream().max((a, b) -> a.length() - b.length()).get();
         // Iroh appends the reload note and up to three unavailable-value lines (CyclingOptionWidget.getTooltip)
+        // P4-1b: the Upscaler row as shown: tooltip + note + its three unavailable-choice lines (a REAL tooltip: must fit)
+        texts.add(lang.get("iroh.options.upscaler.tooltip").getAsString()
+                + "\n\nFSR 3.1: " + lang.get("iroh.reason.needsNativeLibrary").getAsString()
+                + "\nFSR 4: " + lang.get("iroh.reason.fsr4Windows").getAsString()
+                + "\nDLSS: " + lang.get("iroh.reason.needsNvidia").getAsString());
+        // the extreme text stays LAST (the only one allowed to be cut)
         texts.add(longest + "\n\nNeeds a chunk reload.\n\nFabulous: needs the transparency chain\nOff: unavailable on this GPU");
         check("lang has tooltips (" + texts.size() + ", longest " + longest.length() + " chars)", texts.size() > 20 && longest.length() < 400);
 

@@ -133,6 +133,42 @@ public class ConfigMigrationTest {
         }
         check(regDefaults, "registry defaults equal the Config initialisers");
 
+        // --- G (P4-1b): the Iroh section's upscaler rows -> runtime switches, device features at launch ---
+        check(reg.upscaler.equals("OFF") && !dev.elemore.iroh.temporal.UpscaleSettings.wantsDeviceFeatures(reg)
+                && !dev.elemore.iroh.temporal.DeviceCaps.configRequested, "upscaler Off by default: no device features requested");
+        Path g = Files.createTempDirectory("iroh-cfg-g");
+        Files.writeString(g.resolve("iroh.json"), "{\"upscaler\": \"FSR3\", \"upscaleQuality\": \"PERFORMANCE\", \"upscaleSharpness\": 40}");
+        Config cg = new Config();
+        IrohOptions.load(cg, g);
+        check(cg.upscaler.equals("FSR3") && cg.upscaleQuality.equals("PERFORMANCE") && cg.upscaleSharpness == 40, "upscaler rows read from iroh.json");
+        check(dev.elemore.iroh.temporal.DeviceCaps.configRequested && dev.elemore.iroh.temporal.DeviceCaps.shouldEnable(),
+                "FSR 3.1 in iroh.json asks for the device features before the device exists");
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
+        check(dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.MODE, "").equals("performance")
+                && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.UPSCALER, "").equals("fsr")
+                && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.SHARPNESS, "").equals("0.40"),
+                "settings drive the runtime switches (mode performance, upscaler fsr, sharpness 0.40)");
+        cg.upscaler = "OFF";
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
+        check(dev.elemore.iroh.temporal.UpscaleSwitches.mode() == dev.elemore.iroh.temporal.ScaleMode.OFF, "Off in the settings turns the mode off");
+        cg.upscaler = "FSR3";
+        System.setProperty(dev.elemore.iroh.temporal.UpscaleSwitches.MODE, "native");
+        dev.elemore.iroh.debug.DebugSwitches.set(dev.elemore.iroh.temporal.UpscaleSwitches.MODE, "native");
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
+        check(dev.elemore.iroh.temporal.UpscaleSwitches.mode() == dev.elemore.iroh.temporal.ScaleMode.NATIVE_AA, "a launch property wins over the settings");
+        System.clearProperty(dev.elemore.iroh.temporal.UpscaleSwitches.MODE);
+        dev.elemore.iroh.debug.DebugSwitches.set(dev.elemore.iroh.temporal.UpscaleSwitches.MODE, "off");
+        Files.writeString(g.resolve("iroh.json"), "{\"upscaler\": \"WARP\", \"upscaleSharpness\": 400}");
+        Config cg2 = new Config();
+        IrohOptions.load(cg2, g);
+        check(cg2.upscaler.equals("OFF") && cg2.upscaleSharpness <= 100 && !dev.elemore.iroh.temporal.DeviceCaps.configRequested, "bad upscaler values rejected or clamped");
+        check(dev.elemore.iroh.temporal.UpscaleSettings.upscalerReason(dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.FSR4) != null
+                && dev.elemore.iroh.temporal.UpscaleSettings.upscalerReason(dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.DLSS) != null
+                && dev.elemore.iroh.temporal.UpscaleSettings.upscalerReason(dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.OFF) == null,
+                "FSR 4 / DLSS choices carry their reason (Windows only / needs an NVIDIA GPU or not yet)");
+        check(dev.elemore.iroh.temporal.UpscaleSettings.qualityReason(cg2) != null && dev.elemore.iroh.temporal.UpscaleSettings.sharpnessReason(cg2) != null,
+                "quality and sharpening greyed while the upscaler is Off");
+
         System.out.println("---- registry ----");
         IrohOptions.describeAll().forEach(l -> System.out.println("  " + l));
         System.out.println("# configtest " + (pass == total ? "PASS " : "FAIL ") + pass + "/" + total);

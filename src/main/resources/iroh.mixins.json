@@ -11,6 +11,8 @@
     "render.PackFogM",
     "render.IrohHudM",
     "render.IrohLeavesM",
+    "render.upscale.IrohRenderScaleGameM",
+    "render.upscale.IrohRenderScaleLevelM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",

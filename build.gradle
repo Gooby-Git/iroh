@@ -100,7 +100,12 @@ tasks.withType(AbstractArchiveTask).configureEach {
 	reproducibleFileOrder = true
 }
 
+// P4-2a: prebuilt natives (iroh-native/build-fsr.sh) go into the jar under natives/<os>-<arch>/ when they exist; the Gradle
+// build never needs the native toolchain, and without them the FSR feature reports "unavailable".
+def irohNatives = file('iroh-native/natives')
 jar {
+	if (irohNatives.exists()) from(irohNatives) { into 'natives' }
+	from("THIRD_PARTY.md") { into 'META-INF/iroh' }
 	from("LICENSE") {
 		rename { "${it}_${project.base.archivesName.get()}"}
 	}
@@ -419,4 +424,119 @@ tasks.register('chunkDeferTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
+}
+
+// P4-1a upscaler-input maths: render sizes, SDK jitter, projection jitter + Y sign, motion vectors. ./gradlew temporalMathTest
+// last line "# temporalmath PASS n/n"
+tasks.register('temporalMathTest', JavaExec) {
+	group = 'verification'
+	description = 'Render-scale table, jitter sequence, projection jitter, motion-vector maths (no game, no Vulkan)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.temporal.TemporalMathTest'
+}
+
+// P4-1a default off: with iroh.upscale.mode unset every hook is inert. ./gradlew upscaleDefaultOffTest
+// last line "# upscaledefaultoff PASS n/n"
+tasks.register('upscaleDefaultOffTest', JavaExec) {
+	group = 'verification'
+	description = 'Upscale path entry points inert without iroh.upscale.mode'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.temporal.UpscaleDefaultOffTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
+// P4-1a velocity pass golden test on lavapipe (the test also refuses any non-CPU device).
+// ./gradlew velocityGoldenTest ; last line "# velocitygolden PASS n/n"; debug PNGs in build/p4-1a/
+tasks.register('velocityGoldenTest', JavaExec) {
+	group = 'verification'
+	description = 'Camera velocity compute pass on lavapipe vs analytic motion vectors (two-frame scene)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.temporal.VelocityGoldenTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst { useLavapipe(it) }
+}
+
+// P4-2a native FSR library (CI-style; not part of build): ./gradlew fsrNative [-PfsrArgs=--linux-only]
+tasks.register('fsrNative', Exec) {
+	group = 'build'
+	description = 'Build libiroh_fsr (FidelityFX 1.1.4 FSR 3.1 + shim) with iroh-native/build-fsr.sh'
+	workingDir = projectDir
+	environment 'IROH_JAVA_HOME', System.getenv('IROH_JAVA_HOME') ?: '/usr/lib/jvm/java-21-openjdk'
+	def a = ['./iroh-native/build-fsr.sh']
+	if (project.hasProperty('fsrArgs')) a.addAll(project.property('fsrArgs').toString().split(' ') as List)
+	commandLine a
+}
+
+def fsrLib = file('iroh-native/natives/linux-x64/libiroh_fsr.so')
+
+// P4-2a pure upscaler parts (+ native jitter/phase/render-size cross-checks when the library is built).
+// ./gradlew upscaleTest ; last line "# upscale PASS n/n"
+tasks.register('upscaleTest', JavaExec) {
+	group = 'verification'
+	description = 'Jitter sequence, phase counts, mip bias, quality modes; compared with the SDK through the shim when built'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.UpscaleTest'
+	jvmArgs '-ea'
+	doFirst { if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath }
+}
+
+// P4-2a FSR on lavapipe. ./gradlew fsrReplay [-Pcapture=dir] [-Pgolden=check|update] [-Pdump=dir] [-Pforce16]
+// last line "# fsrreplay PASS|FAIL ..."
+tasks.register('fsrReplay', JavaExec) {
+	group = 'verification'
+	description = 'FSR 3.1 through the JNI shim on lavapipe: synthetic scene pair + captured Navidson frame'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['capture', 'golden', 'dump', 'mode'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	if (project.hasProperty('force16')) a << '--force16'
+	args a
+	doFirst {
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
+// P4-1b: Iroh's velocity pass + jitter drive FSR as well as P4-2a's hand-made inputs (fsrReplay's synthetic scene),
+// on lavapipe. ./gradlew fsrVelocityReplay ; last line "# fsrvelocity PASS|FAIL"
+tasks.register('fsrVelocityReplay', JavaExec) {
+	group = 'verification'
+	description = 'FSR on lavapipe fed by Iroh velocity pass output vs hand-made motion vectors'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrVelocityReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst {
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
+// P4-1b: FsrSession (the game's FSR adapter lifecycle) driven on lavapipe with Iroh's formats. ./gradlew fsrAdapterReplay
+// last line "# fsradapter PASS|FAIL"
+tasks.register('fsrAdapterReplay', JavaExec) {
+	group = 'verification'
+	description = 'FSR adapter lifecycle (refusal, create, resize, deferred destroy, accounting, reset) + RGBA8 output on lavapipe'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrAdapterReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst {
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
 }

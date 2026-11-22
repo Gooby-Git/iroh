@@ -411,7 +411,8 @@ public abstract class Pipeline {
                 ImageDescriptor imageDescriptor = pipeline.imageDescriptors.get(j);
                 VulkanImage image = imageDescriptor.getImage();
                 long view = imageDescriptor.getImageView(image);
-                long sampler = image.getSampler();
+                long sampler = dev.elemore.iroh.temporal.TemporalFrame.MIP_ON && dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD
+                        ? net.vulkanmod.vulkan.texture.SamplerManager.biased(image.getSampler(), dev.elemore.iroh.temporal.TemporalFrame.mipBias) : image.getSampler(); // P4-1a
 
                 if (imageDescriptor.isReadOnlyLayout)
                     image.readOnlyLayout();
@@ -495,7 +496,8 @@ public abstract class Pipeline {
                 ImageDescriptor imageDescriptor = pipeline.imageDescriptors.get(j);
                 VulkanImage image = imageDescriptor.getImage();
                 long view = imageDescriptor.getImageView(image);
-                long sampler = image.getSampler();
+                long sampler = dev.elemore.iroh.temporal.TemporalFrame.MIP_ON && dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD
+                        ? net.vulkanmod.vulkan.texture.SamplerManager.biased(image.getSampler(), dev.elemore.iroh.temporal.TemporalFrame.mipBias) : image.getSampler(); // P4-1a
                 int layout = imageDescriptor.getLayout();
 
                 if (imageDescriptor.isReadOnlyLayout)
