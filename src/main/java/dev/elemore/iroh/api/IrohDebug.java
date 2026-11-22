@@ -2,14 +2,15 @@ package dev.elemore.iroh.api;
 
 import dev.elemore.iroh.debug.DebugSwitches;
 
+import java.nio.file.Path;
+
 /**
  * Runtime switches for in-session A/B tests (Proctor calls these by reflection: knowledge/proctor.md "IrohDebug").
  * Keys are the {@code iroh.<area>.<name>} property names. {@link #set} needs {@code -Dproctor=1} or
  * {@code -Diroh.debug=true} (else it refuses); {@link #get} always answers. Unknown keys throw IllegalArgumentException.
  * Returns: {@code ok}, {@code rebuild} (a rebuild was scheduled), {@code restart} (stored for the next launch only,
  * nothing applied), or a detail string.
- * <p>integration/next: card/P3-4's class (f78830e) registering PerfSwitches (perf/hitches) and UpscaleSwitches (P4-1a/b);
- * the merge of card/P3-9 adds PackSwitches and capturePackFrame back.
+ * <p>integration/next: the one registry: pack (P3-4..P3-9), perf (perf/hitches) and upscale (P4-1a/b) switches.
  */
 public final class IrohDebug {
 
@@ -22,12 +23,14 @@ public final class IrohDebug {
     public static String set(String key, String value) {
         if (!allowed())
             return "refused: runtime switches need -Dproctor=1 or -Diroh.debug=true";
+        dev.elemore.iroh.shaderpack.runtime.PackSwitches.registerAll();
         dev.elemore.iroh.perf.PerfSwitches.registerAll();
         dev.elemore.iroh.temporal.UpscaleSwitches.registerAll();
         return DebugSwitches.set(key, value);
     }
 
     public static String get(String key) {
+        dev.elemore.iroh.shaderpack.runtime.PackSwitches.registerAll();
         dev.elemore.iroh.perf.PerfSwitches.registerAll();
         dev.elemore.iroh.temporal.UpscaleSwitches.registerAll();
         return DebugSwitches.get(key);
@@ -35,6 +38,7 @@ public final class IrohDebug {
 
     /** every registered switch and its value, one per line */
     public static String list() {
+        dev.elemore.iroh.shaderpack.runtime.PackSwitches.registerAll();
         dev.elemore.iroh.perf.PerfSwitches.registerAll();
         dev.elemore.iroh.temporal.UpscaleSwitches.registerAll();
         StringBuilder sb = new StringBuilder();
@@ -43,4 +47,14 @@ public final class IrohDebug {
         return sb.toString();
     }
 
+    /**
+     * Writes ONE {@code .irohframe} capture of the next pack frame into {@code dir} (async readback; bounded 512 MiB;
+     * refused while another capture is in progress or when the pack path is not running). Returns {@code ok} when
+     * scheduled, or the reason it was refused. The file layout is FrameCapture's (frame.json + raw float images).
+     */
+    public static String capturePackFrame(Path dir) {
+        if (!allowed())
+            return "refused: needs -Dproctor=1 or -Diroh.debug=true";
+        return dev.elemore.iroh.shaderpack.runtime.PackRuntime.requestCapture(dir);
+    }
 }

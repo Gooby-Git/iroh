@@ -416,23 +416,41 @@ public class VulkanImage {
     /** Ends the bound render pass (if any), runs {@code record} on the frame command buffer, resumes the pass. */
     public static void endPassRunResume(Runnable record) {
         Renderer renderer = Renderer.getInstance();
-        RenderPass boundPass = renderer.getBoundRenderPass();
-        if (boundPass == null) {
-            record.run();
-            return;
-        }
-        Framebuffer boundFb = renderer.getBoundFramebuffer();
-        VkGlFramebuffer glFb = VkGlFramebuffer.getBoundFramebuffer();
-        renderer.endRenderPass();
-        record.run();
-        if (glFb == null && boundFb instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
-            renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
-        } else if (boundFb != null) {
-            renderer.beginRendering(boundPass, boundFb);        // off-screen passes load (VkGlFramebuffer)
-            VkGlFramebuffer.restoreBinding(glFb);
-        }
-        // Framebuffer.beginRenderPass reset viewport and scissor to full size
-        dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+        RenderPass[] boundPass = {renderer.getBoundRenderPass()};
+        Framebuffer[] boundFb = {renderer.getBoundFramebuffer()};
+        VkGlFramebuffer[] glFb = {VkGlFramebuffer.getBoundFramebuffer()};
+        // Iroh (G1 fix): order + state invalidation in PassResume (tested offline by passResumeTest)
+        dev.elemore.iroh.render.PassResume.run(new dev.elemore.iroh.render.PassResume.Hooks() {
+            public boolean passBound() {
+                return boundPass[0] != null;
+            }
+
+            public void endPass() {
+                renderer.endRenderPass();
+            }
+
+            public void resumePass() {
+                if (glFb[0] == null && boundFb[0] instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
+                    renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
+                } else if (boundFb[0] != null) {
+                    renderer.beginRendering(boundPass[0], boundFb[0]);  // off-screen passes load (VkGlFramebuffer)
+                    VkGlFramebuffer.restoreBinding(glFb[0]);
+                }
+            }
+
+            public void invalidateBoundState() {
+                renderer.invalidateBoundState();
+            }
+
+            public void reapplyDynamicState() {
+                // depth bias / line width: legal outside a pass, and no pass begin sets them again
+                net.vulkanmod.vulkan.VRenderSystem.reapplyDepthBias();
+                if (renderer.getBoundRenderPass() != null)
+                    // Framebuffer.beginRenderPass reset viewport and scissor to full size
+                    dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+                dev.elemore.iroh.glshim.GlState.reapplyDynamicState();
+            }
+        }, record);
     }
 
     public void readOnlyLayout() {
@@ -828,7 +846,13 @@ public class VulkanImage {
                      VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT -> 4;
                 case VK_FORMAT_R8_UNORM -> 1;
-                case VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32_SFLOAT -> 4; // Iroh P4-1a/b: motion vectors, merged depth
+                // Iroh (P3-4): pack render target formats (only the pack path creates these); R16G16_SFLOAT / R32_SFLOAT also P4-1 (motion vectors, merged depth)
+                case VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT -> 1;
+                case VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM, VK_FORMAT_R16_SFLOAT, VK_FORMAT_R16_UNORM, VK_FORMAT_R16_UINT -> 2;
+                case VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R32_SFLOAT,
+                     VK_FORMAT_R32_UINT, VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_A2B10G10R10_UNORM_PACK32 -> 4;
+                case VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R32G32_SFLOAT -> 8;
+                case VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_UINT -> 16;
 
                 default -> throw new IllegalArgumentException(String.format("Unxepcted format: %s", format));
 //                default -> 0;

@@ -27,7 +27,9 @@ public abstract class PipelineManager {
     private static Function<TerrainRenderType, GraphicsPipeline> shaderGetter;
 
     public static void init() {
-        setTerrainVertexFormat(CustomVertexFormat.COMPRESSED_TERRAIN);
+        // Iroh P3-6: FULL pack mode meshes 36-byte sections from the start (restart-only switch); default unchanged
+        setTerrainVertexFormat(dev.elemore.iroh.shaderpack.runtime.PackStartup.FULL
+                ? CustomVertexFormat.PACK_WIDE_TERRAIN : CustomVertexFormat.COMPRESSED_TERRAIN);
         createBasicPipelines();
         setDefaultShader();
         ThreadBuilderPack.defaultTerrainBuilderConstructor();

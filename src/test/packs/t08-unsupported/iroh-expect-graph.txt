@@ -1,0 +1,3 @@
+expectErrors 4
+jsonhas graph.json folders.<root>.frame.validation.error gl_LightSource
+jsonhas graph.json folders.<root>.frame.validation.error geometry stage present

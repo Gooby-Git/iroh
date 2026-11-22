@@ -1,0 +1,4 @@
+json graph.json folders.world-1.frame.drawnBy.terrain_translucent = gbuffers_water
+json graph.json folders.world0.frame.drawnBy.terrain_translucent = gbuffers_textured
+json graph.json folders.world0.frame.dimensionIds = ["minecraft:overworld"]
+json graph.json folders.world-1.frame.passes[0].id = gbuffers_textured

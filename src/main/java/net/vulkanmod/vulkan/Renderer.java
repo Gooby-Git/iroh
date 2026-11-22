@@ -626,6 +626,12 @@ public class Renderer {
         StagingBuffer.flushConsumersAndReset();
     }
 
+    /** Iroh (G1 fix): something recorded its own pipeline into the frame command buffer: the next bind must not be skipped */
+    public void invalidateBoundState() {
+        boundPipeline = null;
+        boundPipelineHandle = 0;
+    }
+
     private void resetDescriptors() {
         for (Pipeline pipeline : usedPipelines) {
             pipeline.resetDescriptorPool(currentFrame);

@@ -539,4 +539,192 @@ tasks.register('fsrAdapterReplay', JavaExec) {
 		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
 		useLavapipe(it)
 	}
+// Offline Iris-pack front end (P3-1): parse, preprocess, translate and compile every program of a shader pack.
+// ./gradlew packHarness [-Ppack=<pack dir|zip|shaderpacks dir>] [-Poptions=<file>] [-PallowFail] [-Pnovista] [-Pshow=<unit>]
+// Reads packs where they lie (never copied into the repo); writes build/packHarness/<pack>/.
+tasks.register('packHarness', JavaExec) {
+	group = 'verification'
+	description = 'Run the Iris-pack front end over shader packs offline (no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackHarness'
+	jvmArgs '-Xmx4g'
+	workingDir = projectDir
+	def a = []
+	['pack', 'options', 'out', 'show'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
+	}
+	['allowFail', 'novista'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}"
+	}
+	if (project.hasProperty('optimize')) systemProperty 'iroh.pack.optimize', 'true'
+	args a
+}
+
+// Offline pass graph (P3-2): front end dump -> frame plans, resource plan, uniform supply, geometry needs, upscaler cut.
+// ./gradlew packGraph [-Ppack=<pack dir|zip|shaderpacks dir>] [-Poptions=<file>] [-PallowFail]; writes build/packGraph/<pack>/
+tasks.register('packGraph', JavaExec) {
+	group = 'verification'
+	description = 'Build and validate the pass graph and resource plan of shader packs offline (no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackGraphHarness'
+	jvmArgs '-Xmx4g'
+	workingDir = projectDir
+	def a = []
+	['pack', 'options'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
+	}
+	if (project.hasProperty('allowFail')) a << "--allowFail"
+	args a
+}
+
+// Custom uniform evaluator (P3-2): hand-computed cases + Navidson's declarations over 120 synthetic frames.
+// ./gradlew customEvalTest ; last line "# customeval PASS n/n"
+tasks.register('customEvalTest', JavaExec) {
+	group = 'verification'
+	description = 'Evaluate pack custom uniform expressions against hand-computed values'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.CustomEvalTest'
+	workingDir = projectDir
+}
+
+// P3-3 frame executor on a recording fake device (no Vulkan): order, halves, bindings, mips, clears, barriers vs the plan.
+// ./gradlew packExecTest [-Ppack=<pack>] ; last line "# packexec PASS n/n"
+tasks.register('packExecTest', JavaExec) {
+	group = 'verification'
+	description = 'Run the pack frame executor against a recording fake device and validate it against the plan'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackExecTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	if (project.hasProperty('pack')) args "--pack=${project.property('pack')}"
+}
+
+// P3-3 offline frame replay on lavapipe (CPU Vulkan; never the GPU). The Vulkan loader is restricted to a lavapipe ICD:
+// a system one (vulkan-swrast) if installed, else the libvulkan_lvp.so of an installed flatpak GL runtime, used in place
+// through an ICD file under build/lvp (nothing is installed). ./gradlew packReplay [-Ppack] [-Pfolder] [-Psize=WxH]
+// [-Pcapture=dir] [-Pframes=N] [-Pdump] [-Pgolden=check|update]; last line "# replay PASS ...".
+tasks.register('packReplay', JavaExec) {
+	group = 'verification'
+	description = 'Replay a pack frame (deferred/composite/final) on lavapipe against a captured or synthetic frame'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackReplay'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['pack', 'folder', 'size', 'capture', 'frames', 'golden'].each { k ->
+		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
+	}
+	if (project.hasProperty('dump')) a << "--dump"
+	if (project.hasProperty('post')) a << "--post"
+	if (project.hasProperty('full')) a << "--full"
+	if (project.hasProperty('roundtrip')) a << "--roundtrip"
+	if (project.hasProperty('upscale')) a << "--upscale=" + project.property('upscale')
+	if (project.hasProperty('geoClasses')) a << "--classes=" + project.property('geoClasses')
+	args a
+	doFirst { useLavapipe(it) }
+}
+
+// P3-3 PACK terrain vertex (36 B) packing vs hand-computed fields. ./gradlew wideVertexTest ; last line "# widevertex PASS n/n"
+tasks.register('wideVertexTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the 36-byte pack terrain vertex packing (positions identical to the 16-byte PlaneSnap rounding)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.WideVertexTest'
+}
+
+// P3-4 pack lifecycle state machine on the recording backend: enable, resize x3, dimension change, unload, memory
+// refusal, disable; no leak, no use after free. ./gradlew packLifecycleTest ; last line "# lifecycle PASS n/n"
+tasks.register('packLifecycleTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack lifecycle (enable / resize / dimension / unload / refusal / disable) on the recording backend'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackLifecycleTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
+// P3-4 default off: the pack entry points are inert without iroh.pack.enabled. ./gradlew packDefaultOffTest
+tasks.register('packDefaultOffTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack path entry points inert without the switch'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackDefaultOffTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
+// G1 fix: endPassRunResume drops the bound-pipeline cache and re-sets dynamic state. ./gradlew passResumeTest
+tasks.register('passResumeTest', JavaExec) {
+	group = 'verification'
+	description = 'Pass resume invalidates bound state and re-sets dynamic state'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PassResumeTest'
+	workingDir = projectDir
+}
+
+// G1 fix 2: -Diroh.imageTrace=pack: follows pack render targets. ./gradlew imageTracePackTest
+tasks.register('imageTracePackTest', JavaExec) {
+	group = 'verification'
+	description = 'Image trace covers pack images'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.ImageTracePackTest'
+	jvmArgs '-Diroh.imageTrace=pack:'
+	workingDir = projectDir
+}
+
+// G1 item 4: per-pass GPU times of the pack path. ./gradlew packGpuTimesTest
+tasks.register('packGpuTimesTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack per-pass GPU time accounting'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackGpuTimesTest'
+	workingDir = projectDir
+}
+
+// P3-5 FULL mode (geometry + shadow + post) on the recording backend. ./gradlew packFullTest
+tasks.register('packFullTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack FULL mode frame on the recording backend'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackFullTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true', '-Ddebug=' + (project.findProperty('debug') ?: 'false')
+	workingDir = projectDir
+}
+
+// P3-6: 36-byte pack sections through the real builder path keep the 16-byte layout's first 16 bytes. ./gradlew sectionFormatTest
+tasks.register('sectionFormatTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack-wide vs compressed section vertices'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.SectionFormatTest'
+	workingDir = projectDir
+}
+
+// P3-7 C: shadow reuse / light-facing buckets, derived upload budget, bounded trace, executor allocation per frame. ./gradlew packPerfTest
+tasks.register('packPerfTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack path performance logic'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackPerfTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
+// P3-8: prints the test runtime classpath (allocation profiling of the offline harnesses with JFR)
+tasks.register('printTestCp') {
+	doLast { println sourceSets.test.runtimeClasspath.asPath }
 }

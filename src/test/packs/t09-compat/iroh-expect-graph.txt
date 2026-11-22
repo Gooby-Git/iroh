@@ -1,0 +1,5 @@
+json graph.json folders.<root>.frame.passes[0].id = gbuffers_terrain
+json graph.json folders.<root>.frame.passes[0].writes[1].target = colortex1
+json graph.json geometry.vertexInputsByProgram.gbuffers_terrain[0] = at_tangent:vec4
+jsonhas graph.json geometry.wideTerrainVertex.fields "field":"entity"
+json graph.json uniforms.requested.cloudHeight.cadence = FRAME

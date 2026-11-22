@@ -38,7 +38,9 @@ public class TerrainBuilder {
         this.indexBufferCapacity = size;
 
         this.format = PipelineManager.terrainVertexFormat;
-        this.vertexBuilder = PipelineManager.terrainVertexFormat == CustomVertexFormat.COMPRESSED_TERRAIN
+        this.vertexBuilder = PipelineManager.terrainVertexFormat == CustomVertexFormat.PACK_WIDE_TERRAIN
+                ? new dev.elemore.iroh.shaderpack.mesh.WideVertexBuilder() // Iroh P3-6
+                : PipelineManager.terrainVertexFormat == CustomVertexFormat.COMPRESSED_TERRAIN
                 ? new VertexBuilder.CompressedVertexBuilder() : new VertexBuilder.DefaultVertexBuilder();
 
         var bufferBuilders = new TerrainBufferBuilder[QuadFacing.COUNT];

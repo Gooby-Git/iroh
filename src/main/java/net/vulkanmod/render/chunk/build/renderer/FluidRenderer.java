@@ -115,7 +115,48 @@ public class FluidRenderer implements FluidRendering.DefaultRenderer {
         render(handler, blockState, fluidState, pos, (TerrainBufferBuilder) vertexConsumer);
     }
 
+    // Iroh P3-6: per-quad pack context for the 36-byte section vertex (startup-only FULL pack mode)
+    private static final boolean PACK_WIDE = net.vulkanmod.render.PipelineManager.terrainVertexFormat
+            == net.vulkanmod.render.vertex.CustomVertexFormat.PACK_WIDE_TERRAIN;
+    private BlockState packState;
+    private BlockPos packPos;
+
+    private void packQuadContext(ModelQuad quad) {
+        var c = dev.elemore.iroh.shaderpack.mesh.WideVertexBuilder.CONTEXT.get();
+        float u0 = Float.MAX_VALUE, v0 = Float.MAX_VALUE, u1 = -Float.MAX_VALUE, v1 = -Float.MAX_VALUE;
+        for (int i = 0; i < 4; i++) {
+            u0 = Math.min(u0, quad.getU(i));
+            u1 = Math.max(u1, quad.getU(i));
+            v0 = Math.min(v0, quad.getV(i));
+            v1 = Math.max(v1, quad.getV(i));
+        }
+        c.sprite[0] = u0;
+        c.sprite[1] = v0;
+        c.sprite[2] = u1;
+        c.sprite[3] = v1;
+        c.blockOrigin[0] = this.packPos.getX() & 15;
+        c.blockOrigin[1] = this.packPos.getY() & 15;
+        c.blockOrigin[2] = this.packPos.getZ() & 15;
+        Vector3f e1 = new Vector3f(quad.getX(1) - quad.getX(0), quad.getY(1) - quad.getY(0), quad.getZ(1) - quad.getZ(0));
+        Vector3f e2 = new Vector3f(quad.getX(2) - quad.getX(0), quad.getY(2) - quad.getY(0), quad.getZ(2) - quad.getZ(0));
+        Vector3f n = e1.cross(e2);
+        if (n.lengthSquared() > 1e-12f)
+            n.normalize();
+        else
+            n.set(0, 1, 0);
+        c.normal[0] = n.x;
+        c.normal[1] = n.y;
+        c.normal[2] = n.z;
+        c.emission = this.packState.getLightEmission();
+        final net.minecraft.world.level.block.Block block = this.packState.getBlock();
+        c.blockId = dev.elemore.iroh.shaderpack.runtime.PackStartup.blockId(block,
+                () -> net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(block).toString());
+        c.renderType = net.vulkanmod.render.vertex.TerrainRenderType.TRANSLUCENT.ordinal();
+    }
+
     public void render(FluidRenderHandler handler, BlockState blockState, FluidState fluidState, BlockPos blockPos, TerrainBufferBuilder bufferBuilder) {
+        this.packState = blockState;
+        this.packPos = blockPos;
         BlockAndTintGetter region = this.resources.getRegion();
 
         int color = handler.getFluidColor(region, blockPos, fluidState);
@@ -448,6 +489,8 @@ public class FluidRenderer implements FluidRendering.DefaultRenderer {
         int k = QuadUtils.getIterationStartIdx(quadLightData.br);
 
         bufferBuilder.ensureCapacity();
+        if (PACK_WIDE)
+            packQuadContext(quad);
 
         int i;
         for (int j = 0; j < 4; j++) {

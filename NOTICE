@@ -11,8 +11,12 @@ Base: VulkanMod, Copyright (c) xCollateral and contributors
 The full licence text is in LICENSE. Files copied from other projects are listed below
 with their source and licence, added in the same commit that copies them.
 
-(none yet)
-
 AMD FidelityFX SDK v1.1.4 (MIT), compiled into the optional native library iroh-native/ (libiroh_fsr): see THIRD_PARTY.md
   for the licence text, the pinned commit and the modifications (iroh-native/fsr/patches/ffx-1.1.4-iroh.patch). The SDK
   source is not copied into this repository; iroh-native/fsr/fetch-sdk.sh downloads it by commit and content hash.
+
+Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (reference clone reference/Vitrail-Shaders, commit 7a3cdcb)
+  src/main/java/dev/elemore/iroh/shaderpack/ProgramSet.java: the program fallback parent map follows
+  Vitrail's common/src/main/java/dev/vitrail/pack/model/ProgramFallbacks.java, which Vitrail's NOTICE
+  lists as derived from Iris (https://github.com/IrisShaders/Iris, LGPL-3.0, copyright the Iris
+  contributors). Re-typed as a table; no other Vitrail or Iris code is copied.

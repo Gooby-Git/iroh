@@ -408,8 +408,139 @@ public class WorldRenderer {
 
     private static final boolean DEBUG_TERRAIN_NO_CULL = Boolean.getBoolean("iroh.debug.terrainNoCull");
 
+    // ------------------------------------------------------------------------------------------------ Iroh P3-6
+
+    /** true while the FULL pack path draws terrain this frame: the raster terrain layers are skipped */
+    public static volatile boolean packTerrainActive;
+
+    private int[][] packShadowIdx = new int[0][];
+    private int[] packShadowCount = new int[0];
+    private static final int[] ALL_FACINGS = new int[512];
+    static {
+        Arrays.fill(ALL_FACINGS, -1);
+    }
+    private final int[] packMask = new int[512];
+    private final int[] packLightMask = new int[512];
+    private final int[] packIdx = new int[512];
+    public int packShadowSections, packShadowDraws, packMainDraws;
+
+    static String packClass(TerrainRenderType t) {
+        return switch (t) {
+            case SOLID -> "terrain_solid";
+            case CUTOUT_MIPPED -> "terrain_cutout_mipped";
+            case CUTOUT -> "terrain_cutout";
+            case TRANSLUCENT, TRIPWIRE -> "terrain_translucent"; // tripwire: drawn in the translucent phase (gbuffers_water)
+        };
+    }
+
+    /**
+     * P3-6 FULL pack mode: the terrain as executor batches over Iroh's own buffers. Main passes: the raster path's
+     * visible chunk areas and section queues with its facing masks (same visibility, same commands). Shadow pass
+     * ({@code shadowView} != null): every built section whose 16^3 box lies within the shadow camera's ortho box
+     * (half extent {@code shadowDistance}, depth 0.05..256), all facing buckets. Commands go into this frame's indirect
+     * buffer; no raster draw happens. Render thread, inside a frame.
+     */
+    public void collectPackTerrain(java.util.List<dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry> out,
+                                   double camX, double camY, double camZ, double[] shadowView, double shadowDistance) {
+        if (this.sectionGraph == null || this.indirectBuffers == null)
+            return;
+        IndirectBuffer ib = this.indirectBuffers[Renderer.getCurrentFrame()];
+        IndexBuffer quads = Renderer.getDrawer().getQuadsIndexBuffer().getIndexBuffer();
+        Vec3 cam = new Vec3(camX, camY, camZ);
+        Set<TerrainRenderType> allowed = Initializer.CONFIG.uniqueOpaqueLayer ? TerrainRenderType.COMPACT_RENDER_TYPES : TerrainRenderType.SEMI_COMPACT_RENDER_TYPES;
+        packMainDraws = 0;
+        for (TerrainRenderType t : TerrainRenderType.VALUES) {
+            if (!allowed.contains(t))
+                continue;
+            boolean translucent = t == TerrainRenderType.TRANSLUCENT;
+            for (Iterator<ChunkArea> it = this.sectionGraph.getChunkAreaQueue().iterator(translucent); it.hasNext(); ) {
+                ChunkArea area = it.next();
+                DrawBuffers db = area.drawBuffers;
+                var queue = area.sectionQueue;
+                if (db.getAreaBuffer(t) == null || queue.size() == 0)
+                    continue;
+                int n = 0;
+                for (var s = queue.iterator(translucent); s.hasNext() && n < packIdx.length; ) {
+                    RenderSection section = s.next();
+                    packIdx[n] = section.inAreaIndex;
+                    packMask[n] = db.facingMask(cam, section, translucent);
+                    n++;
+                }
+                packAdd(out, ib, quads, db, t, packClass(t), n, packIdx, packMask, camX, camY, camZ);
+            }
+        }
+        if (shadowView != null && this.sectionGrid != null) {
+            int areas = this.sectionGrid.getChunkAreaManager().size;
+            if (packShadowIdx.length != areas) {
+                packShadowIdx = new int[areas][512];
+                packShadowCount = new int[areas];
+            }
+            Arrays.fill(packShadowCount, 0);
+            packShadowSections = 0;
+            double lim = shadowDistance + 13.9; // section half-diagonal
+            for (RenderSection s : this.sectionGrid.sections) {
+                ChunkArea a = s == null ? null : s.getChunkArea();
+                if (a == null || a.index >= areas)
+                    continue;
+                double cx = s.xOffset + 8 - camX, cy = s.yOffset + 8 - camY, cz = s.zOffset + 8 - camZ;
+                double vx = shadowView[0] * cx + shadowView[4] * cy + shadowView[8] * cz + shadowView[12];
+                double vy = shadowView[1] * cx + shadowView[5] * cy + shadowView[9] * cz + shadowView[13];
+                double vz = shadowView[2] * cx + shadowView[6] * cy + shadowView[10] * cz + shadowView[14];
+                if (Math.abs(vx) > lim || Math.abs(vy) > lim || vz > 13.9 || vz < -256 - 13.9)
+                    continue;
+                int c = packShadowCount[a.index];
+                if (c < 512) {
+                    packShadowIdx[a.index][c] = s.inAreaIndex;
+                    packShadowCount[a.index] = c + 1;
+                    packShadowSections++;
+                }
+            }
+            packShadowDraws = 0;
+            // P3-7 C: only the facing buckets the light can see (+ UNDEFINED), see ShadowPlanner
+            java.util.Arrays.fill(packLightMask, dev.elemore.iroh.shaderpack.runtime.ShadowPlanner.lightFacingMask(
+                    dev.elemore.iroh.shaderpack.runtime.ShadowPlanner.lightDir(shadowView)));
+            for (int i = 0; i < areas; i++) {
+                if (packShadowCount[i] == 0)
+                    continue;
+                ChunkArea a = this.sectionGrid.getChunkAreaManager().getChunkArea(i);
+                if (a == null)
+                    continue;
+                for (TerrainRenderType t : TerrainRenderType.VALUES)
+                    if (allowed.contains(t) && a.drawBuffers.getAreaBuffer(t) != null)
+                        packShadowDraws += packAdd(out, ib, quads, a.drawBuffers, t, "shadow:" + packClass(t), packShadowCount[i],
+                                packShadowIdx[i], packLightMask, camX, camY, camZ);
+            }
+        }
+        ib.submitUploads();
+    }
+
+    private int packAdd(java.util.List<dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry> out, IndirectBuffer ib,
+                        IndexBuffer quads, DrawBuffers db, TerrainRenderType t, String cls, int n, int[] idx, int[] mask,
+                        double camX, double camY, double camZ) {
+        int count = db.writePackCommands(n, idx, mask, t);
+        if (count == 0)
+            return 0;
+        int stride = DrawBuffers.packCommandStride();
+        ib.recordCopyCmd(org.lwjgl.system.MemoryUtil.memByteBuffer(DrawBuffers.packCommandPtr(), count * stride));
+        boolean translucent = t == TerrainRenderType.TRANSLUCENT;
+        long indexBuffer = translucent && db.getIndexBuffer() != null ? db.getIndexBuffer().getId() : quads.getId();
+        int indexType = translucent && db.getIndexBuffer() != null ? org.lwjgl.vulkan.VK10.VK_INDEX_TYPE_UINT16 : quads.indexType.value;
+        var o = db.origin();
+        out.add(new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Geometry(cls, "wide-terrain", null, 0,
+                new double[]{o.x - camX, o.y - camY, o.z - camZ},
+                new dev.elemore.iroh.shaderpack.runtime.PackFrameInputs.Indirect(db.getAreaBuffer(t).getId(), indexBuffer, indexType,
+                        ib.getId(), ib.getOffset(), count, stride)));
+        if (!cls.startsWith("shadow:"))
+            packMainDraws += count;
+        return count;
+    }
+
     public void renderSectionLayer(RenderType renderType, double camX, double camY, double camZ, Matrix4f modelView, Matrix4f projection) {
         if (Renderer.recordingCommandBuffer("renderSectionLayer") == null) // rc3r2 (td-7937f0): no frame recording
+            return;
+        // Iroh P3-6: the FULL pack path drew the terrain this frame (raster sections skipped; the pack output and
+        // depth were copied into the scene target before entities)
+        if (packTerrainActive && TerrainRenderType.get(renderType) != null)
             return;
         if (dev.elemore.iroh.diag.SlowFrames.ON) { // perf/frame-attrib
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.LAYERS, 1);

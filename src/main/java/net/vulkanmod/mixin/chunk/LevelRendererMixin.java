@@ -43,6 +43,7 @@ public abstract class LevelRendererMixin {
     @Inject(method = "setLevel", at = @At("RETURN"))
     private void setLevel(ClientLevel clientLevel, CallbackInfo ci) {
         this.worldRenderer.setLevel(clientLevel);
+        dev.elemore.iroh.shaderpack.runtime.PackRuntime.onSetLevel(); // P3-4: pack images freed on world change (no-op when off)
     }
 
     @Inject(method = "allChanged", at = @At("RETURN"))

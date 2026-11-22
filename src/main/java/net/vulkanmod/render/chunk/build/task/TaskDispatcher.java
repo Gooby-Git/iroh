@@ -198,7 +198,29 @@ public class TaskDispatcher {
 
     /** perf/uploads: render-thread section-upload budget per frame while playing (unlimited on loading screens). */
     private static final long UPLOAD_BUDGET_NS = Long.getLong("iroh.uploadBudgetUs", 1000L) * 1000L;
-    private static final long UPLOAD_BUDGET_BYTES = Long.getLong("iroh.uploadBudgetMB", 48L) << 20;
+    private static long uploadBudgetBytes = -1;
+
+    /**
+     * P3-7: bytes per frame. Explicit {@code -Diroh.uploadBudgetMB} wins; the default (48 MiB for the 16-byte section
+     * vertex) scales with the section vertex size, so FULL pack mode's 36-byte sections keep the same SECTION
+     * throughput (108 MiB): the time budget (iroh.uploadBudgetUs) still bounds the frame cost. knowledge/settings.md.
+     */
+    static long uploadBudgetBytes() {
+        if (uploadBudgetBytes < 0)
+            uploadBudgetBytes = derivedUploadBudget(System.getProperty("iroh.uploadBudgetMB"),
+                    net.vulkanmod.render.PipelineManager.terrainVertexFormat == null ? 16
+                            : net.vulkanmod.render.PipelineManager.terrainVertexFormat.getVertexSize());
+        return uploadBudgetBytes;
+    }
+
+    public static long derivedUploadBudget(String explicitMB, int vertexSize) {
+        if (explicitMB != null)
+            try {
+                return Long.parseLong(explicitMB.trim()) << 20;
+            } catch (NumberFormatException ignored) {
+            }
+        return (48L << 20) * Math.max(16, vertexSize) / 16;
+    }
 
     public boolean updateSections() {
         var mc = net.minecraft.client.Minecraft.getInstance();
@@ -242,7 +264,7 @@ public class TaskDispatcher {
         boolean flag = false;
         int n = 0;
         while ((result = this.compileResults.peek()) != null) {
-            if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > UPLOAD_BUDGET_BYTES)) {
+            if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > uploadBudgetBytes())) {
                 if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.sectionsDeferred += this.compileResults.size();
                 break;
             }

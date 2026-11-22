@@ -33,6 +33,8 @@ public final class ImageTrace {
     private record Rec(String name, String owner, int width, int height, int format, long createdFrame, VulkanImage image) {}
 
     private static final Map<Integer, Rec> LIVE = new LinkedHashMap<>();
+    /** P3-4 G1 fix: images with no GL name (pack render targets {@code pack:<target>}), by identity */
+    private static final Map<VulkanImage, Rec> LIVE_RAW = new java.util.IdentityHashMap<>();
     private static long created, deleteRequests, queued, destroyed, respecified;
 
     private ImageTrace() {}
@@ -69,6 +71,16 @@ public final class ImageTrace {
                 + "' frame " + frame + "\n" + stack(12));
     }
 
+    /** An image created outside the GL emulation (pack targets): traced from creation to the Vulkan destroy. */
+    public static synchronized void createdImage(VulkanImage image) {
+        if (image == null || !matches(image.owner, image.name)) return;
+        image.traced = true;
+        created++;
+        LIVE_RAW.put(image, new Rec(image.name, image.owner, image.width, image.height, image.format, frame, image));
+        SINK.accept("[iroh-trace] create " + image.name + " " + image.width + "x" + image.height + " fmt " + image.format
+                + " owner '" + image.owner + "' frame " + frame);
+    }
+
     /**
      * VkGlTexture.glDeleteTextures, after the name left the map. Logs only live traced ids (a second delete of the same
      * name is not logged: the name is no longer traced).
@@ -94,6 +106,7 @@ public final class ImageTrace {
     public static synchronized void destroyed(VulkanImage image) {
         if (image == null || !image.traced) return;
         destroyed++;
+        LIVE_RAW.remove(image);
         SINK.accept("[iroh-trace] destroyed " + image.name + " (frame " + frame + ")");
     }
 
@@ -101,7 +114,14 @@ public final class ImageTrace {
     public static synchronized String report() {
         StringBuilder sb = new StringBuilder("image trace '").append(FILTER).append("': created ").append(created)
                 .append(", delete requests ").append(deleteRequests).append(", respecified ").append(respecified)
-                .append(", queued ").append(queued).append(", destroyed ").append(destroyed).append(", live ").append(LIVE.size());
+                .append(", queued ").append(queued).append(", destroyed ").append(destroyed).append(", live ").append(LIVE.size() + LIVE_RAW.size());
+        if (!LIVE_RAW.isEmpty()) {
+            sb.append(" (non-GL ").append(LIVE_RAW.size()).append(':');
+            int n = 0;
+            for (Rec r : LIVE_RAW.values())
+                if (n++ < 16) sb.append(' ').append(r.name);
+            sb.append(n > 16 ? " ...)" : ")");
+        }
         // age buckets, then the oldest and newest 16 (a leak shows as a growing old bucket)
         int young = 0, mid = 0, old = 0;
         for (Rec r : LIVE.values()) {
@@ -127,7 +147,7 @@ public final class ImageTrace {
 
     /** Live traced GL ids (tests). */
     public static synchronized int liveCount() {
-        return LIVE.size();
+        return LIVE.size() + LIVE_RAW.size();
     }
 
     private static final StackWalker WALKER = StackWalker.getInstance();

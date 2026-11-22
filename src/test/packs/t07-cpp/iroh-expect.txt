@@ -1,0 +1,5 @@
+pass composite
+jsonhas programs/_root/composite.json includes.fragment lib/inner/helper.glsl
+jsonhas pack.json caseNotes 'lib/common.glsl' read as 'lib/Common.glsl'
+glsl _root/composite.fragment.glsl float myValue = max(max(1.0, 2.0),
+glsl _root/composite.fragment.glsl helper(myValue) * 14;

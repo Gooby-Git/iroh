@@ -1,0 +1,23 @@
+# geometry classes fall back to gbuffers_basic; consecutive classes merge into one pass
+json graph.json folders.<root>.frame.passes[0].id = gbuffers_basic
+json graph.json folders.<root>.frame.passes[0].writes[0].target = colortex0
+json graph.json folders.<root>.frame.passes[0].writes[0].half = main
+json graph.json folders.<root>.frame.passes[1].id = capture:depthtex2
+json graph.json folders.<root>.frame.passes[3].id = capture:depthtex1
+json graph.json folders.<root>.frame.drawnBy.terrain_solid = gbuffers_basic
+json graph.json folders.<root>.frame.drawnBy.hand_translucent = gbuffers_basic
+# composite reads main, writes alt, flips what it wrote
+json graph.json folders.<root>.frame.passes[5].id = composite
+json graph.json folders.<root>.frame.passes[5].writes[0].target = colortex1
+json graph.json folders.<root>.frame.passes[5].writes[0].half = alt
+json graph.json folders.<root>.frame.passes[5].flipsAfter = ["colortex1"]
+json graph.json folders.<root>.frame.passes[5].reads[0].half = main
+# final writes the output; gcolor is colortex0
+json graph.json folders.<root>.frame.passes[6].writes[0].target = output
+json graph.json folders.<root>.frame.passes[6].reads[0].resource = colortex0
+json graph.json folders.<root>.frame.targets.colortex1.doubled = true
+json graph.json folders.<root>.frame.targets.colortex1.pairNeeded = false
+jsonhas graph.json folders.<root>.frame.validation.info colortex1: written by [composite] and read by no pass
+json graph.json folders.<root>.resources.images[1].layers = 1
+json graph.json folders.<root>.resources.pipelines.composite.cull = none
+jsonhas graph.json folders.<root>.resources.pipelines.gbuffers_basic.cull GL_BACK -> VK FRONT

@@ -1,0 +1,12 @@
+pass gbuffers_basic
+pass composite
+pass final
+json programs/_root/composite.json reflection.drawBuffers = [1]
+json programs/_root/gbuffers_basic.json reflection.drawBuffers = [0]
+json programs/_root/final.json reflection.fragmentOutputs[0].name = gl_FragColor
+json programs/_root/final.json reflection.varyings[0].name = iroh_TexCoord
+json programs/_root/gbuffers_basic.json reflection.vertexInputs[0].compat = gl_Vertex
+json programs/_root/gbuffers_basic.json reflection.samplers[0].name = texture
+json pack.json programs.folders.<root>.drawnBy.gbuffers_terrain = gbuffers_basic
+glsl _root/gbuffers_basic.fragment.glsl texture(iroh_u_texture, uv)
+glsl _root/gbuffers_basic.vertex.glsl gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;

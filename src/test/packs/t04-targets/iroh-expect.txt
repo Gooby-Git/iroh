@@ -1,0 +1,12 @@
+pass composite
+json programs/_root/composite.json reflection.drawBuffers = [3,18]
+json programs/_root/composite.json reflection.fragmentOutputs[1].target = 18
+json programs/_root/composite.json constDirectives.colortex5Format = RGB10_A2
+json programs/_root/composite.json constDirectives.colortex0Format = RGBA16F
+json programs/_root/composite.json constDirectives.colortex3ClearColor = vec4(0.0, 0.0, 0.0, 1.0)
+json pack.json renderTargets.<root>.targets.colortex18.size = [1280,720]
+json pack.json renderTargets.<root>.targets.colortex18.format = R8
+json pack.json renderTargets.<root>.targets.colortex3.size = [256,128]
+json pack.json properties.blend.gbuffers_water|colortex4 = off
+json pack.json properties.alphaTest.gbuffers_clouds.func = GREATER
+json pack.json properties.flip.composite|colortex3 = true
