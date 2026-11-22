@@ -20,6 +20,10 @@ public abstract class SlowFramesMinecraftM {
     @Inject(method = "runTick", at = @At("HEAD"), require = 0)
     private void iroh$slowFrameStart(boolean tick, CallbackInfo ci) {
         if (!SlowFrames.ON) return;
+        if (dev.elemore.iroh.diag.SlowStacks.ON) { // hitches3: the sampler only runs in a world, never on screens / reloads
+            Minecraft mc = (Minecraft) (Object) this;
+            dev.elemore.iroh.diag.SlowStacks.setWorldActive(mc.level != null && mc.player != null && mc.screen == null && mc.getOverlay() == null);
+        }
         SlowFrames.frameStart();
         var wr = net.vulkanmod.render.chunk.WorldRenderer.getInstance();
         var td = wr != null ? wr.getTaskDispatcher() : null;

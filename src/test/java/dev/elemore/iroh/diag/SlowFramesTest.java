@@ -151,30 +151,54 @@ public final class SlowFramesTest {
         SlowFrames.quit();
         check("summary at quit", last().startsWith("[iroh-slow] summary (quit)"));
 
-        // 7. hitches2: the stack sampler names a lock wait and its owner (a "render" thread blocked 40 ms on a monitor)
+        // 7. hitches3: the stack sampler. A "render" thread is blocked 60 ms on a monitor owned by another thread; the
+        //    sampler is stepped by hand with a fake clock.
         Object lock = new Object();
-        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1), blocked = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
         Thread owner = new Thread(() -> {
             synchronized (lock) {
                 held.countDown();
-                try { Thread.sleep(60); } catch (InterruptedException ignored) {}
+                try { release.await(); } catch (InterruptedException ignored) {}
             }
         }, "light-engine-owner");
-        String[] rep = {""};
-        Thread renderT = new Thread(() -> {
-            try { held.await(); } catch (InterruptedException ignored) {}
-            SlowStacks.frameStart(System.nanoTime());
-            synchronized (lock) { /* blocked until the owner lets go */ }
-            rep[0] = SlowStacks.report();
-            SlowStacks.frameEnd();
-        }, "fake-render");
         owner.start();
+        held.await();
+        Thread renderT = new Thread(() -> { synchronized (lock) { } }, "fake-render");
         renderT.start();
+        while (renderT.getState() != Thread.State.BLOCKED) Thread.sleep(1);
+        long[] fake = {1_000_000_000L};
+        SlowStacks.CLOCK = () -> fake[0];
+        SlowStacks.resetForTest(renderT);
+        var mx = java.lang.management.ManagementFactory.getThreadMXBean();
+        // before the world-active signal: frames never arm the sampler
+        for (int f = 0; f < 50; f++) {
+            SlowStacks.setWorldActive(f % 2 == 0); // screens / reloads interleaved: never armed
+            SlowStacks.frameStart(fake[0]);
+            fake[0] += 100_000_000L; // a 100 ms frame
+            for (int k = 0; k < 20; k++) SlowStacks.sampleOnce(mx);
+            SlowStacks.frameEnd();
+        }
+        check("sampler takes nothing before a world is active for the warm-up frames (" + SlowStacks.samplesTaken + ")", SlowStacks.samplesTaken == 0);
+        for (int f = 0; f <= SlowStacks.WARMUP; f++) SlowStacks.setWorldActive(true);
+        SlowStacks.frameStart(fake[0]);
+        fake[0] += 9_000_000L; // past the 8 ms start
+        for (int k = 0; k < 200; k++) SlowStacks.sampleOnce(mx);
+        String rep = SlowStacks.report();
+        SlowStacks.frameEnd();
+        release.countDown();
         renderT.join();
         owner.join();
-        System.out.println("    " + rep[0]);
-        check("stack sampler: BLOCKED samples name the lock and its owner thread", rep[0].contains("BLOCKED") && rep[0].contains("owned by light-engine-owner"));
-        check("stack sampler: leaf / first non-JDK frames listed", rep[0].contains("; leaf:") && rep[0].contains("SlowFramesTest"));
+        System.out.println("    " + rep);
+        check("sampler: at most 64 samples per frame (" + SlowStacks.samplesTaken + " taken, " + SlowStacks.samplesSkippedCap + " capped)",
+                SlowStacks.samplesTaken == 64 && SlowStacks.samplesSkippedCap == 136);
+        check("sampler: BLOCKED samples name the lock and its owner thread (no monitor/synchronizer search)",
+                rep.contains("BLOCKED") && rep.contains("owned by light-engine-owner"));
+        check("sampler: overhead is counted for the summary", SlowStacks.overhead().contains("64 samples") && SlowStacks.sampleNs > 0);
+        SlowStacks.frameStart(fake[0]);
+        for (int k = 0; k < 10; k++) SlowStacks.sampleOnce(mx); // frame younger than 8 ms: nothing
+        check("sampler: nothing while the frame is younger than 8 ms", SlowStacks.samplesTaken == 64);
+        SlowStacks.frameEnd();
 
         System.out.println("# slowframes " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);

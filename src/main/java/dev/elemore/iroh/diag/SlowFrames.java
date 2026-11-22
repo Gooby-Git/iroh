@@ -171,8 +171,8 @@ public final class SlowFrames {
         wallNs[head] = wall;
         cpuNs[head] = CPU.getAsLong() - cpuStart;
         allocBytes[head] = ALLOC.getAsLong() - allocStart;
+        if (SlowStacks.ON) SlowStacks.frameEnd(); // stop sampling before the report reads the buffer
         if (wall > threshold()) slowFrame(head);
-        if (SlowStacks.ON) SlowStacks.frameEnd();
         if (now - lastSummary >= SUMMARY_EVERY_NS) {
             SINK.accept(summary("60 s"));
             lastSummary = now;
@@ -396,6 +396,7 @@ public final class SlowFrames {
                     .append(ms(largestNs[i] / largestCount[i]));
         }
         if (!any) b.append(" none");
+        if (SlowStacks.ON) b.append(SlowStacks.overhead());
         return b.toString();
     }
 
