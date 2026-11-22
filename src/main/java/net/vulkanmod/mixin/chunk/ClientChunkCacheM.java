@@ -22,7 +22,9 @@ public class ClientChunkCacheM {
     @Inject(method = "replaceWithPacketData", at = @At(value = "INVOKE",
             target = "Lnet/minecraft/client/multiplayer/ClientLevel;onChunkLoaded(Lnet/minecraft/world/level/ChunkPos;)V"))
     private void setChunkStatus(int x, int z, FriendlyByteBuf friendlyByteBuf, CompoundTag compoundTag, Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer, CallbackInfoReturnable<@Nullable LevelChunk> cir) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK); // perf/hitches
         ChunkStatusMap.INSTANCE.setChunkStatus(x, z, ChunkStatusMap.DATA_READY);
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK);
     }
 
     @Inject(method = "drop", at = @At(value = "INVOKE",

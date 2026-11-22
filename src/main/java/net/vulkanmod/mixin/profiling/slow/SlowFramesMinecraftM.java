@@ -14,7 +14,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(value = Minecraft.class, priority = 900)
 public abstract class SlowFramesMinecraftM {
-    private static final String RUN_ALL = "Lnet/minecraft/client/Minecraft;runAllTasks()V";
     private static final String TICK = "Lnet/minecraft/client/Minecraft;tick()V";
     private static final String LIMIT = "Lcom/mojang/blaze3d/systems/RenderSystem;limitDisplayFPS(I)V";
 
@@ -36,15 +35,7 @@ public abstract class SlowFramesMinecraftM {
         if (SlowFrames.ON) SlowFrames.frameEnd();
     }
 
-    @Inject(method = "runTick", at = @At(value = "INVOKE", target = RUN_ALL), require = 0)
-    private void iroh$tasksIn(boolean tick, CallbackInfo ci) {
-        if (SlowFrames.ON) SlowFrames.enter(Phase.TASKS);
-    }
-
-    @Inject(method = "runTick", at = @At(value = "INVOKE", target = RUN_ALL, shift = At.Shift.AFTER), require = 0)
-    private void iroh$tasksOut(boolean tick, CallbackInfo ci) {
-        if (SlowFrames.ON) SlowFrames.exit(Phase.TASKS);
-    }
+    // perf/hitches: the TASKS phase is timed in TaskBudgetM (it wraps the same call)
 
     @Inject(method = "runTick", at = @At(value = "INVOKE", target = TICK), require = 0)
     private void iroh$tickIn(boolean tick, CallbackInfo ci) {

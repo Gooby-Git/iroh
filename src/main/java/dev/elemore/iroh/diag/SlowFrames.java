@@ -31,12 +31,17 @@ public final class SlowFrames {
         UPLOAD_SUBMIT("upload submit"),    // UploadManager.submitUploads / StagingBuffer.flushConsumers
         TASKS("tasks"),                    // Minecraft.runAllTasks: packets, recordRenderCall, executor queue
         TICK("client tick"),               // Minecraft.tick
+        CHUNK_PACKET("chunk packet data"), // ClientChunkCache.replaceWithPacketData (inside tasks)
+        IROH_CHUNK("Iroh chunk hooks"),    // Iroh's share of a chunk load / section dirty mark
+        LIGHT("client light updates"),     // renderLevel: pollLightUpdates + runLightUpdates (light engine)
+        BUFFER_FLUSH("buffer flush"),      // renderLevel: MultiBufferSource endBatch / endLastBatch (entity draws)
         RENDER("render other"),            // GameRenderer.render (self: everything not split out below)
         FENCE("frame fence"),              // vkWaitForFences for the frame slot
         ACQUIRE("acquire"),                // vkAcquireNextImageKHR
         BEGIN("begin frame"),              // Renderer.beginFrame (rest: initFrame, frees, begin pass)
         SETUP_TERRAIN("setup terrain"),    // WorldRenderer.setupRenderer (self)
         GRAPH_UPDATE("visibility graph"),  // SectionGraph.update (+ defer waits)
+        SCHEDULE_REBUILDS("schedule rebuilds"), // SectionGraph.scheduleRebuilds: region block copies on the render thread
         TERRAIN_DRAW("terrain draw"),      // WorldRenderer.renderSectionLayer (self)
         SORT("translucent sort"),          // sortTranslucentSections
         ENTITIES("entities"),
@@ -61,8 +66,8 @@ public final class SlowFrames {
     }
 
     public enum Counter {
-        TICKS("ticks"), TASKS("tasks"), SECTIONS("sections"), SECTION_KB("sectionKB"), SORTED("sorted"),
-        GRAPH_UPDATES("graphUpd"), ENTITIES("entities"), BLOCK_ENTITIES("blockEnt"), LAYERS("layers"),
+        TICKS("ticks"), TASKS("tasks"), CHUNKS("chunkPackets"), DEFERRED_TASKS("deferredTasks"), SECTIONS("sections"), SECTION_KB("sectionKB"), SORTED("sorted"),
+        GRAPH_UPDATES("graphUpd"), GRAPH_FILTER_ONLY("graphFilterOnly"), REBUILDS_QUEUED("dirtyVisible"), REBUILDS_SCHEDULED("rebuildsScheduled"), ENTITIES("entities"), BLOCK_ENTITIES("blockEnt"), LAYERS("layers"),
         HOOKS("hooks"), EMU_DRAWS("emuDraws"), AREA_REALLOCS("areaGrow"), AREA_GROW_KB("areaGrowKB"), STAGING_WAITS("stagingWaits"), BUILDERS_BUSY("buildersBusy"), PENDING_BUILDS("pendingBuilds"), PENDING_UPLOADS("pendingUploads");
 
         public final String label;
@@ -141,6 +146,7 @@ public final class SlowFrames {
         java.util.Arrays.fill(cur, 0);
         java.util.Arrays.fill(curC, 0);
         slowestTask = slowestHook = null;
+        nTypes = 0;
         slowestTaskNs = slowestHookNs = 0;
         depth = 0;
         inFrame = true;
@@ -224,6 +230,83 @@ public final class SlowFrames {
             slowestTaskNs = ns;
             slowestTask = task;
         }
+        // perf/hitches: time per packet type (the packet a handler lambda captured); no allocation after a type is seen
+        Object key = KEY.get(task.getClass()).key(task);
+        int i = 0;
+        while (i < nTypes && typeKey[i] != key) i++;
+        if (i == nTypes) {
+            if (nTypes == typeKey.length) return;
+            typeKey[nTypes++] = key;
+            typeNs[i] = 0;
+            typeCount[i] = 0;
+        }
+        typeNs[i] += ns;
+        typeCount[i]++;
+    }
+
+    /** Per-frame time by task key (packet type, or task class). */
+    private static final Object[] typeKey = new Object[48];
+    private static final long[] typeNs = new long[48];
+    private static final int[] typeCount = new int[48];
+    private static int nTypes;
+
+    /** How to key a task: the captured packet's type if it holds one, else its class. Resolved once per task class. */
+    interface Keyer {
+        Object key(Object task);
+    }
+
+    private static final ClassValue<Keyer> KEY = new ClassValue<>() {
+        @Override
+        protected Keyer computeValue(Class<?> c) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (f.getType().isPrimitive()) continue;
+                try {
+                    f.setAccessible(true);
+                } catch (Throwable t) {
+                    continue;
+                }
+                if (isPacketClass(f.getType()) || f.getType().getSimpleName().endsWith("Packet")) {
+                    return task -> {
+                        try {
+                            Object p = f.get(task);
+                            return p == null ? c : packetKey(p);
+                        } catch (Throwable t) {
+                            return c;
+                        }
+                    };
+                }
+            }
+            return task -> c;
+        }
+    };
+
+    private static boolean isPacketClass(Class<?> t) {
+        try {
+            return net.minecraft.network.protocol.Packet.class.isAssignableFrom(t);
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /** The packet's type (a stable object per packet kind), or its class. */
+    private static Object packetKey(Object p) {
+        try {
+            if (p instanceof net.minecraft.network.protocol.Packet<?> pk) return pk.type();
+        } catch (Throwable ignored) {
+        }
+        return p.getClass();
+    }
+
+    private static String keyName(Object k) {
+        if (k instanceof Class<?> c) {
+            String n = c.getSimpleName();
+            return n.isEmpty() ? c.getName() : n;
+        }
+        try {
+            if (k instanceof net.minecraft.network.protocol.PacketType<?> t) return t.id().getPath();
+        } catch (Throwable ignored) {
+        }
+        return String.valueOf(k);
     }
 
     public static void hook(Object hook, long ns) {
@@ -263,6 +346,17 @@ public final class SlowFrames {
         int[] c = counters[r];
         for (int i = 0; i < C; i++) if (c[i] != 0) b.append(' ').append(COUNTERS[i].label).append('=').append(c[i]);
         if (slowestTask != null) b.append("; slowest task ").append(name(slowestTask)).append(' ').append(ms(slowestTaskNs));
+        if (nTypes > 0) { // perf/hitches: the three task kinds with the most time
+            b.append("; tasks by kind:");
+            boolean[] used = new boolean[nTypes];
+            for (int k = 0; k < 3; k++) {
+                int best = -1;
+                for (int i = 0; i < nTypes; i++) if (!used[i] && (best < 0 || typeNs[i] > typeNs[best])) best = i;
+                if (best < 0) break;
+                used[best] = true;
+                b.append(' ').append(keyName(typeKey[best])).append(" x").append(typeCount[best]).append(' ').append(ms(typeNs[best]));
+            }
+        }
         if (slowestHook != null) b.append("; slowest hook ").append(name(slowestHook)).append(' ').append(ms(slowestHookNs));
         SINK.accept(b.toString());
     }
@@ -319,6 +413,7 @@ public final class SlowFrames {
                 f.setAccessible(true);
                 Object v = f.get(o);
                 if (v != null && v.getClass().getSimpleName().endsWith("Packet")) return v.getClass().getSimpleName() + " (packet)";
+                if (v != null && isPacketClass(v.getClass())) return keyName(packetKey(v)) + " (packet)";
             }
         } catch (Throwable ignored) {
         }

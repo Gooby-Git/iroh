@@ -35,8 +35,30 @@ public class TaskDispatcher {
     }
 
     public void createThreads() {
-        int n = Math.max((Runtime.getRuntime().availableProcessors() - 1) / 2, 1);
-        createThreads(n);
+        createThreads(0);
+    }
+
+    /** perf/hitches: builders allowed to take tasks now (adaptive, ThreadPolicy); the others park. */
+    private volatile int activeLimit = Integer.MAX_VALUE;
+    private dev.elemore.iroh.perf.ThreadPolicy.Adaptive adaptive;
+    private volatile int parkedThreads;
+    private final Object parkLock = new Object();
+
+    /** Render thread, once per frame: raises or lowers the active builder count with the backlog. */
+    public void adaptBuilders() {
+        var a = this.adaptive;
+        if (a == null) return;
+        int limit = a.update(this.pendingTasks.get(), System.nanoTime());
+        if (limit != this.activeLimit) {
+            this.activeLimit = limit;
+            synchronized (this.parkLock) {
+                this.parkLock.notifyAll();
+            }
+        }
+    }
+
+    public int activeBuilderLimit() {
+        return this.threads == null ? 0 : Math.min(this.activeLimit, this.threads.length);
     }
 
     public void createThreads(int n) {
@@ -52,17 +74,25 @@ public class TaskDispatcher {
             }
         }
 
-        // Auto select thread count
-        if (n == 0) {
-            n = Math.max((Runtime.getRuntime().availableProcessors() - 1) / 2, 1);
-        }
+        // perf/hitches: count from physical cores (ThreadPolicy), configured count = the base; adaptive extra builders
+        // run only while the backlog is large
+        int physical = dev.elemore.iroh.perf.ThreadPolicy.physicalCores();
+        int base = dev.elemore.iroh.perf.ThreadPolicy.baseBuilders(n, physical);
+        int max = dev.elemore.iroh.perf.ThreadPolicy.maxBuilders(base, physical, dev.elemore.iroh.perf.ThreadPolicy.ADAPTIVE);
+        this.adaptive = max > base ? new dev.elemore.iroh.perf.ThreadPolicy.Adaptive(base, max) : null;
+        this.activeLimit = base;
+        n = max;
 
         this.threads = new Thread[n];
         this.resources = new BuilderResources[n];
 
         for (int i = 0; i < n; i++) {
             BuilderResources builderResources = new BuilderResources();
-            Thread thread = new Thread(() -> runTaskThread(builderResources),
+            final int index = i;
+            Thread thread = new Thread(() -> {
+                        dev.elemore.iroh.perf.ThreadPolicy.registerBuilderThread(); // perf/hitches: nice + off the render core
+                        runTaskThread(index, builderResources);
+                    },
                     "Builder-" + i);
             thread.setPriority(Thread.NORM_PRIORITY);
 
@@ -72,8 +102,23 @@ public class TaskDispatcher {
         }
     }
 
-    private void runTaskThread(BuilderResources builderResources) {
+    private void runTaskThread(int index, BuilderResources builderResources) {
         while(!this.stopThreads) {
+            if (index >= this.activeLimit) { // perf/hitches: an adaptive builder parks while the backlog is small
+                synchronized (this.parkLock) { // its own monitor: schedule()'s notify() must reach an idle ACTIVE builder
+                    if (index >= this.activeLimit && !this.stopThreads) {
+                        this.parkedThreads++;
+                        try {
+                            this.parkLock.wait(200);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        } finally {
+                            this.parkedThreads--;
+                        }
+                    }
+                }
+                continue;
+            }
             ChunkTask task = this.pollTask();
 
             if(task == null)
@@ -135,6 +180,9 @@ public class TaskDispatcher {
         synchronized (this) {
             this.notifyAll();
         }
+        synchronized (this.parkLock) {
+            this.parkLock.notifyAll();
+        }
 
         for (Thread thread : this.threads) {
             try {
@@ -174,7 +222,7 @@ public class TaskDispatcher {
 
     /** perf/frame-attrib: render-thread view of the builders (slow-frame counters). */
     public int busyBuilders() {
-        return this.threads == null ? 0 : Math.max(0, this.threads.length - this.idleThreads);
+        return this.threads == null ? 0 : Math.max(0, this.threads.length - this.idleThreads - this.parkedThreads);
     }
 
     public int pendingTaskCount() {
@@ -287,7 +335,7 @@ public class TaskDispatcher {
 
     public String getStats() {
         int taskCount = highPriorityTasks.size() + lowPriorityTasks.size();
-        return String.format("iT: %d Ts: %d", this.idleThreads, taskCount);
+        return String.format("iT: %d Ts: %d B: %d/%d", this.idleThreads, taskCount, activeBuilderLimit(), this.threads == null ? 0 : this.threads.length);
     }
 
     public BuilderResources[] getResourcesArray() {

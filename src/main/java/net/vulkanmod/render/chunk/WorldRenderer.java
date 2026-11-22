@@ -72,6 +72,9 @@ public class WorldRenderer {
 
     private SectionGraph sectionGraph;
     private boolean graphNeedsUpdate;
+    /** perf/hitches (graph cache): uploaded / edited sections may have changed connectivity; see GraphRefresh. */
+    private boolean graphStructureDirty = true;
+    private long lastFullGraphNs = -1, lastPlayerEditNs = -1;
 
     private final Set<BlockEntity> globalBlockEntities = Sets.newHashSet();
 
@@ -203,7 +206,16 @@ public class WorldRenderer {
                     dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.GRAPH_UPDATES, 1);
                     dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.GRAPH_UPDATE);
                 }
-                this.sectionGraph.update(camera, frustum, spectator);
+                long nowNs = System.nanoTime();
+                boolean refresh = !net.vulkanmod.render.chunk.graph.SectionGraph.CACHE
+                        || dev.elemore.iroh.perf.GraphRefresh.refreshNow(this.graphStructureDirty, nowNs, this.lastFullGraphNs, this.lastPlayerEditNs);
+                if (refresh) {
+                    this.graphStructureDirty = false;
+                    this.lastFullGraphNs = nowNs;
+                } else if (this.graphStructureDirty) {
+                    this.graphNeedsUpdate = true; // the walk is still owed: come back next frame
+                }
+                this.sectionGraph.update(camera, frustum, spectator, refresh);
                 this.waitForImportantRebuilds(camera, frustum, spectator);
                 if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.GRAPH_UPDATE);
             }
@@ -267,6 +279,7 @@ public class WorldRenderer {
     }
 
     public void uploadSections() {
+        this.taskDispatcher.adaptBuilders(); // perf/hitches: adaptive builder count from the backlog
         this.minecraft.getProfiler().push("upload");
 
         Profiler profiler = Profiler.getMainProfiler();
@@ -287,8 +300,10 @@ public class WorldRenderer {
         }
 
         try {
-            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections())
+            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections()) {
                 this.graphNeedsUpdate = true;
+                this.graphStructureDirty = true; // perf/hitches: connectivity may have changed
+            }
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
             allChanged();
@@ -583,9 +598,12 @@ public class WorldRenderer {
     }
 
     public void setSectionDirty(int x, int y, int z, boolean flag) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK); // perf/hitches
+        if (flag) this.lastPlayerEditNs = System.nanoTime(); // perf/hitches: the player's edit shows without the refresh delay
         this.sectionGrid.setDirty(x, y, z, flag);
 
         this.renderRegionCache.remove(x, z);
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK);
     }
 
     public SectionGrid getSectionGrid() {

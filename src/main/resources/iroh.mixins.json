@@ -42,6 +42,8 @@
     "profiling.slow.SlowFramesGameRendererM",
     "profiling.slow.SlowFramesTaskM",
     "profiling.slow.SlowFramesLevelM",
+    "profiling.slow.SlowFramesLevel2M",
+    "profiling.slow.SlowFramesChunkM",
 
     "render.BufferUploaderM",
     "render.GameRendererMixin",
@@ -63,6 +65,7 @@
     "render.entity.model.ModelPartCubeM",
     "render.entity.model.ModelPartM",
     "render.frame.MinecraftMixin",
+    "render.frame.TaskBudgetM",
     "render.frame.RenderSystemMixin",
     "render.frapi.BakedModelM",
     "render.frapi.ItemRendererAccessor",

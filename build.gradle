@@ -164,6 +164,16 @@ tasks.register('coreOverrideTest', JavaExec) {
 	if (project.hasProperty('pack')) args project.property('pack')
 }
 
+// perf/hitches: budgeted task drain, thread policy, adaptive builders, rebuild allowance, graph refresh. ./gradlew hitchesTest
+tasks.register('hitchesTest', JavaExec) {
+	group = 'verification'
+	description = 'Hitch fixes: drain order/latency invariants (fake clock), builder rules, topology, graph refresh gating'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.perf.HitchesTest'
+	jvmArgs '-ea'
+}
+
 // perf/frame-attrib: -Diroh.slowFrames ring/record/summary on a fake clock. ./gradlew slowFramesTest
 tasks.register('slowFramesTest', JavaExec) {
 	group = 'verification'
