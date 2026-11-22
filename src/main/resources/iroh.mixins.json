@@ -108,7 +108,6 @@
     "wayland.InputConstantsM",
     "wayland.MinecraftMixin",
 
-    "texture.mip.MipmapGeneratorM",
 
     "compatibility.PostChainM",
     "compatibility.PostPassM",

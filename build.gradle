@@ -730,3 +730,15 @@ tasks.register('packPerfTest', JavaExec) {
 tasks.register('printTestCp') {
 	doLast { println sourceSets.test.runtimeClasspath.asPath }
 }
+
+// INT-1: the integrated jar is inert without properties (all features' hooks, no game, no device) + pinned hot-path
+// guard list. ./gradlew integrationInertTest ; last line "# integrationinert PASS n/n"
+tasks.register('integrationInertTest', JavaExec) {
+	group = 'verification'
+	description = 'Integrated default-off proof: pack, upscale, perf, slow frames, api 4; hot-path audit'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.inttest.IntegrationInertTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
