@@ -250,6 +250,8 @@ public class GraphicsPipeline extends Pipeline {
     }
 
     public void cleanUp() {
+        if (this.destroyed) return; // rc15: idempotent (shutdown destroyAll + a pending scheduled cleanUp)
+        this.destroyed = true;
         vkDestroyShaderModule(DeviceManager.vkDevice, vertShaderModule, null);
         vkDestroyShaderModule(DeviceManager.vkDevice, fragShaderModule, null);
 

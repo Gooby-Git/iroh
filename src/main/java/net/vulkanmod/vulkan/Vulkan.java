@@ -177,6 +177,15 @@ public class Vulkan {
 
         Renderer.getInstance().cleanUpResources();
 
+        // rc15 (td-05108a): objects the owners never closed, before the frame ops and leftovers below run
+        try {
+            int fbs = net.vulkanmod.gl.VkGlFramebuffer.destroyAll();
+            int pipelines = net.vulkanmod.vulkan.shader.Pipeline.destroyAll();
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: shutdown destroyed {} pipelines and {} GL framebuffers left by their owners", pipelines, fbs);
+        } catch (Throwable t) {
+            net.vulkanmod.Initializer.LOGGER.warn("Iroh: shutdown cleanup failed: {}", t.toString());
+        }
+
         freeStagingBuffers();
 
         try {

@@ -156,6 +156,27 @@ public abstract class Pipeline {
         vkDestroyPipelineCache(DEVICE, PIPELINE_CACHE, null);
     }
 
+    /**
+     * rc15 (td-05108a): at shutdown, destroys every pipeline still registered (mod / vanilla ShaderInstance and
+     * EffectInstance pipelines, GL-shim programs: only Iroh's four core pipelines were destroyed before, so their
+     * shader modules, VkPipelines, layouts and descriptor pools were reported as leaked by vkDestroyDevice).
+     * Returns how many were destroyed. Device idle expected.
+     */
+    public static int destroyAll() {
+        java.util.List<Pipeline> left = new java.util.ArrayList<>(PIPELINES);
+        int n = 0;
+        for (Pipeline p : left) {
+            try {
+                p.cleanUp();
+                n++;
+            } catch (Throwable t) {
+                net.vulkanmod.Initializer.LOGGER.warn("Iroh: pipeline {} cleanup at shutdown failed: {}", p.name, t.toString());
+            }
+        }
+        PIPELINES.clear();
+        return n;
+    }
+
     public static void recreateDescriptorSets(int frames) {
         PIPELINES.forEach(pipeline -> {
             pipeline.destroyDescriptorSets();
@@ -253,6 +274,9 @@ public abstract class Pipeline {
     public void scheduleCleanUp() {
         MemoryManager.getInstance().addFrameOp(this::cleanUp);
     }
+
+    /** rc15: set by the first cleanUp; a second one (a scheduled frame op after destroyAll) does nothing. */
+    protected boolean destroyed;
 
     public abstract void cleanUp();
 

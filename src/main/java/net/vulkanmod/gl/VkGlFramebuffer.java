@@ -99,6 +99,26 @@ public class VkGlFramebuffer {
 
     }
 
+    /** rc15 (td-05108a): shutdown: cleans every GL framebuffer its owner never deleted. Returns the count. */
+    public static int destroyAll() {
+        int n = 0;
+        for (VkGlFramebuffer fb : new java.util.ArrayList<>(map.values())) {
+            try {
+                if (fb.framebuffer != null) {
+                    fb.cleanUp(false);
+                    fb.framebuffer = null;
+                }
+                n++;
+            } catch (Throwable t) {
+                net.vulkanmod.Initializer.LOGGER.warn("Iroh: GL framebuffer cleanup at shutdown failed: {}", t.toString());
+            }
+        }
+        map.clear();
+        boundFramebuffer = null;
+        readFramebuffer = null;
+        return n;
+    }
+
     public static void deleteFramebuffer(int id) {
         if (id == 0) {
             return;
