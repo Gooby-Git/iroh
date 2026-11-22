@@ -392,9 +392,15 @@ public final class IrohOptions {
                 .label(v -> Component.translatable("iroh.options.look." + v.name().toLowerCase()))
                 .choiceUnavailable(v -> {
                     if (v != dev.elemore.iroh.rt.RtLook.RAY_TRACED) return null;
-                    String r = dev.elemore.iroh.rt.game.RtLookArbiter.rowDisabledReason(dev.elemore.iroh.rt.game.RtDeviceFeatures.caps.supported()
-                            || Availability.rayTracing() == null, dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled);
-                    return r == null || r.contains("restart") ? null : Component.translatable("iroh.reason.needsRt");
+                    // queried at launch (dev gate + Look RT): the device's real answer; restart-only is still selectable
+                    if (dev.elemore.iroh.rt.game.RtSwitch.requestedAtLaunch()) {
+                        String r = dev.elemore.iroh.rt.game.RtLookArbiter.rowDisabledReason(dev.elemore.iroh.rt.game.RtDeviceFeatures.caps.supported(),
+                                dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled);
+                        return r == null || r.contains("restart") ? null : Component.translatable("iroh.reason.needsRt");
+                    }
+                    // INT-4: not queried this launch: the capability report says "needs RT" or "not yet" (dev gate), never
+                    // "needs a GPU with ray query" on a GPU that has it
+                    return Availability.rayTracing();
                 });
         LOOK.applier = v -> {
             config.look = v.name();

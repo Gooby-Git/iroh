@@ -254,6 +254,14 @@ public abstract class DeviceManager {
             PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
 
             int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
+            if (res != VK_SUCCESS && dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled) {
+                // INT-4: a driver that offers the RT features but refuses the device with them: ONE line, RT off, retry
+                // once with exactly the int-3 chain and extensions (never fail a launch for an optional feature)
+                deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.unchain(deviceVulkan12Features, res));
+                createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));
+                enabledFeatures = enabledFeatures.substring(0, enabledFeatures.indexOf(" rt=")) + dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits();
+                res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
+            }
             Vulkan.checkResult(res, "Failed to create logical device");
 
             vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);

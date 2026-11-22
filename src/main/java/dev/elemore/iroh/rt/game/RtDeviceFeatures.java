@@ -69,6 +69,7 @@ public final class RtDeviceFeatures {
                     .accelerationStructure(true).pNext(tail);
             VkPhysicalDeviceRayQueryFeaturesKHR erq = VkPhysicalDeviceRayQueryFeaturesKHR.calloc(s).sType$Default().rayQuery(true).pNext(eas.address());
             enabled = true;
+            chainedTail = tail;
             return erq.address();
         } catch (Throwable t) {
             enabled = false;
@@ -94,6 +95,22 @@ public final class RtDeviceFeatures {
         // would be invalid, so RT stays off ("unavailable") until a decode pass exists
         if (!snormVertex) m.add("R16G16B16A16_SNORM as acceleration-structure vertex format");
         return m.isEmpty() ? null : String.join(", ", m);
+    }
+
+    /** the 1.2 struct's pNext before {@link #chain} put the RT structs in front (for {@link #unchain}) */
+    private static long chainedTail;
+
+    /**
+     * INT-4: vkCreateDevice failed WITH the RT chain (a driver offering features it then refuses). Records ONE rt
+     * failure, turns RT off and restores the 1.2 struct (bufferDeviceAddress false); returns the original pNext so the
+     * caller retries with the int-3 device. Only called when {@link #enabled}.
+     */
+    public static long unchain(VkPhysicalDeviceVulkan12Features enable12, int vkResult) {
+        enabled = false;
+        enable12.bufferDeviceAddress(false);
+        RtSwitch.fallBack("deviceCreate", new IllegalStateException("vkCreateDevice with the RT features returned " + vkResult
+                + "; retried without them"));
+        return chainedTail;
     }
 
     /** INT-4: the reason RT stayed off on this device (null = available or not asked) */

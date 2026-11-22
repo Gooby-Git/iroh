@@ -90,10 +90,17 @@ public final class RtFrameHooks {
      * (the RT device features are chosen at launch, like FSR's: without them the choice takes effect after a restart).
      */
     public static String applyLook(boolean rt) {
+        RtSwitch.lookChanged(rt); // INT-4 rule 8 follows the row (the pack may turn on again after "Navidson")
         if (!rt) {
             RtSwitch.ON = false;
             stop();
             return null;
+        }
+        // INT-4 MainPassArbiter rule 8: the Look switch picks one: the pack path goes off now, even if RT itself needs a
+        // restart (Look RT not running = raster, never the pack)
+        if (dev.elemore.iroh.shaderpack.runtime.PackRuntime.active()) {
+            dev.elemore.iroh.shaderpack.runtime.PackRuntime.setEnabled(false);
+            RtDeviceFeatures.log("Iroh: Look set to ray tracing: the shader pack path is off");
         }
         if (!RtDeviceFeatures.enabled) return "restart";
         if (RtFailures.reason() != null) return "failed";

@@ -257,6 +257,34 @@ public final class FirstLaunchSafetyTest {
                 iWhy > 0 && iLog > iWhy && iRet > iLog && iRet < iBda && iBda < iOn);
         check("device without RT: the Look falls back to RASTER", dev.elemore.iroh.render.MainPassArbiter.resolveLook(true, false, true)
                 == dev.elemore.iroh.render.MainPassArbiter.Look.RASTER);
+        // a driver that OFFERS RT but refuses vkCreateDevice with it: one line, RT off, retry with the int-3 chain
+        dev.elemore.iroh.rt.game.RtFailures.resetForTest();
+        FeatureFailures.resetForTest("");
+        dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled = true;
+        org.lwjgl.vulkan.VkPhysicalDeviceVulkan12Features v12 = org.lwjgl.vulkan.VkPhysicalDeviceVulkan12Features.calloc().bufferDeviceAddress(true);
+        long[] back = new long[1];
+        check("vkCreateDevice refused with RT: unchain never throws", noThrow(() -> back[0] = dev.elemore.iroh.rt.game.RtDeviceFeatures.unchain(v12, -3)));
+        check("vkCreateDevice refused with RT: RT off, bufferDeviceAddress cleared, ONE rt failure, VMA/arena flags back to 0, no rt=on (" + FeatureFailures.snapshot() + ")",
+                !dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled && !v12.bufferDeviceAddress() && FeatureFailures.snapshot().keySet().equals(java.util.Set.of("rt"))
+                        && dev.elemore.iroh.rt.game.RtVma.allocatorFlags() == 0 && dev.elemore.iroh.rt.game.RtVma.arenaUsage() == 0
+                        && dev.elemore.iroh.rt.game.RtStartup.apiPart().equals(" rt=failed"));
+        v12.free();
+        String dm = Files.readString(Path.of("src/main/java/net/vulkanmod/vulkan/device/DeviceManager.java"));
+        int c1 = dm.indexOf("int res = vkCreateDevice("), u = dm.indexOf("RtDeviceFeatures.unchain(", c1), c2 = dm.indexOf("res = vkCreateDevice(", u),
+                chk = dm.indexOf("Vulkan.checkResult(res, \"Failed to create logical device\")", c1);
+        check("DeviceManager: a failed create with RT retries ONCE with the original extensions before the fatal check",
+                c1 > 0 && u > c1 && c2 > u && chk > c2 && dm.indexOf("Vulkan.REQUIRED_EXTENSION", u) < c2);
+        // the Look row at runtime: rule 8 follows the row (launch Look RAY_TRACED here)
+        String back1 = dev.elemore.iroh.rt.game.RtFrameHooks.applyLook(false);
+        boolean packAllowed = dev.elemore.iroh.render.MainPassArbiter.packRefusal(dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced()) == null;
+        String back2 = dev.elemore.iroh.rt.game.RtFrameHooks.applyLook(true);
+        boolean packRefused = dev.elemore.iroh.render.MainPassArbiter.packRefusal(dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced()) != null;
+        check("Look row at runtime: Navidson lets the pack turn on again; back to ray tracing refuses it and, without the launch features, says restart ("
+                + back1 + ", " + back2 + ")", back1 == null && packAllowed && "restart".equals(back2) && packRefused && !dev.elemore.iroh.rt.game.RtSwitch.ON);
+        String fh = Files.readString(Path.of("src/main/java/dev/elemore/iroh/rt/game/RtFrameHooks.java"));
+        String al = fh.substring(fh.indexOf("public static String applyLook("));
+        check("Look row -> ray tracing turns a running pack path off BEFORE RT may start (rule 8 at runtime)",
+                al.indexOf("PackRuntime.setEnabled(false)") > 0 && al.indexOf("PackRuntime.setEnabled(false)") < al.indexOf("RtSwitch.ON = true"));
         for (String k : keys) System.clearProperty(k);
         dev.elemore.iroh.rt.game.RtSwitch.resetForTest();
         dev.elemore.iroh.rt.game.RtDeviceFeatures.resetForTest();

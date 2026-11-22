@@ -54,7 +54,16 @@ public final class RtSwitch {
      * without the dev gate or the hardware. Then the shader pack path stays off: the Look switch picks one.
      */
     public static boolean lookRayTraced() {
-        return settings().look() == RtLook.RAY_TRACED;
+        RtLook now = lookNow;
+        return (now != null ? now : settings().look()) == RtLook.RAY_TRACED;
+    }
+
+    /** the Look row's choice once it was changed in this session (null = the launch Look) */
+    private static volatile RtLook lookNow;
+
+    /** INT-4: the Look row changed at runtime (RtFrameHooks.applyLook): rule 8 follows the row from now on */
+    static void lookChanged(boolean rt) {
+        lookNow = rt ? RtLook.RAY_TRACED : RtLook.NAVIDSON;
     }
 
     /** Before device creation: may RT features be requested? (dev gate + look; capabilities are checked by the device hook) */
@@ -71,6 +80,7 @@ public final class RtSwitch {
 
     /** Tests only. */
     public static void resetForTest() {
+        lookNow = null;
         ON = false;
         configLook = null;
         launch = null;
