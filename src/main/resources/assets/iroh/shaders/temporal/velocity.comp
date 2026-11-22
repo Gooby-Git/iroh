@@ -1,0 +1,67 @@
+#version 450
+// Iroh P4-1a: camera-only motion vectors from depth, plus the upscaler-input debug views.
+// One invocation per render pixel. Writes prevUv - curUv (Iroh texel-UV axes: rows grow with NDC y, see
+// dev.elemore.iroh.temporal.TemporalMath) into an RG16F image; FSR reads it with motionVectorScale = render size.
+// reproject = PR_prev * T(camCur - camPrev) * PR_cur^-1 (built on the CPU in doubles), so static terrain, block
+// entities that do not move and the sky (depth 1 with the infinite far plane: h.w = 0, rotation only) are exact.
+// Moving things (entities, the hand, particles, clouds drifting, animated block entities) get the camera-only
+// value here; their own motion is card P4-1b (per-object velocity) and the reactive mask.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D depthTex;      // depth at world end: after vanilla's pre-hand clear = hand only
+layout(binding = 3) uniform sampler2D sceneDepthTex; // copy of the depth taken at that clear (or depthTex itself)
+layout(binding = 1, rg16f) uniform writeonly image2D velocityImg;
+#ifdef DEBUG_VIEW
+layout(binding = 2, rgba8) uniform image2D colourImg;
+#endif
+
+layout(push_constant) uniform Params {
+    mat4 reproject;
+    vec4 jitter;   // xy = current jitter in NDC (removed before reprojecting), zw = jitter in pixels (debug view)
+    ivec4 info;    // xy = render size, z = debug mode (0 none, 1 velocity, 2 reactive, 3 depth, 4 jitter), w = flags (1: sceneDepthTex is a separate pre-hand copy)
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.info.x || p.y >= pc.info.y)
+        return;
+
+    // Vanilla clears depth right before the hand (GameRenderer.renderLevel: RenderSystem.clear(256) then
+    // renderItemInHand): a texel below 1 in depthTex is then a HAND texel; the scene depth comes from the copy.
+    bool separate = (pc.info.w & 1) != 0;
+    float endDepth = texelFetch(depthTex, p, 0).r;
+    bool hand = separate && endDepth < 0.999999;
+    float rawDepth = separate ? texelFetch(sceneDepthTex, p, 0).r : endDepth;
+    // cleared depth 1.0 is beyond JOML's infinite far (1 - 1e-6): reproject the sky ~50,000 blocks away (TemporalMath.SKY_DEPTH)
+    float depth = min(rawDepth, 0.999998);
+    vec2 size = vec2(pc.info.xy);
+    vec2 ndc = (vec2(p) + 0.5) / size * 2.0 - 1.0 - pc.jitter.xy;
+    vec4 prev = pc.reproject * vec4(ndc, depth, 1.0);
+    vec2 mv = vec2(0.0);
+    // the hand moves with the camera: 0 (bobbing / swing are P4-1b's per-object pass + reactive mask)
+    if (!hand && prev.w > 1e-9)
+        mv = (prev.xy / prev.w - ndc) * 0.5;
+    imageStore(velocityImg, p, vec4(mv, 0.0, 0.0));
+
+#ifdef DEBUG_VIEW
+    int mode = pc.info.z;
+    if (mode == 1) {
+        // black at rest; red = moving right (+u), green = left, blue = vertical; 8 render pixels of motion = full
+        vec2 px = mv * size;
+        imageStore(colourImg, p, vec4(clamp(px.x / 8.0, 0.0, 1.0), clamp(-px.x / 8.0, 0.0, 1.0), clamp(abs(px.y) / 8.0, 0.0, 1.0), 1.0));
+    } else if (mode == 2) {
+        // no reactive / transparency mask is produced yet (card P4-1b): black, with a dark red frame as a marker
+        bool edge = p.x < 4 || p.y < 4 || p.x >= pc.info.x - 4 || p.y >= pc.info.y - 4;
+        imageStore(colourImg, p, edge ? vec4(0.5, 0.0, 0.0, 1.0) : vec4(0.0, 0.0, 0.0, 1.0));
+    } else if (mode == 3) {
+        // standard Z, infinite far: distance = near / (1 - depth); grey falls off over ~64 blocks, sky white
+        float dist = rawDepth >= 0.999999 ? 1e9 : 0.05 / max(1.0 - rawDepth, 1e-7);
+        float g = 1.0 - exp(-dist / 64.0);
+        imageStore(colourImg, p, vec4(g, g, g, 1.0));
+    } else if (mode == 4) {
+        // the scene stays; a 48x48 square in the lower left shows this frame's jitter (r = x + 0.5, g = y + 0.5)
+        if (p.x < 48 && p.y < 48)
+            imageStore(colourImg, p, vec4(pc.jitter.z + 0.5, pc.jitter.w + 0.5, 0.0, 1.0));
+    }
+#endif
+}

@@ -117,6 +117,9 @@ public class DefaultMainPass implements MainPass {
 
     @Override
     public void end(VkCommandBuffer commandBuffer) {
+        // P4-1a safety: a world phase left open (renderLevel threw, a mod skipped the GUI) is closed before the copy
+        if (this.sceneTarget.isWorldActive())
+            endWorld();
         Renderer.getInstance().endRenderPass(commandBuffer);
 
         // Invariant (R-1): a frame that is submitted targets the image acquired for it, and every such
@@ -207,6 +210,108 @@ public class DefaultMainPass implements MainPass {
                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
     }
 
+    // ---------------------------------------------------------------------------------------------------------------
+    // P4-1a render scale: the world phase renders into SceneTarget's render-size world image set (see SceneTarget).
+    // Called only by dev.elemore.iroh.temporal.TemporalRuntime, only with iroh.upscale.mode set.
+
+    /**
+     * Opens the world phase: ends whatever pass is bound, makes the world images the main target (texture ids and
+     * MainTarget fields follow), and begins the CLEARING main pass on them (vanilla clears again in renderLevel).
+     * @return false when nothing is recording (the phase is not opened)
+     */
+    public boolean beginWorld(int renderWidth, int renderHeight) {
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("beginWorld");
+        if (commandBuffer == null || this.sceneTarget.isWorldActive() || !this.frameOpen)
+            return false;
+
+        Renderer.getInstance().endRenderPass(commandBuffer);
+        this.sceneTarget.ensureWorldImages(renderWidth, renderHeight);
+        this.sceneTarget.activateWorld();
+        bindTextureIds();
+        syncMainTarget();
+
+        // contents are cleared; UNDEFINED -> attachment waits for all earlier commands (BOTTOM_OF_PIPE source)
+        this.sceneTarget.getColorAttachment().setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+        this.sceneTarget.getDepthAttachment().setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            this.sceneTarget.beginRenderPass(commandBuffer, this.mainRenderPass, stack);
+            vkCmdSetViewport(commandBuffer, 0, this.sceneTarget.viewport(stack));
+            vkCmdSetScissor(commandBuffer, 0, this.sceneTarget.scissor(stack));
+        }
+        return true;
+    }
+
+    /**
+     * Closes the world phase: ends the pass, lets TemporalRuntime record velocity / debug view / upscale (world colour
+     * -> display colour), restores the display images as the main target and resumes the main pass on them (LOAD).
+     */
+    public void endWorld() {
+        if (!this.sceneTarget.isWorldActive())
+            return;
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("endWorld");
+        if (commandBuffer == null) {
+            this.sceneTarget.activateDisplay();
+            bindTextureIds();
+            syncMainTarget();
+            dev.elemore.iroh.temporal.TemporalRuntime.worldClosed();
+            return;
+        }
+        Renderer.getInstance().endRenderPass(commandBuffer);
+        VulkanImage worldColor = this.sceneTarget.getColorAttachment();
+        VulkanImage worldDepth = this.sceneTarget.getDepthAttachment();
+        VulkanImage displayColor = this.sceneTarget.getDisplayColor();
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            dev.elemore.iroh.temporal.TemporalRuntime.recordWorldEnd(commandBuffer, stack, worldColor, worldDepth, displayColor);
+        }
+        this.sceneTarget.activateDisplay();
+        bindTextureIds();
+        syncMainTarget();
+        dev.elemore.iroh.temporal.TemporalRuntime.worldClosed();
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            this.sceneTarget.beginRenderPass(commandBuffer, this.auxRenderPass, stack);
+            vkCmdSetViewport(commandBuffer, 0, this.sceneTarget.viewport(stack));
+            vkCmdSetScissor(commandBuffer, 0, this.sceneTarget.scissor(stack));
+        }
+    }
+
+    /**
+     * Copies the world depth into {@code dst} (same format and size) and resumes the main pass (LOAD). Called right
+     * before vanilla's pre-hand depth clear in renderLevel, so motion vectors and the upscaler get the SCENE depth (the
+     * depth buffer at world end only holds the hand). One pass break + one depth copy, only when the velocity pass or
+     * a temporal upscaler is on.
+     */
+    public boolean copyWorldDepth(VulkanImage dst) {
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("copyWorldDepth");
+        if (commandBuffer == null || !this.sceneTarget.isWorldActive() || !isMainTargetBound())
+            return false;
+        Renderer.getInstance().endRenderPass(commandBuffer);
+        VulkanImage src = this.sceneTarget.getDepthAttachment();
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            src.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            dst.setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+            dst.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
+            region.srcSubresource().set(VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1);
+            region.dstSubresource().set(VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1);
+            region.extent().set(Math.min(src.width, dst.width), Math.min(src.height, dst.height), 1);
+            vkCmdCopyImage(commandBuffer, src.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+            VulkanImage.transitionLayout(stack, commandBuffer, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+            this.sceneTarget.beginRenderPass(commandBuffer, this.auxRenderPass, stack);
+            vkCmdSetViewport(commandBuffer, 0, this.sceneTarget.viewport(stack));
+            vkCmdSetScissor(commandBuffer, 0, this.sceneTarget.scissor(stack));
+        }
+        dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+        return true;
+    }
+
+    /** Frees the world images when the mode goes off (deferred frees; display set must be active). */
+    public void releaseWorld() {
+        if (!this.sceneTarget.isWorldActive())
+            this.sceneTarget.releaseWorldImages();
+    }
+
     public static long getFramesCopied() {
         return framesCopied;
     }
@@ -225,6 +330,7 @@ public class DefaultMainPass implements MainPass {
      */
     @Override
     public void onResize() {
+        this.sceneTarget.activateDisplay(); // P4-1a
         this.frameOpen = false;
         this.acquiredImage = -1;
 

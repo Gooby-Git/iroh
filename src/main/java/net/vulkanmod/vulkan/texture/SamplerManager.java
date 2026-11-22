@@ -24,6 +24,28 @@ public abstract class SamplerManager {
 
     static final Short2LongMap SAMPLERS = new Short2LongOpenHashMap();
 
+    // Iroh P4-1a: world-phase LOD bias for temporal upscaling (FSR: log2(render/display) - 1). Created on first use
+    // only, so with iroh.upscale.mode off these maps stay empty and no sampler changes.
+    static final it.unimi.dsi.fastutil.longs.Long2ShortOpenHashMap KEY_OF = new it.unimi.dsi.fastutil.longs.Long2ShortOpenHashMap();
+    static final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap BIASED = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+
+    /** The sampler to use instead of {@code sampler} under a LOD bias: same state + bias for mipmapped samplers, else itself. */
+    public static long biased(long sampler, float bias) {
+        if (!KEY_OF.containsKey(sampler))
+            return sampler;
+        short key = KEY_OF.get(sampler);
+        byte flags = (byte) (key & 0xFF);
+        if ((flags & USE_MIPMAPS_BIT) == 0)
+            return sampler;
+        long k = ((long) Float.floatToIntBits(bias) << 16) | (key & 0xFFFFL);
+        long b = BIASED.get(k);
+        if (b == 0L) {
+            b = createTextureSampler((byte) (key >> 8), flags, bias);
+            BIASED.put(k, b);
+        }
+        return b;
+    }
+
     public static long getTextureSampler(byte maxLod, byte flags) {
         short key = (short) (flags | (maxLod << 8));
         long sampler = SAMPLERS.getOrDefault(key, 0L);
@@ -31,12 +53,17 @@ public abstract class SamplerManager {
         if (sampler == 0L) {
             sampler = createTextureSampler(maxLod, flags);
             SAMPLERS.put(key, sampler);
+            KEY_OF.put(sampler, key);
         }
 
         return sampler;
     }
 
     private static long createTextureSampler(byte maxLod, byte flags) {
+        return createTextureSampler(maxLod, flags, MIP_BIAS);
+    }
+
+    private static long createTextureSampler(byte maxLod, byte flags, float mipBias) {
         Validate.isTrue(
                 (flags & (REDUCTION_MIN_BIT | REDUCTION_MAX_BIT)) != (REDUCTION_MIN_BIT | REDUCTION_MAX_BIT)
         );
@@ -83,7 +110,7 @@ public abstract class SamplerManager {
                 }
                 samplerInfo.maxLod(maxLod);
                 samplerInfo.minLod(0.0F);
-                samplerInfo.mipLodBias(MIP_BIAS);
+                samplerInfo.mipLodBias(mipBias);
             }
 
             //Reduction Mode
@@ -106,6 +133,9 @@ public abstract class SamplerManager {
 
     public static void cleanUp() {
         for (long id : SAMPLERS.values()) {
+            vkDestroySampler(DeviceManager.vkDevice, id, null);
+        }
+        for (long id : BIASED.values()) {
             vkDestroySampler(DeviceManager.vkDevice, id, null);
         }
     }

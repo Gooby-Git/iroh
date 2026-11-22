@@ -347,3 +347,74 @@ tasks.register('chunkDeferTest', JavaExec) {
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
 }
+
+// P4-1a upscaler-input maths: render sizes, SDK jitter, projection jitter + Y sign, motion vectors. ./gradlew temporalMathTest
+// last line "# temporalmath PASS n/n"
+tasks.register('temporalMathTest', JavaExec) {
+	group = 'verification'
+	description = 'Render-scale table, jitter sequence, projection jitter, motion-vector maths (no game, no Vulkan)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.temporal.TemporalMathTest'
+}
+
+// P4-1a default off: with iroh.upscale.mode unset every hook is inert. ./gradlew upscaleDefaultOffTest
+// last line "# upscaledefaultoff PASS n/n"
+tasks.register('upscaleDefaultOffTest', JavaExec) {
+	group = 'verification'
+	description = 'Upscale path entry points inert without iroh.upscale.mode'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.temporal.UpscaleDefaultOffTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
+// P4-1a velocity pass golden test on LAVAPIPE (CPU Vulkan; never the GPU: the loader sees only the lavapipe ICD and
+// the test refuses any non-CPU device). ICD: system vulkan-swrast if installed, else the libvulkan_lvp.so of an installed
+// flatpak GL runtime, used in place through an ICD file under build/lvp (same recipe as card/P3-3's packReplay).
+// ./gradlew velocityGoldenTest ; last line "# velocitygolden PASS n/n"; debug PNGs in build/p4-1a/
+tasks.register('velocityGoldenTest', JavaExec) {
+	group = 'verification'
+	description = 'Camera velocity compute pass on lavapipe vs analytic motion vectors (two-frame scene)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.temporal.VelocityGoldenTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst {
+		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
+		def icd = null
+		def ld = null
+		if (sys != null) {
+			icd = sys
+		} else {
+			def lvp = null
+			['/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64',
+			 System.getProperty('user.home') + '/.local/share/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64'].each { root ->
+				def r = new File(root)
+				if (lvp == null && r.isDirectory()) r.eachDirRecurse { d ->
+					def f = new File(d, 'libvulkan_lvp.so')
+					if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
+				}
+			}
+			if (lvp == null) throw new GradleException('no lavapipe found: install the vulkan-swrast package (owner) or a flatpak GL runtime')
+			def dir = file("${buildDir}/lvp/lib")
+			dir.mkdirs()
+			lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
+				def link = new File(dir, src.name)
+				link.delete()
+				java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
+			}
+			def json = file("${buildDir}/lvp/lvp_icd.json")
+			json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
+			icd = json.absolutePath
+			ld = dir.absolutePath
+		}
+		environment 'VK_DRIVER_FILES', icd
+		environment 'VK_ICD_FILENAMES', icd
+		environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
+		if (ld != null) environment 'LD_LIBRARY_PATH', ld
+		logger.lifecycle("velocityGoldenTest: lavapipe ICD ${icd}")
+	}
+}

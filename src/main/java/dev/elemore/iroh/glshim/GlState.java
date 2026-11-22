@@ -266,6 +266,11 @@ public final class GlState {
         viewport[1] = y;
         viewport[2] = w;
         viewport[3] = h;
+        if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD && boundTarget() == Orientation.Target.SCENE) {
+            // P4-1a: a display-size rect from a mod (Window size) on the render-size world target
+            int[] r = {x, y, w, h};
+            if (dev.elemore.iroh.temporal.TemporalFrame.fixRect(r)) { x = r[0]; y = r[1]; w = r[2]; h = r[3]; }
+        }
         float[] v = Orientation.vkViewport(boundTarget(), x, y, w, h, boundHeight()); // conventions: Orientation
         Renderer.setVkViewport(v[0], v[1], v[2], v[3]);
     }
@@ -293,6 +298,10 @@ public final class GlState {
     public static void applyScissor() {
         int x = scissorBox[0], y = scissorBox[1], w = scissorBox[2], h = scissorBox[3];
         if (w <= 0 || h <= 0) return;
+        if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD && boundTarget() == Orientation.Target.SCENE) {
+            int[] r = {x, y, w, h}; // P4-1a, as in viewport()
+            if (dev.elemore.iroh.temporal.TemporalFrame.fixRect(r)) { x = r[0]; y = r[1]; w = r[2]; h = r[3]; }
+        }
         int[] sc = Orientation.vkScissor(boundTarget(), x, y, w, h, boundHeight());
         Renderer.setVkScissor(sc[0], sc[1], sc[2], sc[3]);
     }

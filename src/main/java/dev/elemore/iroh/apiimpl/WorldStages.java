@@ -19,6 +19,8 @@ public final class WorldStages {
         WorldRenderEvents.START.register(ctx -> {
             Vec3 c = ctx.camera().getPosition();
             FrameHooks.setWorld(c.x, c.y, c.z, ctx.positionMatrix(), ctx.projectionMatrix());
+            if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD) // P4-1a: camera history for motion vectors
+                dev.elemore.iroh.temporal.TemporalRuntime.onWorldStart(c.x, c.y, c.z, ctx.positionMatrix(), ctx.projectionMatrix());
             FrameHooks.setInWorld(true);
             FrameHooks.dispatch(FrameStage.WORLD_START);
         });

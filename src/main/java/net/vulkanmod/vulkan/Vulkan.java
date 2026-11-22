@@ -170,6 +170,7 @@ public class Vulkan {
 
     public static void cleanUp() {
         vkDeviceWaitIdle(DeviceManager.vkDevice);
+        dev.elemore.iroh.temporal.TemporalRuntime.cleanUp(); // P4-1a: no-op unless the upscale path ran
         vkDestroyCommandPool(DeviceManager.vkDevice, commandPool, null);
         vkDestroyFence(DeviceManager.vkDevice, immediateFence, null);
 

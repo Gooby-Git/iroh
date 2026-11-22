@@ -1,7 +1,14 @@
 package net.vulkanmod.vulkan.framebuffer;
 
+import it.unimi.dsi.fastutil.objects.Reference2LongArrayMap;
 import net.vulkanmod.vulkan.Vulkan;
+import net.vulkanmod.vulkan.memory.MemoryManager;
 import net.vulkanmod.vulkan.texture.VulkanImage;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.VkDevice;
+import org.lwjgl.vulkan.VkFramebufferCreateInfo;
+
+import java.nio.LongBuffer;
 
 import static org.lwjgl.vulkan.VK10.*;
 
@@ -22,9 +29,8 @@ import static org.lwjgl.vulkan.VK10.*;
  * cards change one place. Changing any of them away from the default is NOT supported until the
  * listed work lands.
  * <ul>
- *   <li>{@link #RENDER_SCALE}: scene size different from the window (P4 upscalers). Apply in
- *       {@link #sceneSize(int)}; the final copy in DefaultMainPass already blits when sizes differ, but
- *       viewport/scissor helpers in Renderer (resetViewport) and GUI projection still assume window size.</li>
+ *   <li>{@link #RENDER_SCALE}: superseded by the P4-1a WORLD IMAGE SET below; stays 1.0 (the display images are
+ *       always window-sized).</li>
  *   <li>{@link #COLOR_FORMAT}: float scene colour (e.g. R16G16B16A16_SFLOAT) for HDR / RT (P5). Needs
  *       VulkanImage.Builder.formatSize support, a tonemap/convert pass instead of the plain blit, and
  *       screenshot conversion (MNativeImage assumes 4-byte RGBA). Render passes and their pipelines are
@@ -36,7 +42,7 @@ import static org.lwjgl.vulkan.VK10.*;
  * </ul>
  */
 public class SceneTarget extends Framebuffer {
-    /** EXTENSION POINT (P4): not applied yet; must stay 1.0. */
+    /** Superseded by the P4-1a world image set ({@link #activateWorld}); must stay 1.0. */
     public static final float RENDER_SCALE = 1.0f;
     /** EXTENSION POINT (P5): only R8G8B8A8_UNORM is supported today. */
     public static final int COLOR_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
@@ -95,6 +101,7 @@ public class SceneTarget extends Framebuffer {
      * @return true when new images were created (texture ids must be rebound)
      */
     public boolean resizeIfNeeded(int newWidth, int newHeight) {
+        activateDisplay(); // P4-1a: sizes below are the display images'
         if (newWidth <= 0 || newHeight <= 0)
             return false;
         if (newWidth == this.width && newHeight == this.height)
@@ -102,5 +109,143 @@ public class SceneTarget extends Framebuffer {
 
         this.resize(newWidth, newHeight);
         return true;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // P4-1a WORLD IMAGE SET. With iroh.upscale.mode set, the world (renderLevel .. just before the GUI) renders into a
+    // second colour + depth pair at RENDER size. While it is active, this object's colour/depth/width/height ARE the
+    // world images, so everything that means "the main target" (Minecraft's MainTarget fields, the stable GL texture
+    // ids, the main render passes, screenshots taken in the world phase, bindAsTexture) follows without a second code
+    // path. The render passes are shared (same formats): no extra pipelines are compiled. Each set has its own
+    // VkFramebuffers. The display set is restored before the GUI and before anything outside the frame (resize,
+    // cleanup) touches this object. Mode off: none of this is ever allocated (UpscaleDefaultOffTest).
+
+    static final int WORLD_COLOR_USAGE = COLOR_USAGE | VK_IMAGE_USAGE_STORAGE_BIT;
+
+    private VulkanImage worldColor, worldDepth;
+    private int worldWidth, worldHeight;
+    private VulkanImage displayColor, displayDepth;
+    private int displayWidth, displayHeight;
+    private boolean worldActive;
+    private final Reference2LongArrayMap<RenderPass> worldFramebuffers = new Reference2LongArrayMap<>();
+
+    public boolean isWorldActive() {
+        return this.worldActive;
+    }
+
+    public boolean hasWorldImages() {
+        return this.worldColor != null;
+    }
+
+    /** (Re)creates the render-size world images when missing or of another size. Only with the display set active. */
+    public void ensureWorldImages(int w, int h) {
+        if (this.worldActive)
+            throw new IllegalStateException("ensureWorldImages while the world set is active");
+        if (this.worldColor != null && this.worldWidth == w && this.worldHeight == h)
+            return;
+        releaseWorldImages();
+        this.worldWidth = w;
+        this.worldHeight = h;
+        this.worldColor = VulkanImage.builder(w, h)
+                .setName("Iroh world colour (render scale)")
+                .setFormat(this.format)
+                .setUsage(WORLD_COLOR_USAGE)
+                .setLinearFiltering(true)
+                .setClamp(true)
+                .createVulkanImage();
+        this.worldDepth = VulkanImage.builder(w, h)
+                .setName("Iroh world depth (render scale)")
+                .setFormat(this.depthFormat)
+                .setUsage(DEPTH_USAGE)
+                .setLinearFiltering(false)
+                .setClamp(false)
+                .createVulkanImage();
+    }
+
+    /** Frees the world images and their framebuffers (deferred frees). Only with the display set active. */
+    public void releaseWorldImages() {
+        if (this.worldActive)
+            throw new IllegalStateException("releaseWorldImages while the world set is active");
+        if (this.worldColor != null)
+            this.worldColor.free();
+        if (this.worldDepth != null)
+            this.worldDepth.free();
+        this.worldColor = this.worldDepth = null;
+        final VkDevice device = Vulkan.getVkDevice();
+        final long[] ids = this.worldFramebuffers.values().toLongArray();
+        if (ids.length > 0)
+            MemoryManager.getInstance().addFrameOp(() -> { for (long id : ids) vkDestroyFramebuffer(device, id, null); });
+        this.worldFramebuffers.clear();
+    }
+
+    /** The world images become this target's attachments (size = render size). */
+    public void activateWorld() {
+        if (this.worldActive || this.worldColor == null)
+            return;
+        this.displayColor = this.colorAttachment;
+        this.displayDepth = this.depthAttachment;
+        this.displayWidth = this.width;
+        this.displayHeight = this.height;
+        this.colorAttachment = this.worldColor;
+        this.depthAttachment = this.worldDepth;
+        this.width = this.worldWidth;
+        this.height = this.worldHeight;
+        this.worldActive = true;
+    }
+
+    /** Back to the window-size display images. */
+    public void activateDisplay() {
+        if (!this.worldActive)
+            return;
+        this.colorAttachment = this.displayColor;
+        this.depthAttachment = this.displayDepth;
+        this.width = this.displayWidth;
+        this.height = this.displayHeight;
+        this.worldActive = false;
+    }
+
+    public VulkanImage getWorldColor() {
+        return this.worldColor;
+    }
+
+    public VulkanImage getWorldDepth() {
+        return this.worldDepth;
+    }
+
+    /** the display colour whichever set is active */
+    public VulkanImage getDisplayColor() {
+        return this.worldActive ? this.displayColor : this.colorAttachment;
+    }
+
+    @Override
+    protected long getFramebufferId(RenderPass renderPass) {
+        if (!this.worldActive)
+            return super.getFramebufferId(renderPass);
+        return this.worldFramebuffers.computeIfAbsent(renderPass, rp -> createWorldFramebuffer((RenderPass) rp));
+    }
+
+    private long createWorldFramebuffer(RenderPass renderPass) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            LongBuffer attachments = stack.longs(this.worldColor.getImageView(), this.worldDepth.getImageView());
+            LongBuffer p = stack.mallocLong(1);
+            VkFramebufferCreateInfo info = VkFramebufferCreateInfo.calloc(stack);
+            info.sType$Default();
+            info.renderPass(renderPass.getId());
+            info.width(this.worldWidth);
+            info.height(this.worldHeight);
+            info.layers(1);
+            info.pAttachments(attachments);
+            if (dev.elemore.iroh.memory.MemoryGuard.check(vkCreateFramebuffer(Vulkan.getVkDevice(), info, null, p), "vkCreateFramebuffer world") != VK_SUCCESS)
+                throw new RuntimeException("Failed to create the world framebuffer");
+            return p.get(0);
+        }
+    }
+
+    @Override
+    public void cleanUp(boolean cleanImages) {
+        activateDisplay();
+        if (cleanImages)
+            releaseWorldImages();
+        super.cleanUp(cleanImages);
     }
 }
