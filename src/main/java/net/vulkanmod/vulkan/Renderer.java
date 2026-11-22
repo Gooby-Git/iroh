@@ -707,6 +707,10 @@ public class Renderer {
     }
 
     public void bindGraphicsPipeline(GraphicsPipeline pipeline) {
+        // Iroh P3-10: pack program substitution, OBSERVE mode only (counts what would be substituted); default off:
+        // one static volatile read
+        if (dev.elemore.iroh.shaderpack.runtime.Substitution.OBSERVE)
+            dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.observe(pipeline.name, pipeline.getVertexFormat());
         VkCommandBuffer commandBuffer = recordingCommandBuffer("bindGraphicsPipeline");
         if (commandBuffer == null) return;
 

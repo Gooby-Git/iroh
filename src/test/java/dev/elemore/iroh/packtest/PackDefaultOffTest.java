@@ -38,6 +38,7 @@ public final class PackDefaultOffTest {
             PackRuntime.onBeforeEntities();
         }
         check("raster terrain never skipped when off", !net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive);
+        check("substitution observe off: bindGraphicsPipeline costs one volatile read", !dev.elemore.iroh.shaderpack.runtime.Substitution.OBSERVE);
         Field f = PackRuntime.class.getDeclaredField("impl");
         f.setAccessible(true);
         check("no implementation object created", f.get(null) == null);

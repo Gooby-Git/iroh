@@ -567,3 +567,13 @@ tasks.register('packPerfTest', JavaExec) {
 tasks.register('printTestCp') {
 	doLast { println sourceSets.test.runtimeClasspath.asPath }
 }
+
+// P3-10: program substitution decisions. ./gradlew substitutionTest
+tasks.register('substitutionTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack program substitution decisions'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.SubstitutionTest'
+	workingDir = projectDir
+}

@@ -28,6 +28,8 @@ public final class IrohDebug {
 
     public static String get(String key) {
         dev.elemore.iroh.shaderpack.runtime.PackSwitches.registerAll();
+        if (dev.elemore.iroh.shaderpack.runtime.PackSwitches.SUBST_REPORT.equals(key))
+            DebugSwitches.publish(key, dev.elemore.iroh.shaderpack.runtime.Substitution.report());
         return DebugSwitches.get(key);
     }
 

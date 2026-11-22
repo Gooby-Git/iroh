@@ -24,6 +24,11 @@ public class GraphicsPipeline extends Pipeline {
     private final Object2LongMap<PipelineState> graphicsPipelines = new Object2LongOpenHashMap<>();
 
     private final VertexFormat vertexFormat;
+
+    /** Iroh P3-10: the vertex format this pipeline was built for (program substitution picks the pack layout from it) */
+    public VertexFormat getVertexFormat() {
+        return vertexFormat;
+    }
     private final VertexInputDescription vertexInputDescription;
 
     private long vertShaderModule = 0;
