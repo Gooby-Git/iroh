@@ -25,6 +25,29 @@ import static org.lwjgl.vulkan.VK10.*;
  * The MainPass interface and the public methods the 0.5.5 base had (create, rebindMainTarget, bindAsTexture,
  * getColorAttachment, begin, end, onResize, cleanUp) keep their signatures. (The AsyncParticles freeze on these
  * members ended 2026-11-21: the owner removed AsyncParticles from the Iroh pack.)
+ * <p>
+ * <b>MAIN TARGET CONTRACT (INT-2, 2026-11-22).</b> Two features change "what the main target is" inside a frame:
+ * render scale (P4-1a, the world image set) and, next, the shader pack's MRT world pass (card P3-11). Both follow
+ * these rules so they compose:
+ * <ol>
+ *   <li><b>One owner, one accessor.</b> This class owns which images are the main target. {@link #mainTarget()} is the
+ *       ONLY way to ask: its colour / depth / width / height at the moment of the call are the images draws land in
+ *       now (render-size world images inside the render-scale world phase, window-size display images otherwise).
+ *       Nobody caches those images across a phase boundary; resolve them at bind time, every time.</li>
+ *   <li><b>Phases are opened and closed only here:</b> {@link #beginWorld} / {@link #endWorld} (render scale) and the
+ *       copy points {@link #copyWorld} (AFTER_ENTITIES opaque copy, pre-hand depth). A feature that needs a different
+ *       set of attachments for part of the world (P3-11's gbuffer MRT pass) adds its own begin/end pair HERE, nested
+ *       inside the world phase, never around it: it ends the bound pass, binds its framebuffer built from
+ *       {@code mainTarget().getColorAttachment()/getDepthAttachment()} plus its own extra attachments AT BIND TIME (same
+ *       size as mainTarget(): render size when render scale is on), and on exit resumes the main pass through
+ *       {@link #rebindMainTarget()} / {@code VulkanImage.endPassRunResume} (both resume on the ACTIVE set).</li>
+ *   <li><b>No resize or cleanup inside a phase.</b> {@code SceneTarget.resizeIfNeeded}, {@link #onResize},
+ *       {@link #cleanUp} force the display set first; they run between frames only.</li>
+ *   <li><b>{@link #end} closes whatever is open</b> (world phase, and the P3-11 pass if it adds one) before the
+ *       swapchain copy, so a phase left open by an exception never reaches present.</li>
+ *   <li><b>Every phase change notifies api 4</b> ({@code GpuLifecycle.worldPhase}): scaled mod targets follow the
+ *       phase they are drawn in (knowledge/api.md).</li>
+ * </ol>
  */
 public class DefaultMainPass implements MainPass {
 
@@ -224,11 +247,15 @@ public class DefaultMainPass implements MainPass {
         if (commandBuffer == null || this.sceneTarget.isWorldActive() || !this.frameOpen)
             return false;
 
-        Renderer.getInstance().endRenderPass(commandBuffer);
+        // INT-2: allocate BEFORE ending the bound pass: an allocation failure (memory refusal, forced by
+        // -Diroh.test.failInit=renderScale) throws with the frame untouched, and the caller turns render scale off
+        dev.elemore.iroh.diag.FeatureFailures.inject("renderScale");
         this.sceneTarget.ensureWorldImages(renderWidth, renderHeight);
+        Renderer.getInstance().endRenderPass(commandBuffer);
         this.sceneTarget.activateWorld();
         bindTextureIds();
         syncMainTarget();
+        dev.elemore.iroh.gpu.game.GpuLifecycle.worldPhase(true, renderWidth, renderHeight); // contract rule 5
 
         // contents are cleared; UNDEFINED -> attachment waits for all earlier commands (BOTTOM_OF_PIPE source)
         this.sceneTarget.getColorAttachment().setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
@@ -253,6 +280,7 @@ public class DefaultMainPass implements MainPass {
             this.sceneTarget.activateDisplay();
             bindTextureIds();
             syncMainTarget();
+            dev.elemore.iroh.gpu.game.GpuLifecycle.worldPhase(false, 0, 0);
             dev.elemore.iroh.temporal.TemporalRuntime.worldClosed();
             return;
         }
@@ -262,11 +290,16 @@ public class DefaultMainPass implements MainPass {
         VulkanImage displayColor = this.sceneTarget.getDisplayColor();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             dev.elemore.iroh.temporal.TemporalRuntime.recordWorldEnd(commandBuffer, stack, worldColor, worldDepth, displayColor);
+        } catch (RuntimeException e) {
+            // INT-2: never leave the frame with the world set bound: the display set comes back, render scale goes off
+            dev.elemore.iroh.temporal.TemporalRuntime.worldEndFailed(e);
+        } finally {
+            this.sceneTarget.activateDisplay();
+            bindTextureIds();
+            syncMainTarget();
+            dev.elemore.iroh.gpu.game.GpuLifecycle.worldPhase(false, 0, 0);
+            dev.elemore.iroh.temporal.TemporalRuntime.worldClosed();
         }
-        this.sceneTarget.activateDisplay();
-        bindTextureIds();
-        syncMainTarget();
-        dev.elemore.iroh.temporal.TemporalRuntime.worldClosed();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             this.sceneTarget.beginRenderPass(commandBuffer, this.auxRenderPass, stack);
             vkCmdSetViewport(commandBuffer, 0, this.sceneTarget.viewport(stack));
@@ -421,6 +454,19 @@ public class DefaultMainPass implements MainPass {
     @Override
     public VkGlTexture getDepthAttachment() {
         return this.depthTexture;
+    }
+
+    /**
+     * INT-2 main-target contract, rule 1: the target draws land in NOW (its colour / depth / size are the active set:
+     * render-size world images inside the render-scale world phase, display images otherwise). Resolve at bind time.
+     */
+    public SceneTarget mainTarget() {
+        return this.sceneTarget;
+    }
+
+    /** true inside the render-scale world phase (mainTarget() is the render-size world set) */
+    public boolean inWorldPhase() {
+        return this.sceneTarget.isWorldActive();
     }
 
     @Override

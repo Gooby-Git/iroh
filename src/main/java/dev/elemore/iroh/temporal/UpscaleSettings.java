@@ -62,6 +62,8 @@ public final class UpscaleSettings {
 
     /** Why a choice of the Upscaler row cannot be picked, or null. */
     public static Component upscalerReason(Upscaler u) {
+        if (u != Upscaler.OFF && packWins())
+            return Component.translatable("iroh.reason.packWins"); // INT-2: same rule as TemporalRuntime.onRenderHead
         return switch (u) {
             case OFF -> null;
             case FSR3 -> {
@@ -72,6 +74,17 @@ public final class UpscaleSettings {
             case FSR4 -> Component.translatable(isWindows() ? "iroh.reason.notYet" : "iroh.reason.fsr4Windows");
             case DLSS -> Component.translatable(nvidia() ? "iroh.reason.notYet" : "iroh.reason.needsNvidia");
         };
+    }
+
+    /**
+     * INT-2: the Navidson pack path wins over render scale until the pack's own upscaler cut lands (card P4-8): while
+     * the pack path is on (or asked for at launch) the upscaler choices are greyed with that reason.
+     */
+    public static boolean packWins() {
+        if (dev.elemore.iroh.shaderpack.runtime.PackRuntime.active())
+            return true;
+        String v = System.getProperty(dev.elemore.iroh.shaderpack.runtime.PackSwitches.ENABLED);
+        return "true".equals(v) || "on".equals(v);
     }
 
     public static Component qualityReason(Config c) {

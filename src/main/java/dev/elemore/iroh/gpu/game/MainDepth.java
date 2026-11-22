@@ -24,6 +24,7 @@ public final class MainDepth {
         if (target.format() != IrohTargets.Format.DEPTH32F) throw new IllegalArgumentException("mainDepthCopy into a DEPTH32F target");
         VulkanImage depth = IrohGpuDevice.mainDepth();
         if (depth == null) throw new IllegalStateException("no main depth");
+        core.fitPhase(target); // INT-2: a scaled target follows the phase (render size inside the render-scale world phase)
         if (depth.width != target.width() || depth.height != target.height())
             throw new IllegalArgumentException("target " + target.width() + "x" + target.height() + " != main depth " + depth.width + "x" + depth.height
                     + " (use IrohTargets.createScaled(..., 1))");

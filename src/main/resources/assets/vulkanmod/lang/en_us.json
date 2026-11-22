@@ -163,5 +163,6 @@
   "iroh.reason.fsr4Windows": "Windows only (AMD)",
   "iroh.reason.needsNvidia": "needs an NVIDIA GPU",
   "iroh.reason.upscalerOff": "set an Upscaler first",
+  "iroh.reason.packWins": "off while the shader pack runs (the pack gets its own upscaler later)",
   "iroh.reason.fsrOnly": "FSR only"
 }
