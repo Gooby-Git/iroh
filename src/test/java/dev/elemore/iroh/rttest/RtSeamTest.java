@@ -146,12 +146,12 @@ public final class RtSeamTest {
      * RtDeviceFeatures.enabled read, or is a launch-time decision), plus the P6 denoiser package (its own feature).
      */
     static final Set<String> HOOK_CLASSES = Set.of("rt/game/RtDeviceFeatures", "rt/game/RtVma", "rt/game/RtFrameHooks", "rt/game/RtMeshMode",
-            "rt/game/RtStartup", "rt/game/RtSwitch", "rt/game/RtFailures", "rt/game/RtLookArbiter");
-    /** P5-2: the pinned hook sites (merge notes in knowledge/rt-iroh.md "Integration notes"); int-3 adds StartupReport, IrohOptions, the Iroh settings section. */
+            "rt/game/RtStartup", "rt/game/RtSwitch", "rt/game/RtFailures", "rt/game/RtLookArbiter", "rt/RtLook", "rt/RtCapabilities");
+    /** P5-2: the pinned hook sites (merge notes in knowledge/rt-iroh.md "Integration notes"); int-3 adds StartupReport, IrohOptions, Options (the Iroh section's Look row). */
     static final Set<String> HOOK_SITES = Set.of("net/vulkanmod/vulkan/device/DeviceManager", "net/vulkanmod/vulkan/Vulkan",
             "net/vulkanmod/render/chunk/buffer/AreaBuffer", "net/vulkanmod/render/chunk/WorldRenderer",
             "net/vulkanmod/render/chunk/build/frapi/render/AbstractBlockRenderContext", "dev/elemore/iroh/gpu/game/IrohGpuDevice",
-            "dev/elemore/iroh/diag/StartupReport", "dev/elemore/iroh/config/IrohOptions", "dev/elemore/iroh/ui/IrohSettingsSection");
+            "dev/elemore/iroh/diag/StartupReport", "dev/elemore/iroh/config/IrohOptions", "net/vulkanmod/config/option/Options");
 
     /** Main classes outside dev/elemore/iroh/rt/ naming an RT class that is not a hook class, or from a site not pinned. */
     static List<String> outsideReferences() throws IOException {

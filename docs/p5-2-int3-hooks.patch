@@ -1,0 +1,167 @@
+diff --git i/src/main/java/dev/elemore/iroh/config/IrohOptions.java w/src/main/java/dev/elemore/iroh/config/IrohOptions.java
+index 5a05148..cad6ff7 100644
+--- i/src/main/java/dev/elemore/iroh/config/IrohOptions.java
++++ w/src/main/java/dev/elemore/iroh/config/IrohOptions.java
+@@ -259,6 +259,8 @@ public final class IrohOptions {
+     public static final Opt<String> SHADER_PACK;
+     public static final Opt<Boolean> SHADERS_ENABLED;
+     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Upscaler> UPSCALER;
++    /** P5-2: the Look switch row (owner "Settings UI": RT <-> Navidson) */
++    public static final Opt<dev.elemore.iroh.rt.RtLook> LOOK;
+     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Quality> UPSCALE_QUALITY;
+     public static final Opt<Integer> UPSCALE_SHARPNESS;
+ 
+@@ -383,6 +385,21 @@ public final class IrohOptions {
+         SHADERS_ENABLED = bool("shadersEnabled", Category.SHADERS, false, c -> c.shadersEnabled, (c, v) -> c.shadersEnabled = v);
+         SHADERS_ENABLED.storage = Storage.READ_ONLY;
+ 
++        // ---- P5-2: the Look switch (RT <-> Navidson); RT needs its device features at launch (like FSR) ----
++        LOOK = enumOpt("look", Category.SHADERS, dev.elemore.iroh.rt.RtLook.class, dev.elemore.iroh.rt.RtLook.NAVIDSON,
++                c -> parse(dev.elemore.iroh.rt.RtLook.class, c.look, dev.elemore.iroh.rt.RtLook.NAVIDSON), (c, v) -> c.look = v.name());
++        LOOK.name("iroh.options.look").tooltip("iroh.options.look.tooltip")
++                .label(v -> Component.translatable("iroh.options.look." + v.name().toLowerCase()))
++                .choiceUnavailable(v -> {
++                    if (v != dev.elemore.iroh.rt.RtLook.RAY_TRACED) return null;
++                    String r = dev.elemore.iroh.rt.game.RtLookArbiter.rowDisabledReason(dev.elemore.iroh.rt.game.RtDeviceFeatures.caps.supported()
++                            || Availability.rayTracing() == null, dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled);
++                    return r == null || r.contains("restart") ? null : Component.translatable("iroh.reason.needsRt");
++                });
++        LOOK.applier = v -> {
++            config.look = v.name();
++            dev.elemore.iroh.rt.game.RtFrameHooks.applyLook(v == dev.elemore.iroh.rt.RtLook.RAY_TRACED);
++        };
+         // ---- P4-1b: the Iroh section (upscaler); wired to the runtime switches by UpscaleSettings ----
+         UPSCALER = enumOpt("upscaler", Category.SHADERS, dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.class,
+                 dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.OFF,
+@@ -692,6 +709,7 @@ public final class IrohOptions {
+             applyLeafCulling(false);
+             // P4-1b: the upscaler choice is known before the Vulkan device exists (device features are enabled at creation)
+             dev.elemore.iroh.temporal.DeviceCaps.configRequested = dev.elemore.iroh.temporal.UpscaleSettings.wantsDeviceFeatures(config);
++            dev.elemore.iroh.rt.game.RtSwitch.configLook = config.look; // P5-2: RT features are chosen at device creation
+             return log;
+         }
+         log.add("no " + FILE + ": first run");
+diff --git i/src/main/java/dev/elemore/iroh/diag/StartupReport.java w/src/main/java/dev/elemore/iroh/diag/StartupReport.java
+index 22d6fde..d413ff2 100644
+--- i/src/main/java/dev/elemore/iroh/diag/StartupReport.java
++++ w/src/main/java/dev/elemore/iroh/diag/StartupReport.java
+@@ -73,7 +73,8 @@ public final class StartupReport {
+                     + " api4=" + dev.elemore.iroh.gpu.game.GpuLifecycle.state()
+                     + " api41=" + (dev.elemore.iroh.gpu.GpuCore.api41() ? "on" : "withdrawn")
+                     + " slowFrames=" + (dev.elemore.iroh.diag.SlowFrames.ON ? "on" : "off")
+-                    + " upscaleDeviceFeatures=" + (dev.elemore.iroh.temporal.DeviceCaps.requested ? "requested" : "not requested");
++                    + " upscaleDeviceFeatures=" + (dev.elemore.iroh.temporal.DeviceCaps.requested ? "requested" : "not requested")
++                    + dev.elemore.iroh.rt.game.RtStartup.apiPart(); // P5-2: empty unless RT was requested at launch
+             return build(switches, defaults, otherIrohProps(switches), net.vulkanmod.vulkan.device.DeviceManager.enabledFeatures,
+                     api, natives, FeatureFailures.snapshot());
+         } catch (Throwable t) {
+diff --git i/src/main/java/net/vulkanmod/config/Config.java w/src/main/java/net/vulkanmod/config/Config.java
+index d2030c1..a231afb 100644
+--- i/src/main/java/net/vulkanmod/config/Config.java
++++ w/src/main/java/net/vulkanmod/config/Config.java
+@@ -50,6 +50,8 @@ public class Config {
+     public boolean shadersEnabled = false;
+     /** P4-1b: OFF / FSR3 / FSR4 / DLSS (Iroh section of the video settings). OFF = the rc14 path. */
+     public String upscaler = "OFF";
++    /** P5-2: the Look switch (NAVIDSON | RAY_TRACED); read before device creation (RtSwitch.configLook) */
++    public String look = "NAVIDSON";
+     /** P4-1b: NATIVE_AA / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE */
+     public String upscaleQuality = "QUALITY";
+     /** P4-1b: FSR sharpening 0 (off) .. 100 */
+diff --git i/src/main/java/net/vulkanmod/config/option/Options.java w/src/main/java/net/vulkanmod/config/option/Options.java
+index e8bd408..1e6731a 100644
+--- i/src/main/java/net/vulkanmod/config/option/Options.java
++++ w/src/main/java/net/vulkanmod/config/option/Options.java
+@@ -185,8 +185,7 @@ public abstract class Options {
+      * own options get no screen.
+      */
+     public static OptionBlock[] getShadersOpts() {
+-        InfoOption look = info("look", () -> reasonOr(lookReason(), "iroh.shaders.available"))
+-                .setUnavailable(Options::lookReason);
++        Option<?> look = toOption(IrohOptions.LOOK); // P5-2: live (RT needs the -Diroh.rt dev gate until RT ships)
+         InfoOption fg = info("shaders.frameGeneration", () -> reasonOr(Availability.frameGeneration(), "iroh.shaders.available"))
+                 .setUnavailable(Availability::frameGeneration);
+         return new OptionBlock[]{
+diff --git i/src/main/java/net/vulkanmod/vulkan/device/DeviceManager.java w/src/main/java/net/vulkanmod/vulkan/device/DeviceManager.java
+index 1170dd0..17431be 100644
+--- i/src/main/java/net/vulkanmod/vulkan/device/DeviceManager.java
++++ w/src/main/java/net/vulkanmod/vulkan/device/DeviceManager.java
+@@ -242,7 +242,9 @@ public abstract class DeviceManager {
+ 
+             // Iroh P5-2: RT (only when requested at launch AND available): ONE AS + ONE ray-query feature struct in front of
+             // the 1.2 struct's tail, bufferDeviceAddress in the SAME single 1.2 struct, + 3 extensions; else unchanged
++            dev.elemore.iroh.rt.game.RtFailures.sink = (step, t) -> dev.elemore.iroh.diag.FeatureFailures.record("rt", t, "at " + step + ": " + dev.elemore.iroh.rt.game.RtFailures.FALLBACK);
+             deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(stack, physicalDevice, deviceVulkan12Features, deviceVulkan12Features.pNext()));
++            enabledFeatures += dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits(); // empty unless RT was requested
+             createInfo.ppEnabledExtensionNames(asPointerBuffer(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION)));
+ 
+ //            Configuration.DEBUG_FUNCTIONS.set(true);
+diff --git i/src/main/resources/assets/vulkanmod/lang/en_us.json w/src/main/resources/assets/vulkanmod/lang/en_us.json
+index d3430e5..36f1834 100644
+--- i/src/main/resources/assets/vulkanmod/lang/en_us.json
++++ w/src/main/resources/assets/vulkanmod/lang/en_us.json
+@@ -145,6 +145,10 @@
+   "iroh.look": "Look",
+   "iroh.look.tooltip": "Ray tracing or the Navidson shader: one switch, chosen for your GPU. Neither is finished yet.",
+   "iroh.options.upscaler": "Upscaler",
++  "iroh.options.look": "Look",
++  "iroh.options.look.tooltip": "Ray tracing or the Navidson shader. Ray tracing needs a GPU with Vulkan ray query; switching to it may need a restart.",
++  "iroh.options.look.navidson": "Navidson",
++  "iroh.options.look.ray_traced": "Ray tracing",
+   "iroh.options.upscaler.tooltip": "Renders the world at a lower resolution and rebuilds it sharp (first switch on: restart).",
+   "iroh.options.upscaler.off": "Off",
+   "iroh.options.upscaler.fsr3": "FSR 3.1",
+diff --git i/src/test/java/dev/elemore/iroh/inttest/HotPathAudit.java w/src/test/java/dev/elemore/iroh/inttest/HotPathAudit.java
+index f39a1f7..a3542bd 100644
+--- i/src/test/java/dev/elemore/iroh/inttest/HotPathAudit.java
++++ w/src/test/java/dev/elemore/iroh/inttest/HotPathAudit.java
+@@ -47,6 +47,7 @@ public final class HotPathAudit {
+         HOT.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java", new String[]{"beginBatch"});
+         HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate"});
+         HOT.put("net/vulkanmod/render/chunk/RenderSection.java", new String[]{"reset"});
++        HOT.put("net/vulkanmod/render/chunk/build/frapi/render/AbstractBlockRenderContext.java", new String[]{"shadeQuad"}); // P5-2: per quad
+     }
+ 
+     /**
+@@ -81,6 +82,12 @@ public final class HotPathAudit {
+         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onAfterSky", "!active"); // INT-3: P3-11
+         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onTranslucentTerrain", "!active"); // INT-3: P3-11
+         CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/FrameHooks.java#dispatch", "FrameProfiler.ON");
++        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtFrameHooks.java#worldUnloaded", "RtSwitch.ON");          // P5-2
++        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#chain", "RtSwitch.requestedAtLaunch()"); // P5-2 (device creation)
++        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#extensions", "enabled");
++        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#deviceCreated", "enabled");
++        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#selfCheckBits", "RtSwitch.requestedAtLaunch()");
++        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtStartup.java#apiPart", "RtSwitch.requestedAtLaunch()");
+     }
+ 
+     /** CALLEE_GUARD violations (empty = every helper returns through its plain static read) */
+@@ -106,7 +113,7 @@ public final class HotPathAudit {
+ 
+     /** feature guards and hook calls: the things that run when everything is off */
+     static final Pattern GUARD = Pattern.compile(
+-            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
++            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy|RtMeshMode|RtFrameHooks|RtSwitch)"
+                     + "\\s*\\.\\s*(\\w+)");
+ 
+     public static Map<String, List<String>> audit(Path src) throws Exception {
+diff --git i/src/test/java/dev/elemore/iroh/inttest/IntegrationInertTest.java w/src/test/java/dev/elemore/iroh/inttest/IntegrationInertTest.java
+index 35740d3..a19c094 100644
+--- i/src/test/java/dev/elemore/iroh/inttest/IntegrationInertTest.java
++++ w/src/test/java/dev/elemore/iroh/inttest/IntegrationInertTest.java
+@@ -68,6 +68,7 @@ public final class IntegrationInertTest {
+         PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON");
+         PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
+         PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
++        PINNED.put("AbstractBlockRenderContext.shadeQuad", "RtMeshMode.tintOnly x1 per quad (volatile boolean; P5-2 RT tint-only colour)");
+         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
+         PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onAfterSky (INT-3: P3-11)/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
+     }
+@@ -164,6 +165,7 @@ public final class IntegrationInertTest {
+         expect.put("TaskDispatcher.adaptBuilders", "{}");
+         expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
+         expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
++        expect.put("AbstractBlockRenderContext.shadeQuad", "{RtMeshMode.tintOnly=1}"); // P5-2: one volatile read per quad
+         // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
+         expect.put("Renderer.bindGraphicsPipeline", "{Substitution.HOOK=1}"); // INT-3: P3-10/P3-11
+         expect.put("Renderer.uploadAndBindUBOs", "{Substitution.HOOK=1}"); // INT-3: P3-11, per draw

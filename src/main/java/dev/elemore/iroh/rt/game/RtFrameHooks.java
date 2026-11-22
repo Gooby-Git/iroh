@@ -85,6 +85,23 @@ public final class RtFrameHooks {
         }
     }
 
+    /**
+     * The Look switch row (Iroh video-settings section) changed. Returns null when applied now, else the reason shown
+     * (the RT device features are chosen at launch, like FSR's: without them the choice takes effect after a restart).
+     */
+    public static String applyLook(boolean rt) {
+        if (!rt) {
+            RtSwitch.ON = false;
+            stop();
+            return null;
+        }
+        if (!RtDeviceFeatures.enabled) return "restart";
+        if (RtFailures.reason() != null) return "failed";
+        RtSwitch.ON = true;
+        install();
+        return null;
+    }
+
     static void fallBack(String step, Throwable t) {
         RtSwitch.fallBack(step, t);
         try {
