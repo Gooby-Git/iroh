@@ -59,8 +59,19 @@ public final class InteractionTest {
             bound = null;
         }
         public void resumePass() { resumeMain(); }
-        public void invalidateBoundState() { cacheValid = true; log.add("invalidate"); }
-        public void reapplyDynamicState() { dynValid = true; log.add("reapply"); }
+        // int-2b: PassResume restores the bind through CmdState (nothing of Iroh's bound here: next bind records) and
+        // sets viewport/scissor; depth bias / line width wait for a pipeline that declares them (passResumeTest)
+        final dev.elemore.iroh.render.CmdState cmd = new dev.elemore.iroh.render.CmdState(new dev.elemore.iroh.render.CmdState.Backend() {
+            public void bindPipeline(long h) { log.add("rebind"); }
+            public void depthBias(float c, float s) {}
+            public void lineWidth(float w) {}
+        });
+        public dev.elemore.iroh.render.CmdState cmdState() { return cmd; }
+        public void reapplyViewportAndScissor() {
+            cacheValid = cmd.boundHandle() == 0 && cmd.stale() == dev.elemore.iroh.render.CmdState.ALL;
+            dynValid = true;
+            log.add("viewport");
+        }
         public boolean mainTargetBound() { return "main".equals(bound); }
         public void resumeMain() {
             if (worldPassOpen) log.add("BAD resume with W open");
@@ -86,7 +97,7 @@ public final class InteractionTest {
         r.openW();
         MainPassArbiter.runOutside(r, () -> r.record("compute"));
         check("W+O: W closed, main resumed, ended, work, resumed, invalidated, re-applied",
-                r.log.equals(List.of("W open", "W close", "resume main", "end main", "compute", "resume main", "invalidate", "reapply")));
+                r.log.equals(List.of("W open", "W close", "resume main", "end main", "compute", "resume main", "viewport")));
         check("W+O: nothing recorded inside W or a pass; state valid after", !r.bad() && r.cacheValid && r.dynValid && r.mainTargetBound());
 
         // ---- W + J: W yields, the join finds Iroh's main target bound

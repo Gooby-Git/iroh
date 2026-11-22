@@ -83,17 +83,10 @@ public final class IrohGpuDevice extends VkGpuDevice {
         public boolean passBound() { return Renderer.getInstance().getBoundRenderPass() != null; }
         public void endPass() { Renderer.getInstance().endRenderPass(); }
         public void resumePass() { resumeMain(); }
-        public void invalidateBoundState() { Renderer.getInstance().invalidateBoundState(); }
-        public void reapplyDynamicState() { reapplyIrohState(); }
+        // int-2b: PassResume binds Iroh's pipeline again and sets only the dynamic states it declares (CmdState)
+        public dev.elemore.iroh.render.CmdState cmdState() { return Renderer.getInstance().cmdState(); }
+        public void reapplyViewportAndScissor() { dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor(); }
     };
-
-    /** Iroh's dynamic state after a foreign recording (same set as VulkanImage.endPassRunResume) */
-    private static void reapplyIrohState() {
-        net.vulkanmod.vulkan.VRenderSystem.reapplyDepthBias();
-        if (Renderer.getInstance().getBoundRenderPass() != null)
-            dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
-        dev.elemore.iroh.glshim.GlState.reapplyDynamicState();
-    }
 
     @Override
     public boolean canRecordOutsideMainPass() {
@@ -223,6 +216,11 @@ public final class IrohGpuDevice extends VkGpuDevice {
         VkCommandBuffer c = Renderer.recordingCommandBuffer("api4");
         if (c == null) throw new IllegalStateException("api 4: no frame is recording (call from a frame stage)");
         return c;
+    }
+
+    @Override
+    protected void graphicsPipelineBound() {
+        Renderer.getInstance().invalidateBoundState(); // int-2b: the next Iroh draw binds again and sets its dynamic state
     }
 
     @Override

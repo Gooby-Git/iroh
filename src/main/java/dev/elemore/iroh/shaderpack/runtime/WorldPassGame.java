@@ -41,6 +41,9 @@ final class WorldPassGame implements WorldPass.Host, WorldPass.DrawSource {
         fb = r.getBoundFramebuffer();
         glFb = VkGlFramebuffer.getBoundFramebuffer();
         r.endRenderPass();
+        // int-2b: pack pipelines (depth bias / line width static) are bound until leave(): a GL polygon offset or line
+        // width meanwhile is deferred to Iroh's next bind instead of landing between a pack bind and its draw
+        r.invalidateBoundState();
     }
 
     @Override
@@ -64,10 +67,11 @@ final class WorldPassGame implements WorldPass.Host, WorldPass.DrawSource {
 
     @Override
     public void reapplyDynamicState() {
-        VRenderSystem.reapplyDepthBias();
+        // int-2b (td-0cc003): viewport/scissor only (dynamic in every pipeline). Depth bias / line width are NOT set
+        // eagerly: invalidateBoundState marked them stale and Iroh's next bind sets the ones its pipeline declares
+        // (setting line width here while a GUI pipeline is bound was the title-screen VUID-08608 of int-2).
         if (Renderer.getInstance().getBoundRenderPass() != null)
             dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
-        dev.elemore.iroh.glshim.GlState.reapplyDynamicState();
     }
 
     // ---- DrawSource
