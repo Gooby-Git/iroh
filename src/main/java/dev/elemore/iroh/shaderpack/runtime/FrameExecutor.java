@@ -500,7 +500,7 @@ public final class FrameExecutor {
         }
         Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
         Map<Integer, GpuBackend.Bind> set1 = binds(p, u, 1);
-        accessBinds(set0, "STORAGE_READ");
+        accessBinds(set0, "STORAGE_WRITE"); // a fullscreen program may imageStore too
         int[] colour = new int[p.writes.size()];
         List<String> keys = new ArrayList<>();
         int aw = Integer.MAX_VALUE, ah = Integer.MAX_VALUE;

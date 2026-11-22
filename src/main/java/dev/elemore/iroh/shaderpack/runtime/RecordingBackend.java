@@ -224,11 +224,9 @@ public final class RecordingBackend implements GpuBackend {
         Set<Integer> attached = new HashSet<>();
         for (int c : d.colour())
             attached.add(c);
+        bindAccess(d.set0(), d.pass(), attached);
         for (Bind b : d.set0().values())
             if (b.image() >= 0) {
-                if (attached.contains(b.image()))
-                    violations.add(d.pass() + " samples " + n(b.image()) + " while it is attached (feedback loop)");
-                read(b.image(), d.pass());
                 GpuBackend.ImageDesc bd = imageDescs.get(b.image());
                 if ("LINEAR".equals(b.sampler()) && bd != null && bd.mips() > 1 && !mipsFresh.contains(b.image()))
                     violations.add(d.pass() + " samples " + n(b.image()) + " with mipmaps whose levels are stale");
