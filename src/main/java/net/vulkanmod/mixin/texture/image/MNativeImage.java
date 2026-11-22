@@ -79,6 +79,8 @@ public abstract class MNativeImage {
             int comps = this.format.components();
             tex.uploadClient(level, xOffset, yOffset, widthIn, heightIn, this.format.glFormat(), org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE,
                     this.pixels, this.size, this.getWidth(), 1, unpackSkipRows, unpackSkipPixels); // rows are tightly packed
+            // rc14 (td-5fd20c): the lightmap stays linear whoever uploads it (see LightmapFilter)
+            if (dev.elemore.iroh.compat.LightmapFilter.isLightmap(tex.id)) blur = true;
             VTextureSelector.getBoundTexture().updateTextureSampler(blur, clamp, mipmap);
         } finally {
             if (autoClose) {
