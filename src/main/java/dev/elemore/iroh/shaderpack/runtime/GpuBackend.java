@@ -140,6 +140,25 @@ public interface GpuBackend extends AutoCloseable {
     default void timeEnd(String pass) {
     }
 
+    /**
+     * P3-11 (S) world pass: opens ONE render pass instance over a pack pass's colour attachments (its DRAWBUFFERS halves)
+     * + depth, LOAD/STORE, for draws the RENDERER issues (substituted vanilla draws: Iroh's Drawer binds the vertex
+     * buffer and draws). Nothing but {@link #bindExternalDraw} may be recorded until {@link #endAttachments}.
+     */
+    default void beginAttachments(String pass, int[] colour, int depth, int[] viewport) {
+        throw new UnsupportedOperationException(name() + " has no external-draw attachments");
+    }
+
+    /** P3-11: binds a pack pipeline + its descriptor sets (uniform block copied now) + the zero vertex binding 1 for the renderer's next draw */
+    default void bindExternalDraw(String pass, int pipeline, Map<Integer, Bind> set0, Map<Integer, Bind> set1, byte[] uniforms) {
+        throw new UnsupportedOperationException(name() + " has no external draws");
+    }
+
+    /** P3-11: closes the render pass instance {@link #beginAttachments} opened */
+    default void endAttachments() {
+        throw new UnsupportedOperationException(name() + " has no external-draw attachments");
+    }
+
     default int importImage(Object external, String name) {
         throw new UnsupportedOperationException(name() + " cannot import " + name);
     }

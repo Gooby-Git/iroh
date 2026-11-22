@@ -39,6 +39,66 @@ public final class RecordingBackend implements GpuBackend {
         return "recording";
     }
 
+    /** P3-11: the open external-draw attachments (pass id), null when none: no transfer/draw may be recorded inside */
+    public String openAttachments;
+    public final List<String> externalBinds = new ArrayList<>();
+
+    private void notInside(String what) {
+        if (openAttachments != null)
+            violations.add(what + " recorded inside the open world-pass attachments of " + openAttachments);
+    }
+
+    @Override
+    public void beginAttachments(String pass, int[] colour, int depth, int[] viewport) {
+        if (!inFrame)
+            violations.add("beginAttachments " + pass + " outside a frame");
+        if (openAttachments != null)
+            violations.add("beginAttachments " + pass + " while " + openAttachments + " is open (unbalanced)");
+        for (int c : colour) {
+            ImageDesc cd = imageDescs.get(c);
+            if (!cd.usage().contains("COLOR_ATTACHMENT"))
+                violations.add(pass + " attaches " + cd.name() + " without COLOR_ATTACHMENT usage");
+            write(c, pass);
+        }
+        if (depth >= 0) {
+            ImageDesc dd = imageDescs.get(depth);
+            if (dd == null || !dd.vkFormat().startsWith("D"))
+                violations.add(pass + " depth attachment is not a depth format");
+            write(depth, pass);
+        }
+        if (viewport[2] <= 0 || viewport[3] <= 0)
+            violations.add(pass + " empty viewport");
+        openAttachments = pass;
+        StringBuilder sb = new StringBuilder("beginAttachments ").append(pass).append(" [");
+        for (int i = 0; i < colour.length; i++)
+            sb.append(i == 0 ? "" : ",").append(n(colour[i]));
+        calls.add(sb.append("] + ").append(depth >= 0 ? n(depth) : "no depth").toString());
+    }
+
+    @Override
+    public void bindExternalDraw(String pass, int pipeline, Map<Integer, Bind> set0, Map<Integer, Bind> set1, byte[] uniforms) {
+        if (openAttachments == null)
+            violations.add("bindExternalDraw " + pass + " outside open attachments");
+        else if (!openAttachments.equals(pass))
+            violations.add("bindExternalDraw " + pass + " inside the attachments of " + openAttachments + " (wrong DRAWBUFFERS set)");
+        if (pipeline < 0 || pipeline >= pipelineIds.size())
+            violations.add("bindExternalDraw " + pass + " with unknown pipeline " + pipeline);
+        for (Bind b : set0.values())
+            if (b.image() >= 0 && b.image() < imageDescs.size() && freed.contains(b.image()))
+                violations.add("bindExternalDraw " + pass + " samples freed image " + n(b.image()));
+        String id = pipeline >= 0 && pipeline < pipelineIds.size() ? pipelineIds.get(pipeline) : "?";
+        externalBinds.add(pass + " " + id);
+        calls.add("bindExternalDraw " + pass + " " + id + " ubo " + uniforms.length);
+    }
+
+    @Override
+    public void endAttachments() {
+        if (openAttachments == null)
+            violations.add("endAttachments without an open pass (unbalanced)");
+        calls.add("endAttachments " + openAttachments);
+        openAttachments = null;
+    }
+
     @Override
     public int createImage(ImageDesc d) {
         if (d.width() <= 0 || d.height() <= 0 || d.depth() <= 0)
@@ -118,6 +178,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void blit(int src, int dst) {
+        notInside("blit");
         use(src, "blit");
         use(dst, "blit");
         read(src, "blit");
@@ -131,6 +192,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void upload(int image, float[] rgba) {
+        notInside("upload");
         ImageDesc d = imageDescs.get(image);
         long texels = (long) d.width() * d.height() * d.depth();
         if (rgba.length != texels * 4)
@@ -145,8 +207,13 @@ public final class RecordingBackend implements GpuBackend {
         return calls.size();
     }
 
+    /** P3-11 tests: pipelines whose id this accepts fail to create (degraded-mode checks) */
+    public java.util.function.Predicate<String> failPipeline;
+
     @Override
     public int createPipeline(PipelineDesc d) {
+        if (failPipeline != null && failPipeline.test(d.id()))
+            throw new IllegalStateException("test: pipeline " + d.id() + " refused");
         if (d.computeSpirv() == null && (d.vertexSpirv() == null || d.fragmentSpirv() == null))
             violations.add("pipeline " + d.id() + " without both raster stages");
         for (byte[] s : new byte[][]{d.vertexSpirv(), d.fragmentSpirv(), d.computeSpirv()})
@@ -163,6 +230,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void beginFrame() {
+        notInside("beginFrame");
         frameNo++;
         inFrame = true;
         dirty.clear();
@@ -171,6 +239,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void barrier(int image, String from, String to) {
+        notInside("barrier");
         dirty.remove(image);
         calls.add("barrier " + n(image) + " " + from + " -> " + to);
     }
@@ -193,6 +262,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void clear(int image, float[] rgba) {
+        notInside("clear");
         if (!inFrame)
             violations.add("clear outside a frame");
         write(image, "clear");
@@ -202,6 +272,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void generateMips(int image) {
+        notInside("mips");
         if (imageDescs.get(image).mips() <= 1)
             violations.add("mips requested on " + n(image) + " which has one level");
         write(image, "mips");
@@ -212,6 +283,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void copy(int src, int dst) {
+        notInside("copy");
         read(src, "copy");
         write(dst, "copy");
         calls.add("copy " + n(src) + " -> " + n(dst));
@@ -219,6 +291,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void draw(Draw d) {
+        notInside("draw");
         if (!inFrame)
             violations.add("draw outside a frame");
         Set<Integer> attached = new HashSet<>();
@@ -289,6 +362,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void drawGeometry(GeoDraw d) {
+        notInside("geometry");
         if (!inFrame)
             violations.add("geometry outside a frame");
         Set<Integer> attached = new HashSet<>();
@@ -319,6 +393,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void dispatch(Dispatch d) {
+        notInside("dispatch");
         bindAccess(d.set0(), d.pass(), Set.of());
         for (int g : d.groups())
             if (g <= 0)
@@ -329,6 +404,7 @@ public final class RecordingBackend implements GpuBackend {
 
     @Override
     public void endFrame() {
+        notInside("endFrame");
         inFrame = false;
         calls.add("endFrame");
     }

@@ -123,6 +123,61 @@ public final class PackPerfTest {
                 check("zero steady-state allocation in the executor" + (up ? " (upscaler)" : "") + " (" + per + " B/frame)", per == 0);
                 check("frames drew", nb.draws > 0);
             }
+            // P3-11: the world pass's own steady-state allocation: segmented frame + 300 substituted draws per frame
+            {
+                NullBackend nb = new NullBackend();
+                FrameExecutor ne = new FrameExecutor(data, plan, "world0", nb, FrameExecutor.cap(1L << 30));
+                ne.tracing = false;
+                Object tex = new Object();
+                dev.elemore.iroh.shaderpack.runtime.WorldPass.Host host = new dev.elemore.iroh.shaderpack.runtime.WorldPass.Host() {
+                    boolean bound = true;
+                    public boolean irohPassBound() { return bound; }
+                    public void endIrohPass() { bound = false; }
+                    public void resumeIrohPass() { bound = true; }
+                    public void invalidateBoundState() {}
+                    public void reapplyDynamicState() {}
+                };
+                dev.elemore.iroh.shaderpack.runtime.WorldPass.DrawSource ds = new dev.elemore.iroh.shaderpack.runtime.WorldPass.DrawSource() {
+                    public void modelView(double[] o) { o[0] = o[5] = o[10] = o[15] = 1; }
+                    public void projection(double[] o) { o[0] = o[5] = o[10] = o[15] = 1; }
+                    public Object texture() { return tex; }
+                    public long textureKey(Object t) { return 1; }
+                    public int importTexture(Object t) { return nb.importImage(t, "tex"); }
+                    public void ids(java.util.Map<String, double[]> out) { out.get("entityId")[0] = 3; }
+                };
+                var wp = new dev.elemore.iroh.shaderpack.runtime.WorldPass(ne, nb, host, ds, java.util.Set.of(), true);
+                java.util.List<String> ent = java.util.List.of("Position", "Color", "UV0", "UV1", "UV2", "Normal");
+                java.util.List<String> part = java.util.List.of("Position", "UV0", "Color", "UV2");
+                Object k1 = new Object(), k2 = new Object(), k3 = new Object(), k4 = new Object();
+                Runnable frame = () -> {
+                    wp.begin(in);
+                    wp.opaque(in);
+                    for (int i = 0; i < 100; i++) {
+                        wp.onBind(k1, "rendertype_entity_cutout_no_cull", ent, 3, true, true, false, false, 0, 0, 0, 0, true);
+                        wp.beforeDraw();
+                        wp.beforeDraw();
+                        wp.onBind(k2, "rendertype_crumbling", ent, 3, true, false, false, true, 4, 2, 1, 0, true);
+                        wp.beforeDraw();
+                        wp.onBind(k3, "rendertype_gui", ent, 3, true, true, false, false, 0, 0, 0, 0, true); // raster
+                    }
+                    wp.translucent(in);
+                    for (int i = 0; i < 50; i++) {
+                        wp.onBind(k4, "particle", part, 3, true, false, false, true, 6, 7, 1, 7, true);
+                        wp.beforeDraw();
+                    }
+                    wp.end(in);
+                };
+                for (int i = 0; i < 300; i++)
+                    frame.run();
+                long b0 = mx.getThreadAllocatedBytes(t);
+                for (int i = 0; i < 200; i++)
+                    frame.run();
+                long per = (mx.getThreadAllocatedBytes(t) - b0) / 200;
+                System.out.println("# world pass own allocation per frame (350 substituted draws, 400 binds): " + per + " bytes; " + wp.report());
+                // lessons.md: ThreadMXBean has a few hundred bytes of noise; "zero" = under 16 KB over all 200 frames
+                check("P3-11: zero steady-state allocation in the world pass + executor (" + per + " B/frame, " + per * 200 + " B total)", per * 200 < 16 * 1024);
+                check("P3-11: world pass healthy (" + wp.failure() + ")", wp.failure() == null && wp.substitutedDraws == 350);
+            }
         }
         System.out.println("# packperf " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);

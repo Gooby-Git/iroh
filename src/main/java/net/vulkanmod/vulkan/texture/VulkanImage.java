@@ -415,6 +415,8 @@ public class VulkanImage {
 
     /** Ends the bound render pass (if any), runs {@code record} on the frame command buffer, resumes the pass. */
     public static void endPassRunResume(Runnable record) {
+        if ((dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK & 2) != 0) // P3-11: out-of-pass work never records inside the world pass's attachments
+            dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.closeForForeign();
         Renderer renderer = Renderer.getInstance();
         RenderPass[] boundPass = {renderer.getBoundRenderPass()};
         Framebuffer[] boundFb = {renderer.getBoundFramebuffer()};

@@ -120,8 +120,16 @@ public final class Substitution {
     /** a pack pipeline variant: program x vertex layout x render state (blend/depth/cull/colour mask packed by Iroh) */
     public record Key(String program, String layout, long state) {}
 
-    // ---- observe mode
-    public static volatile boolean OBSERVE;
+    // ---- the renderer's ONE volatile read per bind and per draw (P3-11): bit OBS = observe, bit WORLD = world pass live
+    public static final int OBS = 1, WORLD = 2;
+    public static volatile int HOOK;
+    /** observe mode (P3-10), kept as a plain mirror of HOOK bit OBS for readers */
+    public static boolean OBSERVE;
+
+    public static synchronized void setBit(int bit, boolean on) {
+        HOOK = on ? HOOK | bit : HOOK & ~bit;
+        OBSERVE = (HOOK & OBS) != 0;
+    }
     private static final Map<String, long[]> SEEN = new ConcurrentHashMap<>();
 
     /** counts one bind: shader -> class/layout (or raster) */

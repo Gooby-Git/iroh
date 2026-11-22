@@ -11,6 +11,8 @@
     "render.PackFogM",
     "render.IrohHudM",
     "render.IrohLeavesM",
+    "render.IrohDrawIdsM",
+    "render.IrohBlockEntityIdsM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",

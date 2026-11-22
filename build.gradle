@@ -577,3 +577,13 @@ tasks.register('substitutionTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.packtest.SubstitutionTest'
 	workingDir = projectDir
 }
+
+// P3-11: the (S) world pass frame order + decision path on the fake device. ./gradlew worldPassTest ; last line "# worldpass PASS n/n"
+tasks.register('worldPassTest', JavaExec) {
+	group = 'verification'
+	description = 'World pass (program substitution) order/state on the recording backend'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.WorldPassTest'
+	workingDir = projectDir
+}

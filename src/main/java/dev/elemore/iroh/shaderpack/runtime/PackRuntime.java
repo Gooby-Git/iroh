@@ -45,20 +45,46 @@ public final class PackRuntime {
             i.worldEnd();
     }
 
-    /** P3-6 FULL mode, WorldRenderEvents.START: decides whether the raster terrain layers are skipped this frame */
+    /** P3-6 FULL mode, WorldRenderEvents.START: decides whether the raster terrain layers are skipped this frame;
+     *  P3-11: begins a world-pass frame when iroh.pack.world.split is on */
     public static void onWorldStart() {
         PackRuntimeImpl i = impl;
         boolean on = active && i != null && i.fullReady();
         net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive = on;
+        if (on)
+            i.worldBegin();
     }
 
-    /** P3-6 FULL mode, WorldRenderEvents.BEFORE_ENTITIES: shadow + gbuffers + the whole chain, output and depth back */
+    /** P3-11, WorldRenderEvents.AFTER_SETUP (after the sky) */
+    public static void onAfterSky() {
+        if (!active)
+            return;
+        PackRuntimeImpl i = impl;
+        if (i != null)
+            i.worldAfterSky();
+    }
+
+    /** P3-6 FULL mode, WorldRenderEvents.BEFORE_ENTITIES: shadow + gbuffers + the whole chain, output and depth back
+     *  (P3-11 world pass: shadow .. gbuffers-solid only) */
     public static void onBeforeEntities() {
         if (!active)
             return;
         PackRuntimeImpl i = impl;
-        if (i != null && net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive)
-            i.fullFrame();
+        if (i != null && net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive) {
+            if (i.worldFrameActive())
+                i.worldOpaque();
+            else
+                i.fullFrame();
+        }
+    }
+
+    /** P3-11: vanilla's translucent terrain layer (Iroh's WorldRenderer, full mode): deferred runs here */
+    public static void onTranslucentTerrain() {
+        if (!active)
+            return;
+        PackRuntimeImpl i = impl;
+        if (i != null)
+            i.worldTranslucent();
     }
 
     public static void onSetLevel() {

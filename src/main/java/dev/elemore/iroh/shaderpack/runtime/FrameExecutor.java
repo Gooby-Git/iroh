@@ -277,7 +277,7 @@ public final class FrameExecutor {
         if (p.kind.equals("geometry")) {
             // pipelines for every terrain-class pass once geometry is supplied at all (a class absent in the first
             // frame, e.g. no water in view, still draws later); other classes only when their batches exist
-            if (in.geometry().isEmpty())
+            if (in.geometry().isEmpty() && !expectGeometry)
                 return false;
             for (String g : p.geometry)
                 if (sceneClass(g).startsWith("terrain_"))
@@ -416,6 +416,23 @@ public final class FrameExecutor {
     // ==================================================================================================== frame
 
     public void frame(PackFrameInputs in) {
+        frameBegin(in);
+        runStages(in, in.startStage(), null, false);
+        frameEnd(in);
+    }
+
+    // P3-11: one frame may be recorded in SEGMENTS around the renderer's own world draws (frameBegin, runStages ...,
+    // frameEnd); frame() is the three in a row and records exactly what it recorded before (goldens unchanged)
+    private int segStart;
+    private String segLastStage;
+    private final List<PassGraph.Pass> heldCaptures = new ArrayList<>();
+    /** P3-11: terrain-class geometry passes get their pipelines and depth clears even when this frame's inputs carry no batches yet (world pass: batches arrive mid-frame) */
+    public boolean expectGeometry;
+    /** P3-11: backend image holding raster draws made inside the world pass over transparent black (premultiplied); composited OVER the output before present; -1 = none */
+    public int rasterOver = -1;
+
+    /** P3-11 segment 0: plan, clears, inputs, copies (no passes); the backend frame begins here */
+    public void frameBegin(PackFrameInputs in) {
         if (!prepared)
             prepare(in);
         // P3-7: the trace holds the LAST frame only (it grew without bound in game: one list entry per pass per frame)
@@ -536,7 +553,7 @@ public final class FrameExecutor {
                 if (tracing) trace.add("clear " + e.getKey() + " (input value)");
             }
         }
-        if (!in.geometry().isEmpty() && start <= STAGES.indexOf("shadow"))
+        if ((!in.geometry().isEmpty() || expectGeometry) && start <= STAGES.indexOf("shadow"))
             for (String dk : reuseShadow ? DEPTH_ONLY : DEPTH_AND_SHADOW) {
                 Integer h = images.get(dk);
                 if (h == null)
@@ -547,17 +564,37 @@ public final class FrameExecutor {
             }
         if (afterInputs != null)
             afterInputs.run();
-        // passes
-        String lastStage = null;
+        segStart = start;
+        segLastStage = null;
+        heldCaptures.clear();
+    }
+
+    /**
+     * P3-11: the passes of stages [from, toExclusive) (null = to the end) of the frame begun by {@link #frameBegin}.
+     * {@code holdDepthCaptures}: the scene-depth captures (depthtex1/2 := depthtex0) of these stages are kept for
+     * {@link #runHeldCaptures} instead: the world pass draws more opaque geometry into depthtex0 after this segment.
+     */
+    public void runStages(PackFrameInputs in, String from, String toExclusive, boolean holdDepthCaptures) {
+        int start = Math.max(segStart, STAGES.indexOf(from));
+        int end = toExclusive == null ? Integer.MAX_VALUE : STAGES.indexOf(toExclusive);
+        String lastStage = segLastStage;
         for (int pi = 0; pi < frame.passes.size(); pi++) {
             PassGraph.Pass p = frame.passes.get(pi);
             int st = STAGES.indexOf(p.stage);
             if (st < start)
                 continue;
+            if (st >= end)
+                break;
             if (!p.stage.equals(lastStage)) {
                 lastStage = p.stage;
+                segLastStage = lastStage;
                 if (onStage != null)
                     onStage.accept(p.stage);
+            }
+            if (holdDepthCaptures && p.kind.equals("capture") && p.id.startsWith("capture:depthtex")) {
+                heldCaptures.add(p);
+                if (tracing) trace.add("hold " + p.id + " (world pass draws into depthtex0 first)");
+                continue;
             }
             if (skip.contains(p.id)) {
                 if (tracing) trace.add("skip " + p.id + " (iroh.pack.skip)");
@@ -602,6 +639,17 @@ public final class FrameExecutor {
             if (upscale != null && p.id.equals(upscale.after()))
                 runCut(in);
         }
+    }
+
+    /** P3-11: the depth captures {@link #runStages} held, now (after the world pass's opaque draws) */
+    public void runHeldCaptures(PackFrameInputs in) {
+        for (int i = 0; i < heldCaptures.size(); i++)
+            capture(heldCaptures.get(i), in);
+        heldCaptures.clear();
+    }
+
+    /** P3-11 last segment: end-of-frame copies, depth back, the raster-over composite, present; the backend frame ends */
+    public void frameEnd(PackFrameInputs in) {
         postCut = false;
         // end of frame: alt -> main copies for flipped, never-cleared pairs
         if (endCopies == null) {
@@ -628,6 +676,8 @@ public final class FrameExecutor {
             gpu.blit(d0, in.depthTo());
             if (tracing) trace.add("depth back depthtex0 -> scene depth");
         }
+        if (rasterOver >= 0)
+            rasterOverComposite();
         if (presentTo >= 0) {
             Integer out = images.get("output");
             access(out, "TRANSFER_READ");
@@ -1810,10 +1860,297 @@ public final class FrameExecutor {
         clearValueKeys.clear();
         endCopies = null;
         cutDraw = null;
+        for (Integer sp : substPipes.values())
+            if (sp >= 0)
+                gpu.freePipeline(sp);
+        substPipes.clear();
+        substPasses.clear();
+        passForClass.clear();
+        overDraw = null;
+        overPipe = -1;
+        overFailed = false;
+        heldCaptures.clear();
         cutCopies = null;
         cutIn = cutOut = null;
         prepared = false;
         if (tracing) trace.add("closed");
+    }
+
+    // ------------------------------------------------------------------------------------------------ P3-11 world pass
+
+    /** premultiplied raster-over: out = raster.rgb + output.rgb * (1 - raster.a) (raster draws were made over transparent black) */
+    static final String OVER_FS = """
+            #version 450
+            layout(location = 0) in vec2 uv;
+            layout(location = 0) out vec4 col;
+            layout(set = 0, binding = 0) uniform IrohOver { vec4 unused; };
+            layout(set = 0, binding = 1) uniform sampler2D raster;
+            void main() { col = texelFetch(raster, ivec2(gl_FragCoord.xy), 0); }
+            """;
+    private int overPipe = -1;
+    private GpuBackend.Draw overDraw;
+    private boolean overFailed;
+
+    /** blits the raster scene colour into a pack image and draws it over the output (blend ONE, ONE_MINUS_SRC_ALPHA) */
+    private void rasterOverComposite() {
+        Integer out = images.get("output");
+        if (out == null || overFailed)
+            return;
+        if (overDraw == null) {
+            GpuBackend.ImageDesc od = gpu.desc(out), rd = gpu.desc(rasterOver);
+            if (od.width() != rd.width() || od.height() != rd.height()) {
+                problems.add("raster-over: scene colour " + rd.width() + "x" + rd.height() + " != output " + od.width() + "x" + od.height() + ": raster draws of the world pass not composited");
+                overFailed = true;
+                return;
+            }
+            int img = gpu.createImage(new GpuBackend.ImageDesc("pack:engine:raster", "R8G8B8A8_UNORM", od.width(), od.height(), 1, 1,
+                    Set.of("SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
+            images.put("engine:raster", img);
+            try {
+                var vs = dev.elemore.iroh.shaderpack.PackCompiler.compile(dev.elemore.iroh.shaderpack.PackGlsl.Stage.VERTEX, MOTION_VS, "iroh-over.vsh");
+                var fs = dev.elemore.iroh.shaderpack.PackCompiler.compile(dev.elemore.iroh.shaderpack.PackGlsl.Stage.FRAGMENT, OVER_FS, "iroh-over.fsh");
+                if (vs.spirv() == null || fs.spirv() == null)
+                    throw new IllegalStateException(vs.error() + " " + fs.error());
+                overPipe = gpu.createPipeline(new GpuBackend.PipelineDesc("engine:over", vs.spirv(), fs.spirv(), null,
+                        List.of(new GpuBackend.VertexInput(0, "vec4", "position")), List.of("R8G8B8A8_UNORM"),
+                        List.of(List.of("ONE", "ONE_MINUS_SRC_ALPHA", "ONE", "ONE_MINUS_SRC_ALPHA")),
+                        List.of(new GpuBackend.Slot(0, 0, "UNIFORM_BUFFER", "IrohOver", "IrohOver"),
+                                new GpuBackend.Slot(0, 1, "SAMPLER", "sampler2D", "raster"))));
+            } catch (RuntimeException e) {
+                problems.add("raster-over: pipeline not created: " + e);
+                overFailed = true;
+                return;
+            }
+            pipelines.put("engine:over", overPipe);
+            Map<Integer, GpuBackend.Bind> set0 = new TreeMap<>();
+            set0.put(1, GpuBackend.Bind.image(img, "NEAREST"));
+            overDraw = new GpuBackend.Draw("engine:over", overPipe, new int[]{out}, new int[]{0, 0, od.width(), od.height()}, set0, Map.of(), new byte[16]);
+        }
+        int img = images.get("engine:raster");
+        access(rasterOver, "TRANSFER_READ");
+        access(img, "TRANSFER_WRITE");
+        gpu.blit(rasterOver, img);
+        access(img, "SAMPLED_READ");
+        access(out, "ATTACHMENT_WRITE");
+        gpu.draw(overDraw);
+        if (tracing) trace.add("raster-over composite (world-pass raster draws over the output)");
+    }
+
+    /** P3-11: copies a pack image (target key or target name, main half) into a backend image (depth back mid-frame) */
+    public void blitOut(String key, int dst) {
+        Integer h = images.get(key);
+        if (h == null)
+            h = imageFor(key, "main");
+        if (h == null)
+            return;
+        access(h, "TRANSFER_READ");
+        access(dst, "TRANSFER_WRITE");
+        gpu.blit(h, dst);
+        if (tracing) trace.add("blit " + key + " -> external");
+    }
+
+    /** P3-11: copies a backend image into a pack target's main half (a raster sky into colortex0 mid-frame) */
+    public void blitIn(int src, String target) {
+        Integer h = imageFor(target, "main");
+        if (h == null)
+            return;
+        access(src, "TRANSFER_READ");
+        access(h, "TRANSFER_WRITE");
+        gpu.blit(src, h);
+        if (tracing) trace.add("blit external -> " + target);
+    }
+
+    /** P3-11: clears a backend image the executor does not own (the scene colour to transparent for the raster remainder) */
+    public void clearExternal(int image, float[] rgba) {
+        access(image, "TRANSFER_WRITE");
+        gpu.clear(image, rgba);
+        if (tracing) trace.add("clear external");
+    }
+
+    /** P3-11: what a substituted draw needs from one pack geometry pass (cached per pass; per-draw fields reused) */
+    public static final class SubstPass {
+        public final String passId, stage;
+        public final int[] colour;
+        public final int depth;
+        public final int[] viewport;
+        public final Map<Integer, GpuBackend.Bind> set0, set1;
+        /** set-0 bindings that take the draw's texture (the pack's tex / gtexture / texture sampler) */
+        public final int[] texBindings;
+        final PackData.Unit unit;
+        final PassGraph.Pass pass;
+        final ByteBuffer ubo;
+
+        SubstPass(PassGraph.Pass p, PackData.Unit u, int[] colour, int depth, int[] viewport, Map<Integer, GpuBackend.Bind> set0,
+                  Map<Integer, GpuBackend.Bind> set1, int[] texBindings, ByteBuffer ubo) {
+            this.passId = p.id;
+            this.stage = p.stage;
+            this.pass = p;
+            this.unit = u;
+            this.colour = colour;
+            this.depth = depth;
+            this.viewport = viewport;
+            this.set0 = set0;
+            this.set1 = set1;
+            this.texBindings = texBindings;
+            this.ubo = ubo;
+        }
+    }
+
+    private final Map<String, SubstPass> substPasses = new HashMap<>();
+    private final Map<String, String> passForClass = new HashMap<>();
+    private final Map<String, Integer> substPipes = new HashMap<>();
+
+    /** P3-11: the geometry pass serving {@code geometryClass} in {@code stage} (gbuffers-solid / gbuffers-translucent), null = none */
+    public String passFor(String geometryClass, String stage) {
+        String k = geometryClass + "@" + stage;
+        String r = passForClass.get(k);
+        if (r == null && !passForClass.containsKey(k)) {
+            for (PassGraph.Pass p : frame.passes)
+                if (p.kind.equals("geometry") && p.stage.equals(stage) && !shadowPass(p) && p.geometry != null && p.geometry.contains(geometryClass)) {
+                    r = p.id;
+                    break;
+                }
+            passForClass.put(k, r);
+        }
+        return r;
+    }
+
+    /** P3-11: attachments, bindings and uniform scratch of a pack geometry pass for substituted draws; null when it cannot serve */
+    public SubstPass substPass(String passId, PackFrameInputs in) {
+        SubstPass sp = substPasses.get(passId);
+        if (sp != null)
+            return sp;
+        PassGraph.Pass p = null;
+        for (PassGraph.Pass q : frame.passes)
+            if (q.id.equals(passId))
+                p = q;
+        if (p == null || !prepared)
+            return null;
+        PackData.Unit u = data.units.get(p.unit);
+        if (u == null)
+            return null;
+        int[] colour = new int[p.writes.size()];
+        for (int i = 0; i < colour.length; i++) {
+            Integer h = imageFor((String) p.writes.get(i).get("target"), (String) p.writes.get(i).get("half"));
+            if (h == null) {
+                problems.add(passId + ": no image for " + p.writes.get(i).get("target") + " (substitution)");
+                return null;
+            }
+            colour[i] = h;
+        }
+        Integer depth = images.get("depthtex0");
+        if (depth == null)
+            return null;
+        GpuBackend.ImageDesc dd = gpu.desc(depth);
+        mipped = Set.of();
+        geoIn = in;
+        Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0), set1 = binds(p, u, 1);
+        geoIn = null;
+        List<Integer> tex = new ArrayList<>();
+        Map<String, Map<String, Object>> reads = new HashMap<>();
+        for (Map<String, Object> rd : p.reads)
+            reads.put((String) rd.get("name"), rd);
+        JsonObject r = u.reflection();
+        if (r.has("samplers"))
+            for (JsonElement e : r.getAsJsonArray("samplers")) {
+                JsonObject o = e.getAsJsonObject();
+                Map<String, Object> rd = reads.get(o.get("name").getAsString());
+                if (o.get("set").getAsInt() == 0 && rd != null && "geometry".equals(rd.get("kind"))
+                        && !String.valueOf(rd.get("resource")).startsWith("atlas normals") && !String.valueOf(rd.get("resource")).startsWith("atlas specular"))
+                    tex.add(o.get("binding").getAsInt());
+            }
+        int[] tb = new int[tex.size()];
+        for (int i = 0; i < tb.length; i++)
+            tb[i] = tex.get(i);
+        sp = new SubstPass(p, u, colour, depth, new int[]{0, 0, dd.width(), dd.height()}, set0, set1, tb, newBlock(u));
+        substPasses.put(passId, sp);
+        return sp;
+    }
+
+    /**
+     * P3-11: the pipeline of {@code passId}'s program for a vanilla vertex layout and render state (cached; created on a
+     * miss). {@code blend}: 4 VK blend factor names for attachments whose pack directive is "vanilla", null = no blend.
+     * Returns -1 when the pipeline cannot be created (the caller degrades).
+     */
+    public int substitutePipeline(String passId, String layout, long stateKey, boolean depthTest, boolean depthWrite, boolean cull, List<String> blend) {
+        String key = passId + "|" + layout + "|" + Long.toHexString(stateKey);
+        Integer h = substPipes.get(key);
+        if (h != null)
+            return h;
+        PassGraph.Pass p = null;
+        for (PassGraph.Pass q : frame.passes)
+            if (q.id.equals(passId))
+                p = q;
+        PackData.Unit u = p != null ? data.units.get(p.unit) : null;
+        if (u == null) {
+            substPipes.put(key, -1);
+            return -1;
+        }
+        try {
+            GpuBackend.PipelineDesc d = pipelineDesc(p, u, layout);
+            List<Object> bl = new ArrayList<>();
+            for (Object b : d.blend())
+                bl.add(b instanceof List<?> ? b : "vanilla".equals(b) && blend != null ? blend : b instanceof String sb && !sb.equals("vanilla") ? sb : "off");
+            GpuBackend.Geo g = d.geo();
+            d = new GpuBackend.PipelineDesc(d.id() + " [" + layout + " " + Long.toHexString(stateKey) + "]", d.vertexSpirv(), d.fragmentSpirv(), null,
+                    d.inputs(), d.colourFormats(), bl, d.slots(), new GpuBackend.Geo(layout, g.depthFormat(), depthTest, depthWrite, cull, false));
+            h = gpu.createPipeline(d);
+        } catch (IOException | RuntimeException e) {
+            problems.add(passId + ": substituted pipeline " + layout + " not created: " + e);
+            h = -1;
+        }
+        substPipes.put(key, h);
+        return h;
+    }
+
+    static final String[] PER_DRAW_KEYS = {"entityId", "blockEntityId", "currentRenderedItemId", "entityColor"};
+
+    /** P3-11: number of substituted pipeline variants created (warm-up / perf report) */
+    public int substitutedPipelines() {
+        return substPipes.size();
+    }
+
+    /**
+     * P3-11: the per-draw uniform block of a substituted draw in {@code sp.ubo} (reused: zero allocation): the frame's
+     * uniforms, the draw's model-view (vanilla: camera rotation; vertices camera-relative) and projection, gl_Vertex
+     * decode identity, vanilla texture matrices, renderStage of the class, plus {@code perDraw} (entityId,
+     * blockEntityId, currentRenderedItemId, entityColor). The backend copies the bytes when the draw is bound.
+     */
+    public byte[] substUniforms(SubstPass sp, PackFrameInputs in, String geometryClass, double[] modelView, double[] proj, Map<String, double[]> perDraw) {
+        Mat.invert(modelView, gViewInv);
+        Mat.invert(proj, gProjInv);
+        Mat.mul(proj, modelView, gMvp);
+        Mat.normal(modelView, gTmp, gNormal);
+        gPer.put("iroh_ModelViewMatrix", modelView);
+        gPer.put("iroh_ModelViewMatrixInverse", gViewInv);
+        gPer.put("iroh_ProjectionMatrix", proj);
+        gPer.put("iroh_ProjectionMatrixInverse", gProjInv);
+        gPer.put("modelViewMatrix", modelView);
+        gPer.put("modelViewMatrixInverse", gViewInv);
+        gPer.put("projectionMatrix", proj);
+        gPer.put("projectionMatrixInverse", gProjInv);
+        gPer.put("normalMatrix", gNormal);
+        gPer.put("iroh_ModelViewProjectionMatrix", gMvp);
+        gPer.put("iroh_NormalMatrix", gNormal);
+        gPer.put("iroh_TextureMatrix", VANILLA_TEXTURE_MATRICES);
+        gPer.put("blockEntityId", MINUS_ONE);
+        gPer.put("entityId", MINUS_ONE);
+        gDecode[0] = 1;
+        gDecode[1] = gDecode[2] = gDecode[3] = 0;
+        gPer.put("iroh_VertexDecode", gDecode);
+        gPer.put("chunkOffset", ZERO3);
+        gStage[0] = renderStage(geometryClass, false);
+        gPer.put("renderStage", gStage);
+        if (perDraw != null) // fixed keys, no iterator (zero allocation per draw)
+            for (String k : PER_DRAW_KEYS) {
+                double[] v = perDraw.get(k);
+                if (v != null)
+                    gPer.put(k, v);
+            }
+        gLayer.base = in.uniforms();
+        fillUniforms(sp.unit, sp.ubo, gLayer, false, viewW(), viewH());
+        gLayer.base = Map.of();
+        return sp.ubo.array();
     }
 
     // ------------------------------------------------------------------------------------------------ results
