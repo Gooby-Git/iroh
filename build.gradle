@@ -164,6 +164,16 @@ tasks.register('coreOverrideTest', JavaExec) {
 	if (project.hasProperty('pack')) args project.property('pack')
 }
 
+// rc14 (td-f57b86): camera states x fog option -> expected vanilla fog. ./gradlew fogDecisionTest
+tasks.register('fogDecisionTest', JavaExec) {
+	group = 'verification'
+	description = 'Distance fog option: only vanilla atmospheric/thick fog removed, special fogs vanilla'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.configtest.FogDecisionTest'
+	jvmArgs '-ea'
+}
+
 // Headless test of config/iroh.json and the pack migration (P1-6). ./gradlew irohConfigTest [-Pconfig=dir]; last line "# configtest PASS n/n"
 tasks.register('irohConfigTest', JavaExec) {
 	group = 'verification'
