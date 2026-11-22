@@ -409,7 +409,7 @@ tasks.register('rtReplay', JavaExec) {
 	mainClass = 'dev.elemore.iroh.rttest.RtReplay'
 	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
 	workingDir = projectDir
-	['step', 'quick', 'golden', 'frames', 'res', 'compact'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
+	['step', 'quick', 'golden', 'frames', 'res', 'compact', 'out'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
 	doFirst { useLavapipe(it, 'rtReplay') }
 }
 

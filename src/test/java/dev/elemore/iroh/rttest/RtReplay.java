@@ -24,7 +24,7 @@ public final class RtReplay {
     static int pass, fail;
     static final List<String> report = new ArrayList<>();
     static PrintStream metrics;
-    static final Path OUT = Path.of("build/rt"), GOLD = Path.of("src/test/resources/rtgolden");
+    static final Path OUT = Path.of(System.getProperty("rt.out", "build/rt")), GOLD = Path.of("src/test/resources/rtgolden");
 
     /** Lighting and atmosphere of the test (one shared definition for GPU and CPU). */
     static final class Light {
