@@ -190,6 +190,20 @@ final class RtChainStep {
             check("(i) light switch: the chain reaches 90% of the new level within 16 frames (" + f90 + ")", f90 > 0 && f90 <= 16);
             RtImg.save("i_static_chain", RtImg.ldr(ch.postNeutral(lastStatic, DW * DH), DW, DH));
 
+            // ================================================================ levers: error vs rays per pixel (step 3)
+            metric("(i) quality levers over the same 30-frame move (chain output at display res vs the CPU reference; rays per RENDER pixel per frame):");
+            String[] ln = {"full rate, RIS M=8", "GI + refl checkerboard, M=8", "GI + refl checkerboard, M=4", "full rate, M=16", "full rate, M=1 (plain light sampling)", "GI checkerboard only, M=8"};
+            int[] lf = {0, F_HALF_GI | F_HALF_REFL, F_HALF_GI | F_HALF_REFL, 0, 0, F_HALF_GI};
+            int[] lm = {8, 8, 4, 16, 1, 8};
+            double[][] lev = new double[ln.length][];
+            for (int v = 0; v < ln.length; v++) {
+                lev[v] = lever(ch, base, light, flags | lf[v], lm[v], refD);
+                metric(String.format(Locale.ROOT, "  %-40s relMAE %.4f  RMSE %.4f  detail %.3f | rays/px sun %.3f light %.3f GI %.3f refl %.3f total %.3f",
+                        ln[v], lev[v][0], lev[v][1], lev[v][2], lev[v][3], lev[v][4], lev[v][5], lev[v][6], lev[v][3] + lev[v][4] + lev[v][5] + lev[v][6]));
+            }
+            check("(i) checkerboard GI + reflections halves their rays (" + f(lev[1][5]) + " <= 0.55 x " + f(lev[0][5]) + ")", lev[1][5] <= 0.55 * lev[0][5]);
+            check("(i) checkerboard costs at most 15% more display error (" + f(lev[1][1]) + " vs " + f(lev[0][1]) + ")", lev[1][1] <= 1.15 * lev[0][1]);
+
             // ================================================================ cost
             metric("(i) chain cost per frame on lavapipe (RELATIVE only, harness host copies included):");
             for (Map.Entry<String, double[]> e : ch.cost.entrySet())
@@ -221,6 +235,29 @@ final class RtChainStep {
         ch.gpu.writeMaterials(on);
         ch.gpu.writeLights(lOn);
         return new float[][][]{seqF, seqN, seqD};
+    }
+
+    /** One 30-frame move with the given flags and RIS candidates: {relMAE, RMSE, detail, rays/px sun, light, GI, refl}. */
+    static double[] lever(RtChain ch, RtCamera base, RtReplay.Light light, int flags, int M, float[] refD) {
+        java.util.function.Consumer<dev.elemore.iroh.rt.RtFrameData> old = light.look;
+        light.look = fd -> fd.lightCandidates = M;
+        ch.gpu.clearCache();
+        ch.gpu.resetCounters();
+        float[] out = null;
+        try (RtChain.Den den = ch.new Den(); RtChain.Fsr fd = ch.new Fsr()) {
+            for (int k = 0; k < MOVE; k++) {
+                RtCamera c = pathCam(base, k, MOVE, RW, RH), p = pathCam(base, Math.max(0, k - 1), MOVE, RW, RH);
+                RtChain.Rt r = ch.trace(c, p, 50_000 + k, k, flags);
+                RtChain.In in = ch.pack(r);
+                float[][] o = den.run(in, k, k == 0, c, p, r.jitter, ch.js.offset(Math.max(0, k - 1)));
+                out = fd.run(ch.compose(o[0], o[2], 4, o[1]), in, r.jitter, k == 0, o[0]);
+            }
+        }
+        light.look = old;
+        int[] cnt = ch.gpu.readCounters();
+        double n = (double) MOVE * ch.N;
+        double[] sc = RtChain.score(out, refD, all(DW * DH));
+        return new double[]{sc[0], sc[2], RtChain.detail(out, refD, all(DW * DH), DW, DH), cnt[1] / n, cnt[2] / n, cnt[3] / n, cnt[4] / n};
     }
 
     static double mean(float[] a, boolean[] m) {

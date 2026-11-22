@@ -430,7 +430,7 @@ tasks.register('rtLook', JavaExec) {
 	description = 'P5-1 RT look contact sheets (lavapipe)'
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
-	mainClass = 'dev.elemore.iroh.rttest.RtLook'
+	mainClass = 'dev.elemore.iroh.rttest.RtLookSheets'
 	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
 	workingDir = projectDir
 	['preset', 'golden', 'out'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }

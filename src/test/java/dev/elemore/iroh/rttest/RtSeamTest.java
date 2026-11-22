@@ -117,6 +117,13 @@ public final class RtSeamTest {
             last = r;
         }
         check("presets order by cost (rays per pixel never falls from LOW to PATH_TRACED)", mono);
+        System.out.println("  ESTIMATED frame cost (Radiance datum, UNVERIFIED) at the worst measured rays/px:");
+        for (RtPreset p : RtPreset.values()) {
+            long px1707 = 1707L * 960, pxOut = Math.round(2560 / p.renderScale) * Math.round(1440 / p.renderScale);
+            System.out.printf(Locale.ROOT, "  preset %-11s %.2f rays/px: at 1707x960 ~%.1f ms; at its own render size for 2560x1440 output (%d px) ~%.1f ms%n",
+                    p, p.measuredWorstRaysPerPixel(), RtPreset.estimateMs(p.measuredWorstRaysPerPixel(), px1707), pxOut, RtPreset.estimateMs(p.measuredWorstRaysPerPixel(), pxOut));
+        }
+        check("ULTRA renders at native resolution and costs at least HIGH", RtPreset.ULTRA.renderScale == 1.0f && RtPreset.ULTRA.measuredWorstRaysPerPixel() >= RtPreset.HIGH.measuredWorstRaysPerPixel());
 
         // ---- memory model table (docs/P5-PLAN.md)
         System.out.println("  memory model (RADV ASSUMED 64 B/triangle compacted; quads per non-empty section 1000 / 3000 / 6000; 8 non-empty sections per column):");

@@ -23,7 +23,7 @@ import static dev.elemore.iroh.rt.RtFrameData.*;
  * lighting vs RT" sheet for day and night, an elemental-grade strip; build/rt/sheets and ~/Pictures/iroh-rt-preview.
  * Measures per-pass rays per render pixel and lavapipe wall time per tile (RELATIVE). Never a GPU.
  */
-public final class RtLook {
+public final class RtLookSheets {
     static final int DW = 640, DH = 360, FRAMES = 24;
     static final Path SHEETS = Path.of(System.getProperty("rt.out", "build/rt"), "sheets");
     static final Path PICTURES = Path.of(System.getProperty("user.home"), "Pictures", "iroh-rt-preview");
