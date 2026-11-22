@@ -285,6 +285,11 @@ public final class FirstLaunchSafetyTest {
         String al = fh.substring(fh.indexOf("public static String applyLook("));
         check("Look row -> ray tracing turns a running pack path off BEFORE RT may start (rule 8 at runtime)",
                 al.indexOf("PackRuntime.setEnabled(false)") > 0 && al.indexOf("PackRuntime.setEnabled(false)") < al.indexOf("RtSwitch.ON = true"));
+        // RT on in this build = acceleration structures only: the raster picture must keep vanilla face shade + AO
+        String st = fh.substring(fh.indexOf("static void start("), fh.indexOf("public static void worldUnloaded("));
+        check("RT session start keeps shaded mesher colour while no RT pass shades the picture (RT_SHADES_PICTURE false, tintOnly only under it)",
+                !dev.elemore.iroh.rt.game.RtMeshMode.RT_SHADES_PICTURE && st.indexOf("if (RtMeshMode.RT_SHADES_PICTURE)") >= 0
+                        && st.indexOf("if (RtMeshMode.RT_SHADES_PICTURE)") < st.indexOf("RtMeshMode.tintOnly = true"));
         for (String k : keys) System.clearProperty(k);
         dev.elemore.iroh.rt.game.RtSwitch.resetForTest();
         dev.elemore.iroh.rt.game.RtDeviceFeatures.resetForTest();

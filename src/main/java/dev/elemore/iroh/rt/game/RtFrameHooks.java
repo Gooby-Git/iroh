@@ -57,8 +57,10 @@ public final class RtFrameHooks {
         if (!s.enable(c.viewportWidth(), c.viewportHeight())) throw new IllegalStateException("RT targets refused (memory owner iroh-rt)");
         session = s;
         sectionReg = dev.elemore.iroh.apiimpl.Sections.add(new RtGameBridge(s.queue, new VulkanModSections()));
-        RtMeshMode.tintOnly = true;
-        requestRebuild();
+        if (RtMeshMode.RT_SHADES_PICTURE) { // INT-4: false in this build (acceleration structures only): keep shaded raster colour
+            RtMeshMode.tintOnly = true;
+            requestRebuild();
+        }
     }
 
     /** WorldRenderer (setLevel / unload), next to MemoryGuard.worldUnloaded: drop every BLAS. Pinned first statement. */

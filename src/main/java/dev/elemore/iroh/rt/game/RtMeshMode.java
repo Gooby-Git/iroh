@@ -9,6 +9,13 @@ package dev.elemore.iroh.rt.game;
 public final class RtMeshMode {
     private RtMeshMode() {}
 
-    /** true only while an RT session runs (set by RtFrameHooks; cleared on disable/fallback) */
+    /** true only while an RT session runs AND its passes shade the picture (set by RtFrameHooks; cleared on disable/fallback) */
     public static volatile boolean tintOnly;
+
+    /**
+     * INT-4: the RT passes (G-buffer MRT, sun/emit/GI, denoiser, compose) are NOT wired into the game in this build: the
+     * picture is still raster. Tint-only colour would strip vanilla face shade and AO from that raster picture, so it
+     * stays off until the compose stage exists (the BLAS reads positions only; colour does not matter to it).
+     */
+    public static final boolean RT_SHADES_PICTURE = false;
 }
