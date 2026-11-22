@@ -125,7 +125,7 @@ public final class RtLookModel {
 
         // ---- sky colours: own bases x owner multipliers
         float[] dayUp = mulMix(new float[]{0.20f, 0.42f, 0.95f}, new float[]{0.78f, 0.86f, 1.22f}, 0.6f);
-        float[] dayMid = mulMix(new float[]{0.80f, 0.95f, 1.15f}, new float[]{0.90f, 1.07f, 1.10f}, 0.6f);
+        float[] dayMid = mulMix(new float[]{0.64f, 0.84f, 1.15f}, new float[]{0.90f, 1.07f, 1.10f}, 0.6f);
         float[] dayDown = mulMix(new float[]{0.30f, 0.29f, 0.27f}, new float[]{0.95f, 1.05f, 1.06f}, 0.6f);
         float[] setUp = mulMix(new float[]{0.22f, 0.24f, 0.45f}, new float[]{1.20f, 0.82f, 1.45f}, 0.7f);
         float[] setMid = mulMix(new float[]{0.95f, 0.58f, 0.40f}, new float[]{1.12f, 0.90f, 1.08f}, 0.7f);
@@ -178,6 +178,27 @@ public final class RtLookModel {
         float[] w = in.elementWeights;
         return new float[]{w[0], w[1], w[2], w[3], in.exposure, 1.08f, 1f, 1f, 1.15f, 0.97f, 16f, 0.20f};
     }
+
+    // ------------------------------------------------------------------------------------------------ P5-2 exposure
+
+    /**
+     * Exposure for a frame whose log-average scene-linear luminance (pre-exposure, display image, sky included) is
+     * {@code logAvgLum}. P5-2 calibration (knowledge/rt-iroh.md "P5-2 calibration"): {@link #EXPOSURE_DAY} puts a sunlit
+     * grass top at noon-ish (sun 48 deg) at the brightness and saturation of vanilla's flat lighting of the same pixels;
+     * partial adaptation (square root of the ratio to a typical day view, {@link #LOGAVG_DAY}) clamped to
+     * [{@link #ADAPT_MIN}, {@link #ADAPT_MAX}] so caves and interiors brighten a little but keep their depth and a night is
+     * never lifted by more than ADAPT_MAX (owner rule "never brighten a night": the moon is ~1% of the sun).
+     */
+    public static float autoExposure(double logAvgLum, Inputs in) {
+        double a = Math.sqrt(LOGAVG_DAY / Math.max(1e-6, logAvgLum));
+        return (float) (EXPOSURE_DAY * Math.max(ADAPT_MIN, Math.min(ADAPT_MAX, a))) * in.exposure;
+    }
+
+    /** Calibrated day exposure (P5-2, measured: see autoExposure). */
+    public static final float EXPOSURE_DAY = 0.90f;
+    /** Log-average luminance of the calibration day view at exposure 1 (P5-2 measurement). */
+    public static final float LOGAVG_DAY = 0.21f;
+    public static final float ADAPT_MIN = 0.85f, ADAPT_MAX = 1.6f;
 
     static void set(float[] dst, float[] rgb, float w) {
         dst[0] = rgb[0];

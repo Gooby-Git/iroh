@@ -20,8 +20,14 @@ import java.util.List;
  */
 public final class RtScene {
     public final int SX, SY, SZ, W, H, D;
-    /** P5-1 look scenes: the 48x32x48 village world (default: P5-0's 32^3 test world, goldens pinned to it). */
+    /** P5-1 look scenes: the village world (default: P5-0's 32^3 test world, goldens pinned to it). P5-2: 80x32x80, the
+     *  48x48 village sits at offset {@link #VPAD} inside terrain that continues on every side, so no camera of the sheets
+     *  sees the world's edge (P5-1's day view had a grey band at the left where the world ended). */
     public final boolean village;
+    /** P5-2: village content offset in x and z (blocks). Scene cameras add it ({@link #v}). */
+    public static final int VPAD = 16;
+    /** Generation-time offset added by set/get (VPAD while the village content is placed, else 0). */
+    int gox, goz;
     /** Vanilla-style light levels per cell (BFS), village only: sky and block light 0..15. */
     public int[] skyLight, blockLight;
     // blocks
@@ -75,9 +81,9 @@ public final class RtScene {
 
     public RtScene(boolean village) {
         this.village = village;
-        SX = village ? 3 : 2;
+        SX = village ? 5 : 2;
         SY = 2;
-        SZ = village ? 3 : 2;
+        SZ = village ? 5 : 2;
         W = SX * 16;
         H = SY * 16;
         D = SZ * 16;
@@ -91,12 +97,21 @@ public final class RtScene {
         mesh();
     }
 
+    /** Village coordinates (P5-1 numbering) to world coordinates (P5-2 padded world). */
+    public static org.joml.Vector3f v(float x, float y, float z) {
+        return new org.joml.Vector3f(x + VPAD, y, z + VPAD);
+    }
+
     public int get(int x, int y, int z) {
+        x += gox;
+        z += goz;
         if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return AIR;
         return blocks[(y * D + z) * W + x];
     }
 
     void set(int x, int y, int z, int b) {
+        x += gox;
+        z += goz;
         if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return;
         blocks[(y * D + z) * W + x] = b;
     }
@@ -426,10 +441,22 @@ public final class RtScene {
     void generateVillage() {
         for (int z = 0; z < D; z++)
             for (int x = 0; x < W; x++) {
-                double hill = Math.max(0, 14 - Math.hypot((x - 46) * 0.8, (z - 40) * 0.7) * 0.75);
+                double hill = Math.max(0, 14 - Math.hypot((x - VPAD - 46) * 0.8, (z - VPAD - 40) * 0.7) * 0.75);
+                // P5-2 padding: gentle far rises outside the village so the horizon is terrain, not the world's edge
+                double far = Math.max(0, Math.max(Math.max(VPAD - x, x - (VPAD + 47)), Math.max(VPAD - z, z - (VPAD + 47))));
+                hill = Math.max(hill, far * 0.35 + 1.2 * Math.sin(x * 0.37) * Math.sin(z * 0.29) * Math.min(1, far / 4));
                 int h = 8 + (int) Math.round(hill);
                 for (int y = 0; y < h; y++) set(x, y, z, y < h - 3 ? STONE : y < h - 1 ? DIRT : GRASS);
             }
+        gox = goz = VPAD;
+        try {
+            villageContent();
+        } finally {
+            gox = goz = 0;
+        }
+    }
+
+    void villageContent() {
         // cave mouth into the hill from the west, torch-lit, glowstone at the end
         box(30, 8, 33, 47, 11, 37, AIR);
         box(30, 7, 33, 47, 7, 37, STONE);

@@ -151,6 +151,7 @@ public final class McReplay {
         boolean nrd = NrdLoader.load();
         dev = new LvpDevice(true);
         for (String l : dev.report) System.out.println(l);
+        if ("rq".equals(System.getProperty("mc.only"))) { specularNotDemodulated(); System.out.println("# mcreplay " + (fails == 0 ? "PASS" : "FAIL " + fails + " checks")); System.exit(fails == 0 ? 0 : 1); }
         McScene.STATIC = false;
         System.out.println("== Minecraft-like scene 320x180, " + NF + " frames: window-lit room, pixel-art albedo, flickering torch, moving entity, strafing + turning camera");
         McScene.Frame[] fr = new McScene.Frame[NF];
@@ -235,10 +236,95 @@ public final class McReplay {
             if (c.name.equals("own")) ck(reach > 0 && reach <= 15, "own: reaches 90% of the new light level within 15 frames (the plain temporal fallback and stock NRD defaults need more than " + (NS - SW) + " in this test)");
         }
         McScene.STATIC = false;
+        specularNotDemodulated();
         System.out.println("images: " + new File(dump).getAbsolutePath());
         System.out.println("# mcreplay " + (fails == 0 ? "PASS" : "FAIL " + fails + " checks"));
         System.exit(fails == 0 ? 0 : 1);
     }
 
     static float[] zeros() { return new float[W * H * 2]; }
+
+    /**
+     * RQ-P51-a (P5-2): ONE SvgfDenoiser instance with diffuse + specular and IN_ALBEDO bound. Diffuse radiance is modulated by
+     * the albedo (demodulated inside); specular radiance is NOT (it depends on F0 / the BRDF, never on the diffuse albedo),
+     * so a constant specular input must come out constant over a 1-pixel albedo checker (0.05 / 1.0). Before the fix the
+     * specular channel was divided by the albedo too and the a-trous filter mixed 20x different values across the checker.
+     */
+    static void specularNotDemodulated() {
+        System.out.println("== RQ-P51-a: one instance, diffuse + specular, IN_ALBEDO bound (1 px albedo checker 0.05/1.0, constant specular 0.3)");
+        int fmtN = VK_FORMAT_A2B10G10R10_UNORM_PACK32, fmtH = VK_FORMAT_R16G16B16A16_SFLOAT, u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, G = ImageRef.LAYOUT_GENERAL;
+        DenoiseGpu.Img mv = dev.createImage(VK_FORMAT_R16G16_SFLOAT, W, H, u, "mv"), z = dev.createImage(VK_FORMAT_R32_SFLOAT, W, H, u, "z"), n = dev.createImage(fmtN, W, H, u, "n"),
+                dIn = dev.createImage(fmtH, W, H, u, "diff"), sIn = dev.createImage(fmtH, W, H, u, "spec"), al = dev.createImage(fmtH, W, H, u, "albedo"),
+                dOut = dev.createImage(fmtH, W, H, u, "dOut"), sOut = dev.createImage(fmtH, W, H, u, "sOut");
+        LvpDevice.Buf bMv = dev.hostBuffer(W * H * 4, 3), bZ = dev.hostBuffer(W * H * 4, 3), bN = dev.hostBuffer(W * H * 4, 3), bD = dev.hostBuffer(W * H * 8, 3),
+                bS = dev.hostBuffer(W * H * 8, 3), bAl = dev.hostBuffer(W * H * 8, 3), bDo = dev.hostBuffer(W * H * 8, 3), bSo = dev.hostBuffer(W * H * 8, 3);
+        SvgfDenoiser den = new SvgfDenoiser(dev, new DenoiserType[]{DenoiserType.IROH_DIFFUSE, DenoiserType.IROH_SPECULAR}, W, H);
+        Random rnd = new Random(5);
+        double sErr = 0, sMax = 0, dErr = 0;
+        try {
+            for (int f = 0; f < 8; f++) {
+                ByteBuffer m = LvpDevice.bytes(bMv), zz = LvpDevice.bytes(bZ), nn = LvpDevice.bytes(bN), dd = LvpDevice.bytes(bD), ss = LvpDevice.bytes(bS), aa = LvpDevice.bytes(bAl);
+                for (int p = 0; p < W * H; p++) {
+                    float a = ((p % W + p / W) & 1) == 0 ? 0.05f : 1f;
+                    m.putInt(p * 4, 0);
+                    zz.putFloat(p * 4, 5f);
+                    nn.putInt(p * 4, NrdScene.packNormalRoughness(0, 0, 1, 0.5f, 0));
+                    float noise = 0.8f + 0.4f * rnd.nextFloat();
+                    for (int k = 0; k < 4; k++) {
+                        dd.putShort(p * 8 + k * 2, Float.floatToFloat16(k == 3 ? 2f : 0.5f * a * noise));
+                        ss.putShort(p * 8 + k * 2, Float.floatToFloat16(k == 3 ? 2f : 0.3f));
+                        aa.putShort(p * 8 + k * 2, Float.floatToFloat16(k == 3 ? 1f : a));
+                    }
+                }
+                dev.begin();
+                if (f == 0) { dev.layout(dOut.image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); dev.layout(sOut.image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); }
+                dev.upload(mv.image(), W, H, bMv); dev.upload(z.image(), W, H, bZ); dev.upload(n.image(), W, H, bN);
+                dev.upload(dIn.image(), W, H, bD); dev.upload(sIn.image(), W, H, bS); dev.upload(al.image(), W, H, bAl);
+                DenoiseFrame df = new DenoiseFrame();
+                df.commandBuffer = dev.cmd.address();
+                df.images.put(IN_MV, new ImageRef(mv.image(), VK_FORMAT_R16G16_SFLOAT, W, H, u, G));
+                df.images.put(IN_VIEWZ, new ImageRef(z.image(), VK_FORMAT_R32_SFLOAT, W, H, u, G));
+                df.images.put(IN_NORMAL_ROUGHNESS, new ImageRef(n.image(), fmtN, W, H, u, G));
+                df.images.put(IN_DIFF_RADIANCE_HITDIST, new ImageRef(dIn.image(), fmtH, W, H, u, G));
+                df.images.put(IN_SPEC_RADIANCE_HITDIST, new ImageRef(sIn.image(), fmtH, W, H, u, G));
+                df.images.put(OUT_DIFF_RADIANCE_HITDIST, new ImageRef(dOut.image(), fmtH, W, H, u, G));
+                df.images.put(OUT_SPEC_RADIANCE_HITDIST, new ImageRef(sOut.image(), fmtH, W, H, u, G));
+                df.images.put(IN_ALBEDO, new ImageRef(al.image(), fmtH, W, H, u, G));
+                df.identifiers = new int[]{0, 1};
+                FrameSettings fs = df.settings;
+                fs.viewToClip = fs.viewToClipPrev = NrdScene.viewToClip();
+                fs.worldToView = fs.worldToViewPrev = McScene.worldToView(0);
+                fs.resourceSize = fs.resourceSizePrev = fs.rectSize = fs.rectSizePrev = new int[]{W, H};
+                fs.frameIndex = f;
+                fs.timeDeltaMs = 16.6f;
+                fs.denoisingRange = 1000f;
+                fs.reset = f == 0;
+                den.denoise(df);
+                dev.download(dOut.image(), W, H, bDo);
+                dev.download(sOut.image(), W, H, bSo);
+                dev.submitWait();
+            }
+            ByteBuffer so = LvpDevice.bytes(bSo), dout = LvpDevice.bytes(bDo);
+            int cnt = 0;
+            for (int y = 4; y < H - 4; y++)
+                for (int x = 4; x < W - 4; x++) {
+                    int p = y * W + x;
+                    float a = ((x + y) & 1) == 0 ? 0.05f : 1f;
+                    double e = Math.abs(Float.float16ToFloat(so.getShort(p * 8 + 2)) - 0.3) / 0.3;
+                    sErr += e;
+                    sMax = Math.max(sMax, e);
+                    dErr += Math.abs(Float.float16ToFloat(dout.getShort(p * 8 + 2)) - 0.5 * a) / (0.5 * a);
+                    cnt++;
+                }
+            sErr /= cnt;
+            dErr /= cnt;
+        } finally {
+            den.close();
+            for (DenoiseGpu.Img i : new DenoiseGpu.Img[]{mv, z, n, dIn, sIn, al, dOut, sOut}) dev.destroyImage(i);
+            for (LvpDevice.Buf b : new LvpDevice.Buf[]{bMv, bZ, bN, bD, bS, bAl, bDo, bSo}) dev.destroyBuffer(b);
+        }
+        System.out.printf(Locale.ROOT, "specular: mean rel error %.4f, max %.4f; diffuse (modulated, checker kept): mean rel error %.4f%n", sErr, sMax, dErr);
+        ck(sErr < 0.02 && sMax < 0.05, String.format(Locale.ROOT, "RQ-P51-a: specular is not demodulated by the diffuse albedo (mean rel error %.4f < 0.02, max %.4f < 0.05)", sErr, sMax));
+        ck(dErr < 0.10, String.format(Locale.ROOT, "RQ-P51-a: diffuse with IN_ALBEDO keeps the 1 px checker (mean rel error %.4f < 0.10)", dErr));
+    }
 }

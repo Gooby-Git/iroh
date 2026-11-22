@@ -433,7 +433,7 @@ tasks.register('rtLook', JavaExec) {
 	mainClass = 'dev.elemore.iroh.rttest.RtLookSheets'
 	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
 	workingDir = projectDir
-	['preset', 'golden', 'out'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
+	['preset', 'golden', 'out', 'calib', 'exposure'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
 	doFirst {
 		useLavapipe(it, 'rtLook')
 		def fl = file('iroh-native/natives/linux-x64/libiroh_fsr.so')
@@ -619,6 +619,7 @@ tasks.register('mcReplay', JavaExec) {
 	def a = []
 	if (project.hasProperty('dump')) a << "--dump=${project.property('dump')}"
 	args a
+	if (project.hasProperty('only')) jvmArgs "-Dmc.only=${project.property('only')}"
 	doFirst {
 		if (nrdLib.exists()) systemProperty 'iroh.nrd.lib', nrdLib.absolutePath
 		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
