@@ -8,7 +8,7 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(std430, set = 0, binding = 1) readonly buffer FrameB { Frame fr; };
 layout(std430, set = 0, binding = 2) readonly buffer Verts { uvec4 verts[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Inst { uvec4 inst[]; };     // first vertex of geometry 0, 1; flags
-layout(std430, set = 0, binding = 4) readonly buffer Atlas { uint atlas[]; };    // RGBA8, 64x64, 16x16 tiles
+layout(std430, set = 0, binding = 4) readonly buffer Atlas { uint atlas[]; };    // RGBA8, 128x128, 8x8 tiles of 16x16
 layout(std430, set = 0, binding = 5) readonly buffer Mats { vec4 mats[]; };      // 2 per tile
 layout(std430, set = 0, binding = 6) readonly buffer Lights { vec4 lights[]; };  // 5 per emissive quad
 layout(std430, set = 0, binding = 7) readonly buffer GBuf { uvec4 gbuf[]; };     // packed G-buffer (RtGBuffer layout)
@@ -18,13 +18,15 @@ const float PI = 3.14159265358979;
 const float EPS = 1e-3;
 const float TMAX = 1000.0;
 const uint MASK_SOLID = 1u, MASK_TRANSLUCENT = 2u, MASK_ALL = 0xFFu;
-const int ATLAS_SIZE = 64, TILE = 16, TILES_X = 4;
+const int ATLAS_SIZE = 128, TILE = 16, TILES_X = 8;
 
 // ---------------------------------------------------------------------------------------------------- random
 uint pcg(uint v) { uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
 uint rngState;
 void rngInit(uvec2 px, uint frame, uint salt) { rngState = pcg(px.x + pcg(px.y + pcg(frame * 7919u + salt))); }
 float rnd() { rngState = pcg(rngState); return float(rngState >> 8) * (1.0 / 16777216.0); }
+
+#include "rt_look.glsl"
 
 // ---------------------------------------------------------------------------------------------------- packing
 vec2 octWrap(vec2 v) { return (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0); }
@@ -40,7 +42,7 @@ void triVerts(uint ci, uint geom, uint prim, out uvec4 a, out uvec4 b, out uvec4
     else { a = verts[first + 2u]; b = verts[first + 3u]; c = verts[first]; }
 }
 
-int tileOf(vec2 ua, vec2 ub, vec2 uc) { vec2 m = (ua + ub + uc) * (1.0 / 3.0); return int(m.x * 4.0) + 4 * int(m.y * 4.0); }
+int tileOf(vec2 ua, vec2 ub, vec2 uc) { vec2 m = (ua + ub + uc) * (1.0 / 3.0); return int(m.x * 8.0) + 8 * int(m.y * 8.0); }
 
 vec4 texel(int tile, vec2 uv) {
     ivec2 t0 = ivec2(tile % TILES_X, tile / TILES_X) * TILE;
@@ -146,7 +148,7 @@ vec3 sunIrradiance(vec3 x, vec3 n, inout uint rays) {
     float c = dot(n, l);
     if (c <= 0.0) return vec3(0.0);
     rays++;
-    return visible(x + n * EPS, l, TMAX, MASK_SOLID) ? fr.sunE.rgb * c : vec3(0.0);
+    return visible(x + n * EPS, l, TMAX, MASK_SOLID) ? fr.sunE.rgb * c * cloudShadow(x) : vec3(0.0);
 }
 
 /**
@@ -240,6 +242,7 @@ vec3 emitIrradiance(vec3 x, vec3 n, inout uint rays) {
 }
 
 vec3 sky(vec3 d) {
+    if (lookOn()) return lookSky(d);
     if (d.y < 0.0) return fr.skyHorizon.rgb * 0.3;
     return mix(fr.skyHorizon.rgb, fr.skyZenith.rgb, sqrt(d.y));
 }
@@ -260,7 +263,7 @@ vec3 shadeDirect(Hit h, inout uint rays) {
 }
 
 // ---------------------------------------------------------------------------------------------------- G-buffer
-struct Surf { bool valid; vec3 pos; vec3 n; vec3 albedo; int tile; float viewZ; vec2 mv; vec3 dir; };
+struct Surf { bool valid; vec3 pos; vec3 n; vec3 albedo; int tile; float viewZ; vec2 mv; vec3 dir; bool skyOpen; };
 
 vec3 primaryDir(uvec2 px) {
     vec2 ndc = (vec2(px) + 0.5) / vec2(fr.dims.xy) * 2.0 - 1.0;
@@ -278,7 +281,8 @@ Surf surface(uvec2 px) {
     s.n = octDecode(unpackUnorm2x16(g.x));
     vec4 al = unpackUnorm4x8(g.y);
     s.albedo = al.rgb;
-    s.tile = int(g.y >> 24);
+    s.tile = int((g.y >> 24) & 63u);
+    s.skyOpen = ((g.y >> 30) & 1u) != 0u;
     s.mv = unpackHalf2x16(g.w);
     s.pos = fr.camPos.xyz + s.dir * (s.viewZ / dot(s.dir, fr.camFwd.xyz));
     return s;

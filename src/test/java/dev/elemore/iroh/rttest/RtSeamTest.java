@@ -105,7 +105,7 @@ public final class RtSeamTest {
         check("clear (world unload) frees everything", q3.residentCount() == 0 && q3.pendingCount() == 0 && q3.drainFrees().size() == 2);
 
         // ---- frame data layout
-        check("RtFrameData packs to the shader's 400-byte block", new RtFrameData().write(ByteBuffer.allocate(400)).position() == RtFrameData.BYTES);
+        check("RtFrameData packs to the shader's 608-byte block", new RtFrameData().write(ByteBuffer.allocate(608)).position() == RtFrameData.BYTES);
 
         // ---- presets
         float last = 0;

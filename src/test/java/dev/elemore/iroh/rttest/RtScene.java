@@ -24,8 +24,8 @@ public final class RtScene {
             GLOWSTONE = 9, POLISHED = 10, LANTERN = 11;
     // atlas tiles (4x4 grid of 16x16 texels)
     public static final int T_GRASS_TOP = 0, T_GRASS_SIDE = 1, T_DIRT = 2, T_STONE = 3, T_PLANKS = 4, T_LOG = 5, T_LOG_TOP = 6,
-            T_LEAVES = 7, T_PANE = 8, T_WATER = 9, T_GLOWSTONE = 10, T_POLISHED = 11, T_LANTERN = 12, TILES = 16;
-    public static final int ATLAS = 64, TILE = 16;
+            T_LEAVES = 7, T_PANE = 8, T_WATER = 9, T_GLOWSTONE = 10, T_POLISHED = 11, T_LANTERN = 12, TILES = 64;
+    public static final int ATLAS = 128, TILE = 16, GRID = 8;
     public static final float WATER_TOP = 0.875f;
 
     /** Per-tile material (the v1 "vanilla without PBR" rules made explicit; see docs/P5-DESIGN.md section 8). */
@@ -133,7 +133,7 @@ public final class RtScene {
                         case T_LANTERN -> { r = 0.65f + n * 0.1f; g = 0.90f; b = 0.92f; }
                         default -> { r = 1; g = 0; b = 1; }
                     }
-                    int tx = (t % 4) * TILE + x, ty = (t / 4) * TILE + y;
+                    int tx = (t % GRID) * TILE + x, ty = (t / GRID) * TILE + y;
                     atlas[ty * ATLAS + tx] = rgba(r, g, b, a);
                 }
     }
@@ -236,9 +236,9 @@ public final class RtScene {
 
     /** Writes one quad in Iroh's 16-byte compressed layout (CompressedVertexBuilder.vertex). Positions section-local. */
     static void putQuad(ByteBuffer out, float[][] c, int tile, int color, int light) {
-        float u0 = (tile % 4) * 0.25f, v0 = (tile / 4) * 0.25f;
+        float u0 = (tile % GRID) / (float) GRID, v0 = (tile / GRID) / (float) GRID;
         for (int i = 0; i < 4; i++) {
-            float u = u0 + UVS[i][0] * 0.25f, v = v0 + UVS[i][1] * 0.25f;
+            float u = u0 + UVS[i][0] / GRID, v = v0 + UVS[i][1] / GRID;
             out.putShort((short) Math.round(PlaneSnap.snap(c[i][0]) * 2048f - 8192f));
             out.putShort((short) Math.round(PlaneSnap.snap(c[i][1]) * 2048f - 8192f));
             out.putShort((short) Math.round(PlaneSnap.snap(c[i][2]) * 2048f - 8192f));
@@ -315,7 +315,7 @@ public final class RtScene {
     /** Atlas tile of a triangle: from its uv centroid (every corner sits on a tile border; the centroid never does). */
     static int tileOf(float[] uv, int k) {
         float uc = (uv[k * 6] + uv[k * 6 + 2] + uv[k * 6 + 4]) / 3f, vc = (uv[k * 6 + 1] + uv[k * 6 + 3] + uv[k * 6 + 5]) / 3f;
-        return (int) (uc * 4) + 4 * (int) (vc * 4);
+        return (int) (uc * GRID) + GRID * (int) (vc * GRID);
     }
 
     public static float decodePos(short s) {

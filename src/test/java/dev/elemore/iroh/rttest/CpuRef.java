@@ -140,9 +140,9 @@ final class CpuRef {
     }
 
     int texel(int tile, double u, double v) {
-        int tx0 = (tile % 4) * 16, ty0 = (tile / 4) * 16;
-        int x = Math.max(tx0, Math.min(tx0 + 15, (int) Math.floor(u * 64))), y = Math.max(ty0, Math.min(ty0 + 15, (int) Math.floor(v * 64)));
-        return scene.atlas[y * 64 + x];
+        int g = RtScene.GRID, a = RtScene.ATLAS, tx0 = (tile % g) * 16, ty0 = (tile / g) * 16;
+        int x = Math.max(tx0, Math.min(tx0 + 15, (int) Math.floor(u * a))), y = Math.max(ty0, Math.min(ty0 + 15, (int) Math.floor(v * a)));
+        return scene.atlas[y * a + x];
     }
 
     static final class Hit {

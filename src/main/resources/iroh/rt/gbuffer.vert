@@ -9,12 +9,16 @@ layout(location = 0) out vec3 wpos;
 layout(location = 1) out vec2 uv;
 layout(location = 2) flat out uint tint;
 layout(location = 3) out vec4 prevClip;
+layout(location = 4) out vec4 curClip;
+layout(location = 5) flat out uint light;
 void main() {
     uvec4 v = verts[gl_VertexIndex];
     vec3 p = vec3(ivec3(int(v.x << 16) >> 16, int(v.x) >> 16, int(v.y << 16) >> 16)) * (1.0 / 2048.0) + 4.0 + origins[gl_InstanceIndex].xyz;
     wpos = p;
     uv = vec2(float(v.z & 0xFFFFu), float(v.z >> 16)) * (1.0 / 32768.0);
     tint = v.w;
-    gl_Position = fr.viewProj * vec4(p, 1.0);
+    light = v.y >> 16;
+    curClip = fr.viewProj * vec4(p, 1.0);                       // unjittered: motion vectors
+    gl_Position = curClip + vec4(fr.jitter.xy * curClip.w, 0.0, 0.0);   // jittered raster (upscaler sequence)
     prevClip = fr.prevViewProj * vec4(p, 1.0);
 }

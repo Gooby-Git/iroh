@@ -34,6 +34,8 @@ public final class RtReplay {
         float fogDensity = 0.006f, fogFalloff = 0.08f, fogBase = 6f;
         float[] waterExtinction;
         float polishedRoughness = 0;
+        /** P5-1: extra frame-data writer (the look block), applied last in setFrame. */
+        java.util.function.Consumer<RtFrameData> look;
 
         Light(float[] ext) {
             double el = Math.toRadians(38), az = Math.toRadians(215);
@@ -96,6 +98,7 @@ public final class RtReplay {
             if (step.equals("all") || step.contains("h")) s.stepH();
             s.costTable();
         }
+        if (step.equals("all") || step.contains("i")) RtChainStep.run(scene, light, cam);
         metric(String.format(Locale.ROOT, "wall time %.1f s", (System.nanoTime() - t0) / 1e9));
         System.out.println("# rtreplay " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         metrics.println("# rtreplay " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));

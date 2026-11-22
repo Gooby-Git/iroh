@@ -38,7 +38,9 @@ final class RtGpu implements AutoCloseable {
     VkBuf verts, inst, atlas, mats, lights, frame, counters, origins, cmds, cache;
     VkBuf gbufCur, gbufPrev;
     Object gImage, dImage, raster;
-    RtCompute.Pass pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum;
+    RtCompute.Pass pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost;
+    /** P5-1: upscaler jitter in pixels for the next setFrame (content shifts by +jitter). */
+    float[] jitterPx = {0, 0};
     RtAccel.Accel tlas;
     final List<RtAccel.Accel> blas = new ArrayList<>();
     long blasBytesBuilt, blasBytesCompacted, blasScratchMax, tlasBytes;
@@ -86,9 +88,13 @@ final class RtGpu implements AutoCloseable {
     }
 
     float[] readVec4(VkBuf b) {
-        ByteBuffer r = dev.readBuffer(b, 0, N * 16);
+        return readVec4(b, N);
+    }
+
+    float[] readVec4(VkBuf b, int count) {
+        ByteBuffer r = dev.readBuffer(b, 0, count * 16);
         comp.resetSets();
-        float[] f = new float[N * 4];
+        float[] f = new float[count * 4];
         r.asFloatBuffer().get(f);
         return f;
     }
@@ -158,14 +164,35 @@ final class RtGpu implements AutoCloseable {
         atlas = buf(at.capacity());
         up(atlas, 0, at.flip());
 
+        writeMaterials(scene.materials);
+        writeLights(scene.lights);
+
+        frame = buf(RtFrameData.BYTES);
+        counters = buf(64);
+        cache = buf((long) CACHE_ENTRIES * 48);
+        fd.cacheMask = CACHE_ENTRIES - 1;
+        gbufCur = buf(N * 16L);
+        gbufPrev = buf(N * 16L);
+        gImage = dev.createImage("gbuffer", W, H, VK_FORMAT_R32G32B32A32_UINT, false);
+        dImage = dev.createImage("depth", W, H, VK_FORMAT_D32_SFLOAT, true);
+        uploadBarrier();
+        clearCache();
+        sync();
+    }
+
+    /** (Re)writes the material table (2 vec4 per atlas tile). P5-1: re-callable (torch on/off test). */
+    void writeMaterials(RtScene.Material[] materials) {
         ByteBuffer mt = le(RtScene.TILES * 32);
-        for (RtScene.Material m : scene.materials)
+        for (RtScene.Material m : materials)
             mt.putFloat(m.roughness()).putFloat(m.alphaMode()).putFloat(m.water() ? 1 : 0).putFloat(m.spec() ? 1 : 0)
                     .putFloat(m.er()).putFloat(m.eg()).putFloat(m.eb()).putFloat(m.f0());
-        mats = buf(mt.capacity());
+        if (mats == null) mats = buf(mt.capacity());
         up(mats, 0, mt.flip());
+        uploadBarrier();
+    }
 
-        List<RtScene.Light> ls = scene.lights;
+    /** (Re)writes the emissive quad list with its power CDF. P5-1: re-callable (lights switched off = not listed). */
+    void writeLights(List<RtScene.Light> ls) {
         double totalPower = 0;
         for (RtScene.Light l : ls) totalPower += l.power();
         ByteBuffer lb = le(Math.max(1, ls.size()) * 80);
@@ -180,22 +207,13 @@ final class RtGpu implements AutoCloseable {
             lb.putFloat(l.n()[0]).putFloat(l.n()[1]).putFloat(l.n()[2]).putFloat(0);
             lb.putFloat(l.radiance()[0]).putFloat(l.radiance()[1]).putFloat(l.radiance()[2]).putFloat(0);
         }
-        lights = buf(lb.capacity());
+        if (lights == null || lightsBytes < lb.capacity()) { lights = buf(Math.max(lb.capacity(), 80L * 256)); lightsBytes = Math.max(lb.capacity(), 80 * 256); }
         up(lights, 0, lb.flip());
-        fd.lightCount = ls.size();
-
-        frame = buf(RtFrameData.BYTES);
-        counters = buf(64);
-        cache = buf((long) CACHE_ENTRIES * 48);
-        fd.cacheMask = CACHE_ENTRIES - 1;
-        gbufCur = buf(N * 16L);
-        gbufPrev = buf(N * 16L);
-        gImage = dev.createImage("gbuffer", W, H, VK_FORMAT_R32G32B32A32_UINT, false);
-        dImage = dev.createImage("depth", W, H, VK_FORMAT_D32_SFLOAT, true);
         uploadBarrier();
-        clearCache();
-        sync();
+        fd.lightCount = ls.size();
     }
+
+    int lightsBytes;
 
     void clearCache() {
         up(cache, 0, le(CACHE_ENTRIES * 48));
@@ -273,6 +291,9 @@ final class RtGpu implements AutoCloseable {
         pAccum = pass("accum.comp", false, 6, 8);
         pCompose = pass("compose.comp", true, 11, 0);
         pSum = pass("sum.comp", false, 4, 4);
+        pSunVis = pass("sunvis.comp", true, 9, 0);
+        pComposeLook = pass("compose_look.comp", true, 12, 0);
+        pPost = pass("post.comp", false, 3, 4);
     }
 
     RtCompute.Pass pass(String name, boolean traces, int buffers, int push) {
@@ -289,7 +310,9 @@ final class RtGpu implements AutoCloseable {
         Matrix4f vp = cam.viewProj(), pvp = prev.viewProj();
         vp.get(fd.viewProj);
         pvp.get(fd.prevViewProj);
-        new Matrix4f(vp).invert().get(fd.invViewProj);
+        float jx = jitterPx[0], jy = jitterPx[1];
+        fd.jitter[0] = 2f * jx / W; fd.jitter[1] = 2f * jy / H; fd.jitter[2] = jx; fd.jitter[3] = jy;
+        new Matrix4f().translation(fd.jitter[0], fd.jitter[1], 0).mul(vp).invert().get(fd.invViewProj);   // primary rays through the jittered sample
         Vector3f f = cam.forward(), pf = prev.forward();
         fd.camPos[0] = cam.pos.x; fd.camPos[1] = cam.pos.y; fd.camPos[2] = cam.pos.z;
         fd.camFwd[0] = f.x; fd.camFwd[1] = f.y; fd.camFwd[2] = f.z;
@@ -308,6 +331,7 @@ final class RtGpu implements AutoCloseable {
         fd.height = H;
         fd.frameIndex = frameIndex;
         fd.flags = flags;
+        if (light.look != null) light.look.accept(fd);
         ByteBuffer b = le(RtFrameData.BYTES);
         fd.write(b).flip();
         up(frame, 0, b);
@@ -391,6 +415,39 @@ final class RtGpu implements AutoCloseable {
         }
     }
 
+    /** P5-1 chain composition: denoised diffuse radiance (modulated), sun visibility, specular -> HDR. */
+    void composeLook(VkBuf diff, VkBuf vis, VkBuf spec, VkBuf out) {
+        trace("compose (chain/look)", pComposeLook, diff, vis, spec, out);
+    }
+
+    /** P5-1 final stage on {@code count} pixels: tone map + saturation + owner's grade; params = 3 vec4 (see post.comp). */
+    float[] post(float[] hdr, int count, float[] params) {
+        VkBuf in = buf(count * 16L), out = buf(count * 16L), g = buf(48);
+        ByteBuffer x = le(count * 16);
+        x.asFloatBuffer().put(hdr, 0, count * 4);
+        up(in, 0, x);
+        ByteBuffer gp = le(48);
+        gp.asFloatBuffer().put(params);
+        up(g, 0, gp);
+        uploadBarrier();
+        ByteBuffer push = MemoryUtil.memAlloc(4).putInt(0, count);
+        time("post (tonemap + grade)", () -> {
+            comp.dispatch(pPost, 0, new VkBuf[]{in, out, g}, push, (count + 63) / 64, 1, 1);
+            comp.barrier();
+        });
+        MemoryUtil.memFree(push);
+        float[] r = readVec4(out, count);
+        for (VkBuf b : new VkBuf[]{in, out, g}) dev.destroyBuffer(b);
+        return r;
+    }
+
+    void writeVec4(VkBuf b, float[] f, int count) {
+        ByteBuffer x = le(count * 16);
+        x.asFloatBuffer().put(f, 0, count * 4);
+        up(b, 0, x);
+        uploadBarrier();
+    }
+
     void compose(VkBuf diff, VkBuf spec, VkBuf out) {
         trace("compose + fog", pCompose, diff, spec, out);
     }
@@ -414,7 +471,7 @@ final class RtGpu implements AutoCloseable {
         for (RtAccel.Accel a : blas) accel.destroy(a);
         if (tlas != null) accel.destroy(tlas);
         accel.close();
-        for (RtCompute.Pass p : new RtCompute.Pass[]{pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum})
+        for (RtCompute.Pass p : new RtCompute.Pass[]{pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost})
             if (p != null) comp.destroy(p);
         comp.close();
         dev.destroyPipeline(raster);

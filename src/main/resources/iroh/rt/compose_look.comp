@@ -1,0 +1,60 @@
+#version 460
+// P5-1 composition of the DENOISED signals (the full chain): emission + kd * (diffuse radiance [block light + GI, already
+// modulated by albedo] + albedo/pi * E_sun * cos * visibility * cloud shadow) + specular; water = its specular radiance.
+// Sky pixels: sky + sun/moon disc. Then the atmosphere, after the denoiser (never fed through history): without F_LOOK the
+// P5-0 analytic height fog (CPU-reference comparable, equal to compose.comp); with F_LOOK the owner's mountain fog + haze,
+// rain wetness (darker albedo + a smooth film from refl.comp) and the underwater view path. Out: scene-linear HDR.
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) readonly buffer Diff { vec4 diff[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Vis { vec4 vis[]; };
+layout(std430, set = 0, binding = 11) readonly buffer Spec { vec4 spec[]; };
+layout(std430, set = 0, binding = 12) writeonly buffer Out { vec4 outv[]; };
+
+float fogAmount(vec3 o, vec3 d, float dist) {
+    float a = fr.fog.x, b = fr.fog.y;
+    float e0 = exp(-b * (o.y - fr.fog.z));
+    float k = abs(d.y) > 1e-4 ? e0 * (1.0 - exp(-b * d.y * dist)) / (b * d.y) : e0 * dist;
+    return 1.0 - exp(-a * k);
+}
+
+vec3 fogColor(vec3 d) {
+    float s = pow(max(dot(d, fr.sunDir.xyz), 0.0), 8.0);
+    return mix(fr.skyHorizon.rgb * 1.1, fr.sunE.rgb * 0.25, s * 0.5);
+}
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    Surf s = surface(px);
+    vec3 c;
+    float dist;
+    bool look = lookOn();
+    if (!s.valid) {
+        c = sky(s.dir) + sunDisc(s.dir);
+        dist = 512.0;
+    } else {
+        vec4 m0 = mat0(s.tile), m1 = mat1(s.tile);
+        dist = s.viewZ / dot(s.dir, fr.camFwd.xyz);
+        if (m0.z != 0.0) c = spec[i].rgb;
+        else {
+            float w = wetness(s.n, s.skyOpen);
+            float kd = 1.0;
+            if (m0.w != 0.0) kd = 1.0 - schlick(m1.w, max(dot(s.n, -s.dir), 0.0));
+            if (w > 0.0) kd *= 1.0 - w * schlick(0.02, max(dot(s.n, -s.dir), 0.0));
+            float cs = max(dot(s.n, fr.sunDir.xyz), 0.0) * vis[i].r * (look ? cloudShadow(s.pos) : 1.0);
+            vec3 d = diff[i].rgb + s.albedo / PI * fr.sunE.rgb * cs;
+            c = m1.rgb + d * kd * (look ? mix(1.0, fr.wet.z, w) : 1.0) + ((m0.w != 0.0 || w > 0.0) ? spec[i].rgb : vec3(0.0));
+        }
+    }
+    if (!look) {
+        if (fr.fog.w > 0.0) c = mix(c, fogColor(s.dir), fogAmount(fr.camPos.xyz, s.dir, dist));
+    } else if ((fr.dims.w & F_UNDERWATER) != 0u) {
+        vec3 T = exp(-fr.water.rgb * fr.water2.w * min(dist, 96.0));
+        c = c * T + fr.waterColor.rgb * (vec3(1.0) - T);
+    } else if (s.valid) {
+        c = mix(c, fr.fogColor.rgb, mountainFog(fr.camPos.xyz, s.pos, dist));
+    }
+    outv[i] = vec4(c, 1.0);
+}

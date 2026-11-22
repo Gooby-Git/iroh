@@ -427,7 +427,7 @@ final class RtSteps {
             s.n = new double[]{ex / l, ey / l, ez / l};
             int al = g[i * 4 + 1];
             for (int a = 0; a < 3; a++) s.albedo[a] = ((al >>> (8 * a)) & 0xFF) / 255.0;
-            s.tile = al >>> 24;
+            s.tile = (al >>> 24) & 63;
             double t = vz / (s.dir[0] * fw.x + s.dir[1] * fw.y + s.dir[2] * fw.z);
             for (int a = 0; a < 3; a++) s.pos[a] = new double[]{cam.pos.x, cam.pos.y, cam.pos.z}[a] + s.dir[a] * t;
         }

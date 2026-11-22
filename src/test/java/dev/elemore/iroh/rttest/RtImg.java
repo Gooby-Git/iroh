@@ -31,6 +31,17 @@ final class RtImg {
         return img;
     }
 
+    /** Display-referred values in [0,1] (already tone mapped and sRGB-encoded by post.comp), RGBA. */
+    static BufferedImage ldr(float[] v, int w, int h) {
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        for (int i = 0; i < w * h; i++) {
+            int r = (int) Math.round(Math.max(0, Math.min(1, v[i * 4])) * 255), g = (int) Math.round(Math.max(0, Math.min(1, v[i * 4 + 1])) * 255),
+                    b = (int) Math.round(Math.max(0, Math.min(1, v[i * 4 + 2])) * 255);
+            img.setRGB(i % w, i / w, (r << 16) | (g << 8) | b);
+        }
+        return img;
+    }
+
     /** Linear display of a signal: value * scale, clamped, sRGB-encoded. */
     static BufferedImage linear(float[] v, int w, int h, double scale) {
         BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);

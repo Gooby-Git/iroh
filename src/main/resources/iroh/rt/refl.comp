@@ -2,6 +2,9 @@
 // (e) reflections, roughness-gated: water = mirror (+ the sun disc) with Fresnel, plus a straight transmission ray to
 // the bed with Beer-Lambert extinction (no refraction bend in v1); glossy materials = one GGX VNDF sample (Heitz 2018).
 // Hits are shaded direct-only (emission + sun + one light sample). Out: specular radiance (water: its whole radiance).
+// P5-1, only with F_LOOK: water uses wave normals, Fresnel with a refraction bend (Snell, total internal reflection from
+// below), absorption on the way down; rain wetness adds a smooth film (GGX, wet roughness, F0 0.02) to up-facing, sky-open
+// surfaces.
 layout(local_size_x = 8, local_size_y = 8) in;
 #include "rt_common.glsl"
 layout(std430, set = 0, binding = 9) writeonly buffer Out { vec4 outv[]; };
@@ -41,15 +44,35 @@ void main() {
         vec3 v = -s.dir;
         float nv = max(dot(s.n, v), 1e-4);
         rngInit(px, fr.dims.z, 4u);
-        if (m0.z != 0.0) {                       // water
+        float wet = m0.z == 0.0 && m0.w == 0.0 ? wetness(s.n, s.skyOpen) : 0.0;
+        if (m0.z != 0.0 && lookOn()) {           // water, look: wave normal, Fresnel, refraction bend, absorption
+            bool under = (fr.dims.w & F_UNDERWATER) != 0u;
+            vec3 n = abs(s.n.y) > 0.5 && fr.water2.x > 0.0 ? waveNormal(s.pos, s.n.y > 0.0 ? 1.0 : -1.0) : s.n;
+            float cosi = max(dot(n, v), 1e-4);
+            float eta = under ? fr.water2.z : 1.0 / fr.water2.z;
+            vec3 tdir = refract(s.dir, n, eta);
+            float F = dot(tdir, tdir) == 0.0 ? 1.0 : schlick(under ? 0.02 : m1.w, under ? max(dot(-tdir, n), 0.0) : cosi);
+            vec3 rdir = reflect(s.dir, n);
+            if (dot(rdir, s.n) <= 0.0) rdir = reflect(s.dir, s.n);
+            float dr, dt = 0.0;
+            vec3 Lr = traceShade(s.pos + s.n * EPS, rdir, !under, rays, dr);
+            vec3 Lt = vec3(0.0);
+            if (F < 1.0) {
+                Lt = traceShade(s.pos - s.n * EPS, normalize(tdir), false, rays, dt);
+                if (!under) { vec3 T = exp(-fr.water.rgb * min(dt, 64.0)); Lt = Lt * T + fr.waterColor.rgb * (vec3(1.0) - T); }
+            }
+            if (under) Lr *= exp(-fr.water.rgb * min(dr, 64.0));
+            o = vec4(F * Lr + (1.0 - F) * Lt, dr);
+        } else if (m0.z != 0.0) {                // water
             float F = schlick(m1.w, nv);
             float dr, dt;
             vec3 Lr = traceShade(s.pos + s.n * EPS, reflect(s.dir, s.n), true, rays, dr);
             vec3 Lt = traceShade(s.pos - s.n * EPS, s.dir, false, rays, dt);
             vec3 T = exp(-fr.water.rgb * min(dt, 64.0));
             o = vec4(F * Lr + (1.0 - F) * T * Lt, dr);
-        } else if (m0.w != 0.0) {                // glossy
-            float rough = fr.params.w > 0.0 ? fr.params.w : m0.x;
+        } else if (m0.w != 0.0 || wet > 0.0) {   // glossy (or a rain film on an up-facing, sky-open surface)
+            float rough = wet > 0.0 && m0.w == 0.0 ? fr.wet.y : (fr.params.w > 0.0 ? fr.params.w : m0.x);
+            float f0 = wet > 0.0 && m0.w == 0.0 ? 0.02 : m1.w;
             float alpha = rough * rough, a2 = alpha * alpha;
             vec3 t, b;
             onb(s.n, t, b);
@@ -59,8 +82,9 @@ void main() {
             vec3 l = reflect(-v, h);
             float nl = dot(s.n, l);
             if (nl > 0.0) {
-                float F = schlick(m1.w, max(dot(v, h), 0.0));
+                float F = schlick(f0, max(dot(v, h), 0.0));
                 float w = F * (1.0 + lambdaGGX(nv, a2)) / (1.0 + lambdaGGX(nv, a2) + lambdaGGX(nl, a2));
+                if (wet > 0.0 && m0.w == 0.0) w *= wet;
                 float dist;
                 vec3 L = traceShade(s.pos + s.n * EPS, l, false, rays, dist);
                 o = vec4(w * L, dist);

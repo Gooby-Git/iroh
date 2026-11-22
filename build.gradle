@@ -415,7 +415,11 @@ tasks.register('rtReplay', JavaExec) {
 	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
 	workingDir = projectDir
 	['step', 'quick', 'golden', 'frames', 'res', 'compact', 'out'].each { k -> if (project.hasProperty(k)) jvmArgs "-Drt.${k}=${project.property(k)}" }
-	doFirst { useLavapipe(it, 'rtReplay') }
+	doFirst {
+		useLavapipe(it, 'rtReplay')
+		def fl = file('iroh-native/natives/linux-x64/libiroh_fsr.so')   // P5-1 step (i): the chain ends in FSR 3.1
+		if (fl.exists()) systemProperty 'iroh.fsr.lib', fl.absolutePath
+	}
 }
 
 // P5-0: RT seams without a device (BLAS queue budget, memory model, presets, inert-when-off). ./gradlew rtSeamTest ;
