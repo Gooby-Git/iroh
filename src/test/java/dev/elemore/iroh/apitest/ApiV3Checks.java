@@ -31,7 +31,7 @@ final class ApiV3Checks {
     }
 
     static void run(BiConsumer<String, Boolean> check) {
-        check.accept("api version 4.0", IrohApi.API_VERSION == 4 && IrohApi.apiVersion() == 4 && IrohApi.apiMinor() == 0);
+        check.accept("api version 4.1", IrohApi.API_VERSION == 4 && IrohApi.apiVersion() == 4 && IrohApi.apiMinor() == 1);
         FrameStage[] all = FrameStage.values();
         check.accept("FrameStage constants append-only: AFTER_PRESENT, OVERLAY, then BEFORE_MAIN_PASS (api 4) last",
                 all[all.length - 3] == FrameStage.AFTER_PRESENT && all[all.length - 2] == FrameStage.OVERLAY

@@ -129,6 +129,11 @@ public final class FrameProfiler {
             sb.append(" | gpu ms/frame");
             for (int s = 0; s < N; s++) if (gpuMs[s] > 0) sb.append(' ').append(STAGES[s]).append('=').append(String.format("%.3f", gpuMs[s] / gpuFrames));
         }
+        dev.elemore.iroh.gpu.GpuCore core = dev.elemore.iroh.gpu.GpuCore.orNull(); // api 4.1: per-owner GPU passes
+        if (core != null) {
+            String owners = core.profileLine();
+            if (!owners.isEmpty()) sb.append(" | api4 ").append(owners);
+        }
         Initializer.LOGGER.info(sb.toString());
         java.util.Arrays.fill(cpuNs, 0);
         java.util.Arrays.fill(gpuMs, 0);

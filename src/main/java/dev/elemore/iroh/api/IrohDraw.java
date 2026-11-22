@@ -61,6 +61,23 @@ public final class IrohDraw {
                 pushBytes, color, depth, depthCompare, depthWrite, blend);
     }
 
+    /** api 4.1: as above with a {@link IrohTargets.Blend} mode (UNDER = GL blendFunc(ONE, SRC_ALPHA), for composites). */
+    public static IndirectPipelineHandle indirectPipeline(String owner, String name, String vertexGlsl450, String fragmentGlsl450, int storageBuffers,
+                                                          int sampledTextures, int pushBytes, IrohTargets.Format color, IrohTargets.Format depth,
+                                                          int depthCompare, boolean depthWrite, IrohTargets.Blend blend) {
+        return dev.elemore.iroh.gpu.GpuCore.get().indirectPipeline(owner, name, vertexGlsl450, fragmentGlsl450, storageBuffers, sampledTextures,
+                pushBytes, color, depth, depthCompare, depthWrite, blend);
+    }
+
+    /**
+     * api 4.1: a non-indexed draw of {@code vertexCount} x {@code instanceCount} with an indirect pipeline inside a pass
+     * (full-screen passes: 3, 1). Storage buffers read only and declared at beginRendering, as for indirect draws.
+     */
+    public static void draw(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, GpuTexture[] textures, java.nio.ByteBuffer push,
+                            int vertexCount, int instanceCount) {
+        dev.elemore.iroh.gpu.GpuCore.get().draw(pipeline, storage, textures, push, vertexCount, instanceCount);
+    }
+
     /**
      * Before {@link IrohTargets#beginRendering}, once per indirect-count draw of the coming pass (same arguments). Where
      * the device lacks drawIndirectCount, Iroh's own compute zeroes instanceCount of the commands at or after the GPU
@@ -76,7 +93,7 @@ public final class IrohDraw {
      * {@code countOffset}), capped at {@code maxDraws}. Every buffer read must have been declared at beginRendering.
      * Capability {@link Capability#MULTI_DRAW_INDIRECT_COUNT} (with a fallback, see {@link #prepareIndirectCount}).
      */
-    public static void multiDrawIndirectCount(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, RenderTargetHandle[] textures,
+    public static void multiDrawIndirectCount(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, GpuTexture[] textures,
                                               java.nio.ByteBuffer push, GpuBuffer index, boolean index32, GpuBuffer commands, long commandOffset,
                                               GpuBuffer count, long countOffset, int maxDraws, int stride) {
         dev.elemore.iroh.gpu.GpuCore.get().multiDrawIndirectCount(pipeline, storage, textures, push, index, index32, commands, commandOffset,

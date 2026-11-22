@@ -28,7 +28,11 @@ public final class GpuLifecycle {
     }
 
     public static void frameStart(int slot) {
-        if (device != null) device.frameStart(slot);
+        if (device != null) {
+            device.frameStart(slot);
+            GpuCore c = GpuCore.orNull();
+            if (c != null) c.frameStart();
+        }
     }
 
     public static void resize(int w, int h) {

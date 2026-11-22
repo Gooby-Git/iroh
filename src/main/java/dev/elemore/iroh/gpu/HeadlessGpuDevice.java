@@ -27,14 +27,17 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private final VkPhysicalDevice phys;
     private final VkDevice device;
     private final VkQueue queue;
-    private final long cmdPool, fence, descPool, sampler;
-    private final VkCommandBuffer cmd;
+    private final long cmdPool, fence, descPool, sampler, samplerLinear;
+    private final VkCommandBuffer cmd, uploadCmd;
+    private final double timestampNs;
     private final VkPhysicalDeviceMemoryProperties memProps;
     private final boolean drawIndirectCount;
     public final String deviceName;
     public final long cap;
     private long allocated;
-    private boolean recording;
+    private boolean recording, uploadRecording;
+    private final java.util.Map<String, VkImg> standIns = new java.util.HashMap<>();
+    private VkImg mainColor, mainDepth;
     private final List<Runnable> later = new ArrayList<>();
     private final List<VkBuf> staging = new ArrayList<>();
 
@@ -103,6 +106,12 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(s).sType$Default().commandPool(cmdPool)
                     .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), pp), "cmd");
             cmd = new VkCommandBuffer(pp.get(0), device);
+            check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(s).sType$Default().commandPool(cmdPool)
+                    .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), pp), "upload cmd");
+            uploadCmd = new VkCommandBuffer(pp.get(0), device);
+            VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.calloc(s);
+            vkGetPhysicalDeviceProperties(phys, props);
+            timestampNs = qf.get(family).timestampValidBits() > 0 ? props.limits().timestampPeriod() : 0;
             check(vkCreateFence(device, VkFenceCreateInfo.calloc(s).sType$Default(), null, lb), "fence");
             fence = lb.get(0);
             VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, s);
@@ -112,8 +121,12 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             descPool = lb.get(0);
             check(vkCreateSampler(device, VkSamplerCreateInfo.calloc(s).sType$Default().magFilter(VK_FILTER_NEAREST).minFilter(VK_FILTER_NEAREST)
                     .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).maxLod(0), null, lb), "sampler");
+                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR).maxLod(VK_LOD_CLAMP_NONE), null, lb), "sampler");
             sampler = lb.get(0);
+            check(vkCreateSampler(device, VkSamplerCreateInfo.calloc(s).sType$Default().magFilter(VK_FILTER_LINEAR).minFilter(VK_FILTER_LINEAR)
+                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR).maxLod(VK_LOD_CLAMP_NONE), null, lb), "sampler");
+            samplerLinear = lb.get(0);
         }
     }
 
@@ -123,7 +136,66 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     @Override public boolean canRecordOutsideMainPass() { return !inRendering; }
     @Override protected VkDevice device() { return device; }
     @Override protected long pipelineCache() { return VK_NULL_HANDLE; }
-    @Override protected long sampler() { return sampler; }
+    @Override protected long sampler(boolean linear) { return linear ? samplerLinear : sampler; }
+    @Override protected double timestampPeriodNs() { return timestampNs; }
+    @Override public int framesInFlight() { return 1; }
+    @Override public int frameSlot() { return 0; }
+
+    @Override
+    protected VkImg resolveExternal(String key) {
+        return standIns.get(key);
+    }
+
+    @Override
+    public void setStandIn(String key, Object texture) {
+        standIns.put(key, (VkImg) texture);
+    }
+
+    @Override
+    public void setMainStandIn(Object color, Object depth) {
+        mainColor = (VkImg) color;
+        mainDepth = (VkImg) depth;
+    }
+
+    @Override public int mainColorFormat() { return mainColor == null ? 0 : mainColor.format; }
+    @Override public int mainDepthFormat() { return mainDepth == null ? 0 : mainDepth.format; }
+
+    @Override
+    public void copyMainDepth(Object dst) {
+        if (mainDepth == null) throw new UnsupportedOperationException("no main depth stand-in (GpuCore.standInMain)");
+        copyImage(mainDepth, dst);
+    }
+
+    @Override
+    public void beginMainRendering() {
+        if (mainColor == null) throw new UnsupportedOperationException("no main stand-in (GpuCore.standInMain)");
+        beginRendering(mainColor, mainDepth, new float[4], 1f, false);
+    }
+
+    @Override
+    public void endMainRendering() {
+        endRendering();
+    }
+
+    @Override
+    public void runOutsideMainPass(Runnable work) {
+        work.run(); // offline there is no main pass to suspend
+    }
+
+    /**
+     * Uploads go into a separate command buffer submitted BEFORE the frame's (see {@link #flush}): the game's order (Iroh's
+     * UploadManager submits a frame's uploads ahead of the frame), so a replay catches code that relies on in-stream order.
+     */
+    private VkCommandBuffer uploadCmd() {
+        if (!uploadRecording) {
+            try (MemoryStack s = stackPush()) {
+                vkResetCommandBuffer(uploadCmd, 0);
+                vkBeginCommandBuffer(uploadCmd, VkCommandBufferBeginInfo.calloc(s).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT));
+            }
+            uploadRecording = true;
+        }
+        return uploadCmd;
+    }
 
     @Override
     protected VkCommandBuffer cmd() {
@@ -206,7 +278,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             vkMapMemory(device, ((Mem) st.alloc()).memory(), 0, len, 0, pp);
             MemoryUtil.memCopy(MemoryUtil.memAddress(src), pp.get(0), len);
             vkUnmapMemory(device, ((Mem) st.alloc()).memory());
-            vkCmdCopyBuffer(cmd(), st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
+            vkCmdCopyBuffer(uploadCmd(), st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
         }
         staging.add(st);
     }
@@ -233,6 +305,61 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     }
 
     @Override
+    protected VkImg allocTexture(String name, int width, int height, int levels, boolean linear) {
+        try (MemoryStack s = stackPush()) {
+            LongBuffer lb = s.mallocLong(1);
+            VkImageCreateInfo ci = VkImageCreateInfo.calloc(s).sType$Default().imageType(VK_IMAGE_TYPE_2D).format(VK_FORMAT_R8G8B8A8_UNORM)
+                    .mipLevels(levels).arrayLayers(1).samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL)
+                    .usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+                    .sharingMode(VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+            ci.extent().width(width).height(height).depth(1);
+            check(vkCreateImage(device, ci, null, lb), "vkCreateImage " + name);
+            long image = lb.get(0);
+            VkMemoryRequirements req = VkMemoryRequirements.calloc(s);
+            vkGetImageMemoryRequirements(device, image, req);
+            long mem = allocate(req, 0, name);
+            vkBindImageMemory(device, image, mem, 0);
+            VkImageViewCreateInfo vi = VkImageViewCreateInfo.calloc(s).sType$Default().image(image).viewType(VK_IMAGE_VIEW_TYPE_2D)
+                    .format(VK_FORMAT_R8G8B8A8_UNORM);
+            vi.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(levels).baseArrayLayer(0).layerCount(1);
+            check(vkCreateImageView(device, vi, null, lb), "view " + name);
+            return new VkImg(image, lb.get(0), VK_FORMAT_R8G8B8A8_UNORM, width, height, VK_IMAGE_ASPECT_COLOR_BIT, levels, linear,
+                    VK_IMAGE_LAYOUT_GENERAL, new Mem(mem, req.size()));
+        }
+    }
+
+    @Override
+    public void uploadImage(Object image, ByteBuffer texels) {
+        VkImg im = (VkImg) image;
+        int bpp = 4;
+        long need = 0;
+        for (int l = 0; l < im.levels; l++) need += (long) Math.max(1, im.width >> l) * Math.max(1, im.height >> l) * bpp;
+        if (texels.remaining() < need) throw new IllegalArgumentException("image " + im.width + "x" + im.height + " x" + im.levels + " needs " + need + " bytes");
+        VkBuf st = buffer(need, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        try (MemoryStack s = stackPush()) {
+            PointerBuffer pp = s.mallocPointer(1);
+            vkMapMemory(device, ((Mem) st.alloc()).memory(), 0, need, 0, pp);
+            MemoryUtil.memCopy(MemoryUtil.memAddress(texels), pp.get(0), need);
+            vkUnmapMemory(device, ((Mem) st.alloc()).memory());
+            barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+            VkBufferImageCopy.Buffer r = VkBufferImageCopy.calloc(im.levels, s);
+            long off = 0;
+            for (int l = 0; l < im.levels; l++) {
+                int w = Math.max(1, im.width >> l), h = Math.max(1, im.height >> l);
+                r.get(l).bufferOffset(off);
+                r.get(l).imageSubresource().aspectMask(im.aspect).mipLevel(l).baseArrayLayer(0).layerCount(1);
+                r.get(l).imageExtent().width(w).height(h).depth(1);
+                off += (long) w * h * bpp;
+            }
+            vkCmdCopyBufferToImage(cmd(), st.buffer(), im.image, VK_IMAGE_LAYOUT_GENERAL, r);
+            barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+        }
+        staging.add(st);
+    }
+
+    @Override
     public void destroyImage(Object image) {
         VkImg img = (VkImg) image;
         forgetImage(img);
@@ -252,12 +379,19 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
 
     @Override
     public void flush() {
-        if (recording) {
+        if (recording || uploadRecording) {
             try (MemoryStack s = stackPush()) {
+                cmd(); // a frame with uploads only still submits an (empty) frame buffer after them
                 vkEndCommandBuffer(cmd);
                 recording = false;
+                PointerBuffer bufs;
+                if (uploadRecording) {
+                    vkEndCommandBuffer(uploadCmd);
+                    uploadRecording = false;
+                    bufs = s.pointers(uploadCmd, cmd); // the frame's uploads first (game order)
+                } else bufs = s.pointers(cmd);
                 vkResetFences(device, fence);
-                check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(cmd)), fence), "vkQueueSubmit");
+                check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(bufs), fence), "vkQueueSubmit");
                 int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
                 if (r != VK_SUCCESS) throw new IllegalStateException("headless work did not finish in 120 s (VkResult " + r + ")");
             }
@@ -322,6 +456,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         vkDeviceWaitIdle(device);
         destroyShared();
         vkDestroySampler(device, sampler, null);
+        vkDestroySampler(device, samplerLinear, null);
         vkDestroyDescriptorPool(device, descPool, null);
         vkDestroyFence(device, fence, null);
         vkDestroyCommandPool(device, cmdPool, null);

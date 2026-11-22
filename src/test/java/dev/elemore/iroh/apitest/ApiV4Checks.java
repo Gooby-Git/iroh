@@ -27,22 +27,51 @@ final class ApiV4Checks {
         @Override public String name() { return "rec"; }
         @Override public boolean supportsDrawIndirectCount() { return indirectCount; }
         @Override public long capBytes() { return cap; }
-        @Override public boolean canRecordOutsideMainPass() { return !inPass; }
+        @Override public boolean canRecordOutsideMainPass() { return !inPass && !mainBound; }
         @Override public Object createBuffer(long bytes, int usage) { log.add("buffer " + bytes); return "buf" + log.size(); }
         @Override public long bufferSize(Object b) { return 0; }
         @Override public void destroyBuffer(Object b) { destroyed++; log.add("free " + b); }
         @Override public void upload(Object b, long off, ByteBuffer src) { log.add("upload " + src.remaining()); }
-        @Override public Object createComputePipeline(String n, ByteBuffer spv, int s, int p) { log.add("compute " + n + " spv " + spv.remaining()); return "cp" + log.size(); }
-        @Override public Object createDrawPipeline(String n, ByteBuffer v, ByteBuffer f, int s, int t, int p, int c, int d, int cmp, boolean dw, boolean bl) {
-            log.add("draw pipeline " + n);
+        @Override public Object createComputePipeline(String n, ByteBuffer spv, int s, int t, int p) { log.add("compute " + n + " spv " + spv.remaining() + " tex " + t); return "cp" + log.size(); }
+        @Override public Object createDrawPipeline(String n, ByteBuffer v, ByteBuffer f, int s, int t, int p, int c, int d, int cmp, boolean dw, int bl) {
+            log.add("draw pipeline " + n + " blend " + bl);
             return "dp" + log.size();
         }
         @Override public void destroyPipeline(Object p) { destroyed++; log.add("free " + p); }
         @Override public Object createImage(String n, int w, int h, int f, boolean d) { log.add("image " + n + " " + w + "x" + h); return "img" + log.size(); }
         @Override public void destroyImage(Object i) { destroyed++; log.add("free " + i); }
         @Override public void barrier(int ss, int sa, int ds, int da) { log.add("barrier " + Integer.toHexString(ss) + "->" + Integer.toHexString(ds)); }
-        @Override public void dispatch(Object p, Object[] b, ByteBuffer push, int x, int y, int z) { log.add("dispatch " + p + " " + x); }
-        @Override public void dispatchIndirect(Object p, Object[] b, ByteBuffer push, Object a, long off) { log.add("dispatchIndirect " + p); }
+        @Override public void dispatch(Object p, Object[] b, Object[] t, ByteBuffer push, int x, int y, int z) { log.add("dispatch " + p + " " + x + texLog(t)); }
+        @Override public void dispatchIndirect(Object p, Object[] b, Object[] t, ByteBuffer push, Object a, long off) { log.add("dispatchIndirect " + p + texLog(t)); }
+        @Override public void draw(Object p, Object[] b, Object[] t, ByteBuffer push, int v, int i) { log.add("draw " + v + "x" + i + texLog(t)); }
+        static String texLog(Object[] t) {
+            if (t == null || t.length == 0) return "";
+            StringBuilder sb = new StringBuilder(" tex");
+            for (Object o : t) sb.append(' ').append(o instanceof External e ? "ext:" + e.key() : o);
+            return sb.toString();
+        }
+        // api 4.1
+        int mainColor = org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM, mainDepth = org.lwjgl.vulkan.VK10.VK_FORMAT_D32_SFLOAT;
+        boolean mainBound;
+        int tsCap = 16;
+        @Override public Object createTexture(String n, int w, int h, int l, ByteBuffer t, boolean lin) { log.add("texture " + n + " " + w + "x" + h + " l" + l); return "tex" + log.size(); }
+        @Override public void setStandIn(String k, Object t) { log.add("standIn " + k + " " + t); }
+        @Override public void copyImage(Object a, Object b) { log.add("copy " + a + " " + b); }
+        @Override public void uploadImage(Object i, ByteBuffer t) { log.add("uploadImage " + i); }
+        @Override public void copyMainDepth(Object d) { log.add("mainDepth -> " + d); }
+        @Override public void setMainStandIn(Object c, Object d) { log.add("mainStandIn"); }
+        @Override public void beginMainRendering() { inPass = true; log.add("beginMain"); }
+        @Override public void endMainRendering() { inPass = false; log.add("endMain"); }
+        @Override public int mainColorFormat() { return mainColor; }
+        @Override public int mainDepthFormat() { return mainDepth; }
+        @Override public void runOutsideMainPass(Runnable r) { boolean was = mainBound; mainBound = false; log.add("suspend"); r.run(); log.add("resume"); mainBound = was; }
+        @Override public int framesInFlight() { return 2; }
+        int slot;
+        @Override public int frameSlot() { return slot; }
+        @Override public boolean resetTimestamps() { if (inPass || mainBound) return false; log.add("tsReset"); return true; }
+        @Override public void writeTimestamp(int i) { log.add("ts " + i); }
+        @Override public long[] readTimestamps(int s, int n) { long[] t = new long[n]; for (int i = 0; i < n; i++) t[i] = i * 1_000_000L; return t; }
+        @Override public int timestampCapacity() { return tsCap; }
         @Override public void beginRendering(Object c, Object d, float[] cl, float cd, boolean clear) { inPass = true; log.add("begin"); }
         @Override public void endRendering() { inPass = false; log.add("end"); }
         @Override public void drawIndexedIndirectCount(Object p, Object[] b, Object[] t, ByteBuffer push, Object i, int it, Object c, long co, Object n, long no, int m, int s) { log.add("drawCount " + m); }

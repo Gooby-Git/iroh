@@ -33,6 +33,15 @@ public final class IrohTargets {
         }
     }
 
+    /** api 4.1: colour blending of an indirect / full-screen pipeline. */
+    public enum Blend {
+        NONE,
+        /** GL blendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA). */
+        ALPHA,
+        /** GL blendFunc(ONE, SRC_ALPHA): the fragment goes UNDER the image (result = colour + image x alpha). */
+        UNDER
+    }
+
     /** Fixed size. Null when the owner's share would be exceeded. */
     public static RenderTargetHandle create(String owner, String name, Format format, int width, int height) {
         return GpuCore.get().createTarget(owner, name, format, width, height, 0);
@@ -62,7 +71,40 @@ public final class IrohTargets {
      * {@link UnsupportedOperationException} where there is no main target (offline devices).
      */
     public static void mainDepthCopy(RenderTargetHandle target) {
-        dev.elemore.iroh.gpu.game.MainDepth.copy(GpuCore.get(), target);
+        GpuCore.get().mainDepthCopy(target);
+    }
+
+    /**
+     * api 4.1: tokens for the game's main colour / depth target, usable only as the attachments of {@link #beginRendering}
+     * (pipelines made for RGBA8 + DEPTH32F). In game that pass JOINS the bound main pass at a world stage (no clear, no
+     * barriers inside): every buffer or target it reads must have been written before the last settle, i.e. in
+     * {@link FrameStage#BEFORE_MAIN_PASS} or inside {@link #runOutsideMainPass}. Offline: stand-ins (GpuCore.standInMain).
+     */
+    public static RenderTargetHandle mainColor() {
+        return GpuCore.get().mainColor();
+    }
+
+    public static RenderTargetHandle mainDepth() {
+        return GpuCore.get().mainDepth();
+    }
+
+    /**
+     * api 4.1: runs {@code work} where compute, copies and mod passes may be recorded. In game at a world stage the main
+     * pass ends first and resumes after (LOAD); one global barrier at the end makes everything written visible to the
+     * main pass. Cost: one pass break. Offline: just runs it.
+     */
+    public static void runOutsideMainPass(Runnable work) {
+        GpuCore.get().runOutsideMainPass(work);
+    }
+
+    /** api 4.1: copies {@code src} into {@code dst} (same size and format). Outside a render pass. */
+    public static void copy(RenderTargetHandle src, RenderTargetHandle dst) {
+        GpuCore.get().copyTarget(src, dst);
+    }
+
+    /** api 4.1, offline only: fills a target from host texels (RGBA8 / R32F / DEPTH32F, 4 bytes per texel). */
+    public static void upload(RenderTargetHandle target, ByteBuffer texels) {
+        GpuCore.get().uploadTarget(target, texels);
     }
 
     /** Offline devices only (tests): the target's texels after all recorded work. */

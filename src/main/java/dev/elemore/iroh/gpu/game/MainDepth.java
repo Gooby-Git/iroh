@@ -1,8 +1,6 @@
 package dev.elemore.iroh.gpu.game;
 
-import dev.elemore.iroh.api.IrohTargets;
-import dev.elemore.iroh.api.RenderTargetHandle;
-import dev.elemore.iroh.gpu.GpuCore;
+import dev.elemore.iroh.gpu.VkGpuDevice;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.texture.VulkanImage;
 import org.lwjgl.system.MemoryStack;
@@ -19,13 +17,11 @@ import static org.lwjgl.vulkan.VK10.*;
 public final class MainDepth {
     private MainDepth() {}
 
-    public static void copy(GpuCore core, RenderTargetHandle target) {
-        if (!(core.device instanceof IrohGpuDevice)) throw new UnsupportedOperationException("mainDepthCopy needs the game's main target");
-        if (target.format() != IrohTargets.Format.DEPTH32F) throw new IllegalArgumentException("mainDepthCopy into a DEPTH32F target");
+    public static void copy(IrohGpuDevice dev, VkGpuDevice.VkImg target) {
         VulkanImage depth = IrohGpuDevice.mainDepth();
         if (depth == null) throw new IllegalStateException("no main depth");
-        if (depth.width != target.width() || depth.height != target.height())
-            throw new IllegalArgumentException("target " + target.width() + "x" + target.height() + " != main depth " + depth.width + "x" + depth.height
+        if (depth.width != target.width || depth.height != target.height)
+            throw new IllegalArgumentException("target " + target.width + "x" + target.height + " != main depth " + depth.width + "x" + depth.height
                     + " (use IrohTargets.createScaled(..., 1))");
         if (depth.format != VK_FORMAT_D32_SFLOAT)
             throw new UnsupportedOperationException("main depth format " + depth.format + " is not D32F (copy needs equal formats)");
@@ -36,14 +32,14 @@ public final class MainDepth {
         try (MemoryStack s = MemoryStack.stackPush()) {
             int old = depth.getCurrentLayout();
             depth.transitionImageLayout(s, cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            core.device.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            dev.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
             VkImageCopy.Buffer r = VkImageCopy.calloc(1, s);
             r.srcSubresource().aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
             r.dstSubresource().aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
             r.extent().width(depth.width).height(depth.height).depth(1);
-            vkCmdCopyImage(cmd, depth.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ((dev.elemore.iroh.gpu.VkGpuDevice.VkImg) core.nativeImage(target)).image, VK_IMAGE_LAYOUT_GENERAL, r);
-            core.device.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            vkCmdCopyImage(cmd, depth.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target.image, VK_IMAGE_LAYOUT_GENERAL, r);
+            dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                     VK_ACCESS_MEMORY_READ_BIT);
             if (old != VK_IMAGE_LAYOUT_UNDEFINED) depth.transitionImageLayout(s, cmd, old);
         }

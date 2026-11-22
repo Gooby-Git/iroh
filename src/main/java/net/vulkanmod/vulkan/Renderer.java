@@ -372,6 +372,7 @@ public class Renderer {
         // api 4 (card V-M1): BEFORE_MAIN_PASS: the frame command buffer records, no render pass is bound (mod compute,
         // uploads, own passes). Fires every frame, also on menus.
         dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.BEFORE_MAIN_PASS);
+        { var gc = dev.elemore.iroh.gpu.GpuCore.orNull(); if (gc != null) gc.settleAll(); } // api 4.1: writes visible to main-pass reads
         mainPass.begin(commandBuffer, stack);
 
         resetDynamicState(commandBuffer);
@@ -597,6 +598,12 @@ public class Renderer {
         // recording site). flushConsumersAndReset submits all of them (UploadManager and IndirectBuffer included,
         // which the base left out) and waits before the reset.
         StagingBuffer.flushConsumersAndReset();
+    }
+
+    /** Iroh api 4.1 (card V-M3): a mod pipeline was bound inside the main pass; Iroh's next bind must not be skipped. */
+    public void invalidateBoundPipeline() {
+        boundPipeline = null;
+        boundPipelineHandle = 0;
     }
 
     private void resetDescriptors() {
