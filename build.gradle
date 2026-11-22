@@ -489,3 +489,20 @@ tasks.register('fsrVelocityReplay', JavaExec) {
 		useLavapipe(it)
 	}
 }
+
+// P4-1b: FsrSession (the game's FSR adapter lifecycle) driven on lavapipe with Iroh's formats. ./gradlew fsrAdapterReplay
+// last line "# fsradapter PASS|FAIL"
+tasks.register('fsrAdapterReplay', JavaExec) {
+	group = 'verification'
+	description = 'FSR adapter lifecycle (refusal, create, resize, deferred destroy, accounting, reset) + RGBA8 output on lavapipe'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrAdapterReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst {
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
