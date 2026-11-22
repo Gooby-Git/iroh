@@ -33,4 +33,14 @@ public interface PackFrameInputs {
     String startStage();
 
     double frameSeconds();
+
+    /** targets / depth images filled by a copy from a backend image (post mode: the raster scene colour and depth) */
+    default Map<String, Integer> copySources() {
+        return Map.of();
+    }
+
+    /** targets / depth images cleared to these values every frame (post mode: flat material, lit shadow map) */
+    default Map<String, float[]> clearValues() {
+        return Map.of();
+    }
 }

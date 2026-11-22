@@ -80,6 +80,12 @@ public final class FrameExecutor {
     /** optional: called after each fullscreen pass with the attachment keys (the frame is submitted around it: debug dumps only) */
     public java.util.function.BiConsumer<String, List<String>> afterPass;
     public int passIndex, drawCount;
+    /** backend image the final output is blitted into after the frame (post mode: the scene colour), -1 = none */
+    public int presentTo = -1;
+    /** pass ids not executed (bisecting in game: iroh.pack.skip) */
+    public Set<String> skip = Set.of();
+    /** called after the inputs were uploaded/copied (capture hook) */
+    public Runnable afterInputs;
 
     public FrameExecutor(PackData data, PackPlan pp, String folder, GpuBackend gpu, MemoryGate gate) {
         this.data = data;
@@ -271,11 +277,37 @@ public final class FrameExecutor {
             gpu.upload(h, in.image(name));
             trace.add("upload " + key);
         }
+        // copies from backend images (post mode) and forced clears
+        for (Map.Entry<String, Integer> e : in.copySources().entrySet()) {
+            String key = images.containsKey(e.getKey() + "#main") ? e.getKey() + (flippedBefore.contains(e.getKey()) ? "#alt" : "#main") : e.getKey();
+            Integer h = images.get(key);
+            if (h == null)
+                continue;
+            access(e.getValue(), "TRANSFER_READ");
+            access(h, "TRANSFER_WRITE");
+            gpu.blit(e.getValue(), h);
+            trace.add("blit input -> " + key);
+        }
+        for (Map.Entry<String, float[]> e : in.clearValues().entrySet())
+            for (String key : keysOf(e.getKey())) {
+                Integer h = images.get(key);
+                if (h == null)
+                    continue;
+                access(h, "TRANSFER_WRITE");
+                gpu.clear(h, e.getValue());
+                trace.add("clear " + key + " (input value)");
+            }
+        if (afterInputs != null)
+            afterInputs.run();
         // passes
         for (PassGraph.Pass p : frame.passes) {
             int st = STAGES.indexOf(p.stage);
             if (st < start)
                 continue;
+            if (skip.contains(p.id)) {
+                trace.add("skip " + p.id + " (iroh.pack.skip)");
+                continue;
+            }
             switch (p.kind) {
                 case "fullscreen" -> fullscreen(p, in);
                 case "compute" -> compute(p, in);
@@ -296,6 +328,13 @@ public final class FrameExecutor {
             access(m, "TRANSFER_WRITE");
             gpu.copy(a, m);
             trace.add("copy " + t.name + "#alt -> #main (end of frame)");
+        }
+        if (presentTo >= 0) {
+            Integer out = images.get("output");
+            access(out, "TRANSFER_READ");
+            access(presentTo, "TRANSFER_WRITE");
+            gpu.blit(out, presentTo);
+            trace.add("present output");
         }
         gpu.endFrame();
         trace.add("frame end");
@@ -696,6 +735,19 @@ public final class FrameExecutor {
                         b.putFloat(pos, (float) x);
                 }
         }
+    }
+
+    /** frees every image and pipeline this executor created (world unload, resize, dimension change, disable) */
+    public void close() {
+        for (Integer h : new java.util.LinkedHashSet<>(images.values()))
+            gpu.freeImage(h);
+        images.clear();
+        for (Integer p : pipelines.values())
+            gpu.freePipeline(p);
+        pipelines.clear();
+        lastAccess.clear();
+        prepared = false;
+        trace.add("closed");
     }
 
     // ------------------------------------------------------------------------------------------------ results
