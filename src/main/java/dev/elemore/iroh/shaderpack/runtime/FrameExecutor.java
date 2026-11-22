@@ -77,6 +77,9 @@ public final class FrameExecutor {
     private final Map<String, Integer> uniformBuffers = new HashMap<>();
     private int width, height;
     private boolean prepared;
+    /** optional: called after each fullscreen pass with the attachment keys (the frame is submitted around it: debug dumps only) */
+    public java.util.function.BiConsumer<String, List<String>> afterPass;
+    public int passIndex, drawCount;
 
     public FrameExecutor(PackData data, PackPlan pp, String folder, GpuBackend gpu, MemoryGate gate) {
         this.data = data;
@@ -399,6 +402,14 @@ public final class FrameExecutor {
         byte[] ubo = uniformBlock(u, in, true);
         gpu.draw(new GpuBackend.Draw(p.id, pipe, colour, viewport, set0, set1, ubo));
         trace.add("draw " + p.id + " -> " + keys + " viewport " + viewport[2] + "x" + viewport[3] + " reads " + readKeys(p));
+        passIndex = frame.passes.indexOf(p);
+        drawCount++;
+        if (afterPass != null) {
+            gpu.endFrame();
+            afterPass.accept(p.id, keys);
+            gpu.beginFrame();
+            lastAccess.clear();
+        }
     }
 
     private void compute(PassGraph.Pass p, PackFrameInputs in) {

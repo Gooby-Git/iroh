@@ -33,7 +33,7 @@ public final class SyntheticScene implements PackFrameInputs {
 
     // camera
     static final double[] CAM = {0.5, 66.62, 8.5};
-    static final double YAW = Math.toRadians(-160), PITCH = Math.toRadians(-12), FOV = Math.toRadians(70);
+    static final double YAW = Math.toRadians(20), PITCH = Math.toRadians(-12), FOV = Math.toRadians(70);
     static final double NEAR = 0.05, FAR = 192;
     // sun (direction TO the sun, world space)
     static final double[] SUN = norm(new double[]{-0.45, 0.75, 0.35});
@@ -77,6 +77,12 @@ public final class SyntheticScene implements PackFrameInputs {
                 double[] dir = rayDir(x, y, viewInv, projInv);
                 Hit hit = trace(new double[]{0, 0, 0}, dir);   // camera-relative (player space)
                 if (hit == null) {
+                    // what gbuffers_skybasic would have left (the sky is a geometry pass, not replayed): a linear gradient
+                    double t = Math.max(0, dir[1]);
+                    c0[i] = (float) (0.62 + (0.20 - 0.62) * t);
+                    c0[i + 1] = (float) (0.72 + (0.38 - 0.72) * t);
+                    c0[i + 2] = (float) (0.86 + (0.80 - 0.86) * t);
+                    c0[i + 3] = 1;
                     depth[i] = 1;
                     c6[i + 2] = 1; // sky light
                     continue;
