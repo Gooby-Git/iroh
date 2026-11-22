@@ -623,6 +623,20 @@ public final class GlPrograms {
     }
 
     private static void draw(ProgramObj p, VertexFormat.Mode m, ByteBuffer vb, int count) {
+        if (!dev.elemore.iroh.diag.SlowFrames.ON) {
+            draw0(p, m, vb, count);
+            return;
+        }
+        dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.EMU_DRAWS, 1); // perf/frame-attrib
+        dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.EMU_DRAWS);
+        try {
+            draw0(p, m, vb, count);
+        } finally {
+            dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.EMU_DRAWS);
+        }
+    }
+
+    private static void draw0(ProgramObj p, VertexFormat.Mode m, ByteBuffer vb, int count) {
         Renderer r = Renderer.getInstance();
         if (r.getBoundRenderPass() == null) {
             if (VkGlFramebuffer.getBoundFramebuffer() == null) r.getMainPass().rebindMainTarget();

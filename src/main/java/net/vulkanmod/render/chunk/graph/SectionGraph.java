@@ -61,7 +61,35 @@ public class SectionGraph {
         this.renderRegionCache = WorldRenderer.getInstance().renderRegionCache;
     }
 
+    /**
+     * perf/hitches: visibility cached per camera section (-Diroh.graph.cache=true, default off). A FULL update walks the
+     * occlusion graph from the camera section without frustum pruning (in all directions) and keeps the visited list; any
+     * other update only re-applies the frustum to that list (same per-section work: draw queues, block entities, dirty
+     * sections). The walk itself does not depend on where the camera is inside its section or where it looks, so between
+     * full updates the result equals a fresh full update (and is a superset of the old frustum-pruned walk, which could
+     * not reach a visible section through a path leaving the frustum). Full updates happen synchronously when the camera
+     * enters another section, the cull mode changes, or the caller passes {@code structureRefresh} (sections uploaded or
+     * edited: connectivity may have changed). Turning, even 180 degrees, is a filter pass over a list that already
+     * holds every direction: no hole, no frame of lag.
+     */
+    /** Runtime switch (PerfSwitches iroh.graph.cache), read once per update into {@link #cacheOn}. */
+    public static boolean cacheEnabled() {
+        return dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.GRAPH_CACHE);
+    }
+
+    private boolean cacheOn;
+    private boolean cacheValid;
+    private int cacheSecX, cacheSecY, cacheSecZ;
+    private boolean cacheSmartCull;
+    /** Debug (-Diroh.graph.verify=true): every 120th filter pass also runs a full walk and compares the visible sets. */
+    private static final boolean VERIFY = Boolean.getBoolean("iroh.graph.verify");
+    private int verifyTick;
+
     public void update(Camera camera, Frustum frustum, boolean spectator) {
+        update(camera, frustum, spectator, true);
+    }
+
+    public void update(Camera camera, Frustum frustum, boolean spectator, boolean structureRefresh) {
         Profiler profiler = Profiler.getMainProfiler();
 
         BlockPos blockpos = camera.getBlockPosition();
@@ -81,17 +109,110 @@ public class SectionGraph {
 
         this.minecraft.getProfiler().push("partial_update");
 
-        this.initUpdate();
-        this.initializeQueueForFullUpdate(camera);
+        int secX = blockpos.getX() >> 4, secY = blockpos.getY() >> 4, secZ = blockpos.getZ() >> 4;
+        boolean wasOn = this.cacheOn;
+        this.cacheOn = cacheEnabled();
+        if (this.cacheOn != wasOn) this.cacheValid = false; // switched at runtime
+        boolean full = !this.cacheOn || !this.cacheValid || structureRefresh || flag != this.cacheSmartCull
+                || secX != this.cacheSecX || secY != this.cacheSecY || secZ != this.cacheSecZ;
 
-        if (flag)
-            this.updateRenderChunks();
-        else
-            this.updateRenderChunksSpectator();
+        if (full) {
+            this.initUpdate();
+            this.initializeQueueForFullUpdate(camera);
+
+            if (flag)
+                this.updateRenderChunks();
+            else
+                this.updateRenderChunksSpectator();
+            if (this.cacheOn) {
+                this.cacheValid = true;
+                this.cacheSmartCull = flag;
+                this.cacheSecX = secX;
+                this.cacheSecY = secY;
+                this.cacheSecZ = secZ;
+            }
+        } else {
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.GRAPH_FILTER_ONLY, 1);
+            this.filterCached(flag);
+            if (VERIFY && ++this.verifyTick % 120 == 0) this.verifyAgainstFull(camera, flag);
+        }
 
         this.scheduleRebuilds();
 
         this.minecraft.getProfiler().pop();
+    }
+
+    /** The cached walk is no longer valid (sections moved, world changed). */
+    public void invalidateCache() {
+        this.cacheValid = false;
+    }
+
+    /** Frustum pass over the cached visited list (perf/hitches). */
+    private void filterCached(boolean smartCull) {
+        this.unbuiltSections = 0;
+        this.chunkAreaQueue.clear();
+        this.sectionGrid.getChunkAreaManager().resetQueues();
+        this.blockEntitiesSections.clear();
+        this.rebuildQueue.clear();
+        this.lastFrame++;
+        this.nonEmptyChunks = 0;
+        int maxDirectionsChanges = Initializer.CONFIG.advCulling - 1;
+        int n = this.sectionQueue.size();
+        for (int i = 0; i < n; i++) {
+            RenderSection renderSection = this.sectionQueue.get(i);
+            if (smartCull && renderSection.directionChanges > maxDirectionsChanges)
+                continue; // not traversed by the walk either
+            if (notInFrustum(renderSection))
+                continue;
+            this.visitVisible(renderSection, smartCull);
+        }
+    }
+
+    /** The per-section work for a section in this frame's visible set (shared by the walk and the filter pass). */
+    private void visitVisible(RenderSection renderSection, boolean blockEntities) {
+        renderSection.lastVisibleFrame = this.lastFrame; // Iroh P1-6b: IrohApi.isSectionVisible
+
+        if (!renderSection.isCompletelyEmpty()) {
+            renderSection.getChunkArea().sectionQueue.add(renderSection);
+            this.chunkAreaQueue.add(renderSection.getChunkArea());
+            this.nonEmptyChunks++;
+        }
+
+        if (blockEntities && renderSection.containsBlockEntities()) { // the spectator walk never listed them
+            this.blockEntitiesSections.ensureCapacity(1);
+            this.blockEntitiesSections.add(renderSection);
+        }
+
+        countUnbuilt(renderSection);
+
+        if (renderSection.isDirty()) {
+            this.rebuildQueue.ensureCapacity(1);
+            this.rebuildQueue.add(renderSection);
+        }
+    }
+
+    /** Debug: compares this frame's filtered set with a fresh full walk (identity sets of lastVisibleFrame). */
+    private void verifyAgainstFull(Camera camera, boolean smartCull) {
+        java.util.Set<RenderSection> filtered = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (int i = 0; i < this.sectionQueue.size(); i++) {
+            RenderSection s = this.sectionQueue.get(i);
+            if (s.lastVisibleFrame == this.lastFrame) filtered.add(s);
+        }
+        // a fresh full walk (it rebuilds the queues, so this frame then draws the fresh result)
+        this.initUpdate();
+        this.initializeQueueForFullUpdate(camera);
+        if (smartCull) this.updateRenderChunks();
+        else this.updateRenderChunksSpectator();
+        int missing = 0, extra = 0;
+        java.util.Set<RenderSection> fresh = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (int i = 0; i < this.sectionQueue.size(); i++) {
+            RenderSection s = this.sectionQueue.get(i);
+            if (s.lastVisibleFrame == this.lastFrame) fresh.add(s);
+        }
+        for (RenderSection s : fresh) if (!filtered.contains(s)) missing++;
+        for (RenderSection s : filtered) if (!fresh.contains(s)) extra++;
+        Initializer.LOGGER.info("[iroh-graph-verify] cached filter vs full walk: visible {} vs {}, missing {}, extra {}",
+                filtered.size(), fresh.size(), missing, extra);
     }
 
     private void initializeQueueForFullUpdate(Camera camera) {
@@ -202,31 +323,15 @@ public class SectionGraph {
         while (this.sectionQueue.hasNext()) {
             RenderSection renderSection = this.sectionQueue.poll();
 
-            if (notInFrustum(renderSection))
-                continue;
+            boolean inFrustum = !notInFrustum(renderSection);
+            if (!inFrustum && !this.cacheOn)
+                continue; // perf/hitches: with the cache the walk continues through it (frustum applied per frame)
 
             if (renderSection.directionChanges > maxDirectionsChanges)
                 continue;
 
-            renderSection.lastVisibleFrame = this.lastFrame; // Iroh P1-6b: IrohApi.isSectionVisible
-
-            if (!renderSection.isCompletelyEmpty()) {
-                renderSection.getChunkArea().sectionQueue.add(renderSection);
-                this.chunkAreaQueue.add(renderSection.getChunkArea());
-                this.nonEmptyChunks++;
-            }
-
-            if (renderSection.containsBlockEntities()) {
-                this.blockEntitiesSections.ensureCapacity(1);
-                this.blockEntitiesSections.add(renderSection);
-            }
-
-            countUnbuilt(renderSection);
-
-            if (renderSection.isDirty()) {
-                this.rebuildQueue.ensureCapacity(1);
-                this.rebuildQueue.add(renderSection);
-            }
+            if (inFrustum)
+                this.visitVisible(renderSection, true);
 
             byte dirs = (byte) (renderSection.getVisibilityDirs() & renderSection.getDirections());
 
@@ -267,10 +372,45 @@ public class SectionGraph {
         this.syncAllowed = allowed;
     }
 
+    /**
+     * perf/hitches: async rebuilds scheduled per graph update while the builders already have a backlog. Each scheduled
+     * rebuild copies its 3x3x3 block data on the render thread NOW, so scheduling hundreds ahead of the builders cost
+     * render-thread time and memory for copies that are often re-dirtied before a builder reaches them. Sections not
+     * scheduled stay dirty and are picked up by the next update (nearest first: the queue is in graph order). Important
+     * (waited-for) rebuilds are never limited. On: -Diroh.graph.rebuildBudget=true (default off).
+     */
+    static boolean rebuildBudget() {
+        return dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.REBUILD_BUDGET);
+    }
+
+    /** Pure rule (tested): how many more async rebuilds to schedule this update. */
+    public static int rebuildAllowance(int pending, int activeBuilders) {
+        int target = Math.max(32, activeBuilders * 24); // ~ a few frames of builder work queued ahead
+        return Math.max(8, target - pending);
+    }
+
     private void scheduleRebuilds() {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) {
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.REBUILDS_QUEUED, this.rebuildQueue.size());
+            dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.SCHEDULE_REBUILDS);
+        }
+        try {
+            scheduleRebuilds0();
+        } finally {
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.SCHEDULE_REBUILDS);
+        }
+    }
+
+    private void scheduleRebuilds0() {
         DeferMode mode = this.syncAllowed ? IrohOptions.chunkBuildDeferMode() : DeferMode.ALWAYS;
         boolean nearbyRule = mode != DeferMode.ALWAYS
                 && this.minecraft.options.prioritizeChunkUpdates().get() == PrioritizeChunkUpdates.NEARBY;
+        this.renderRegionCache.beginBatch(); // perf/hitches: block copies shared within this batch
+        int asyncLeft = rebuildBudget()
+                ? rebuildAllowance(this.taskDispatcher.pendingTaskCount(), this.taskDispatcher.activeBuilderLimit())
+                : Integer.MAX_VALUE;
+        int asyncScheduled = 0;
+        boolean skippedForBudget = false;
         for (int i = 0; i < this.rebuildQueue.size(); i++) {
             RenderSection section = this.rebuildQueue.get(i);
 
@@ -295,7 +435,12 @@ public class SectionGraph {
                     scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
                 }
             } else {
+                if (asyncScheduled >= asyncLeft && !retry) {
+                    skippedForBudget = true;
+                    continue; // perf/hitches: stays dirty; the next update (requested below) schedules it
+                }
                 scheduled = section.rebuildChunkAsync(this.taskDispatcher, this.renderRegionCache);
+                if (scheduled) asyncScheduled++;
             }
 
             if (scheduled) {
@@ -324,6 +469,11 @@ public class SectionGraph {
             }
         }
         this.rebuildQueue.clear();
+        if (skippedForBudget) {
+            WorldRenderer wr = WorldRenderer.getInstance();
+            if (wr != null) wr.scheduleGraphUpdate(); // the rest is scheduled by the next update, nearest first
+        }
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.REBUILDS_SCHEDULED, asyncScheduled);
 
         if (STATS)
             logStats();
@@ -418,23 +568,12 @@ public class SectionGraph {
         while (this.sectionQueue.hasNext()) {
             RenderSection renderSection = this.sectionQueue.poll();
 
-            if (notInFrustum(renderSection))
+            boolean inFrustum = !notInFrustum(renderSection);
+            if (!inFrustum && !this.cacheOn)
                 continue;
 
-            renderSection.lastVisibleFrame = this.lastFrame; // Iroh P1-6b: IrohApi.isSectionVisible
-
-            if (!renderSection.isCompletelyEmpty()) {
-                renderSection.getChunkArea().sectionQueue.add(renderSection);
-                this.chunkAreaQueue.add(renderSection.getChunkArea());
-                this.nonEmptyChunks++;
-            }
-
-            countUnbuilt(renderSection);
-
-            if (renderSection.isDirty()) {
-                this.rebuildQueue.ensureCapacity(1);
-                this.rebuildQueue.add(renderSection);
-            }
+            if (inFrustum)
+                this.visitVisible(renderSection, false);
 
             byte dirs = (byte) (renderSection.adjDirs & renderSection.getDirections());
 

@@ -57,7 +57,7 @@ public class RenderRegionBuilder {
                     final int relX = (x - minSecX), relY = (y - minSecY), relZ = (z - minSecZ);
                     final int idx = (relY * RenderRegion.WIDTH + relZ) * RenderRegion.WIDTH + relX;
 
-                    PalettedContainer<BlockState> values = section == null || section.hasOnlyAir() ? null : section.getStates().copy();
+                    PalettedContainer<BlockState> values = section == null || section.hasOnlyAir() ? null : this.cloneOf(section, x, y, z);
 
                     blockData[idx] = values;
 
@@ -118,9 +118,44 @@ public class RenderRegionBuilder {
 
     public void remove(int x, int z) {
         levelChunkCache.remove(ChunkPos.asLong(x, z));
+        if (!this.clones.isEmpty()) this.clones.clear(); // a block changed: no copy taken before it may be reused
     }
 
     public void clear() {
         this.levelChunkCache.clear();
+        this.clones.clear();
+    }
+
+    /**
+     * perf/hitches: block-state copies shared between the rebuilds scheduled in one batch. Each region copies the 3x3x3
+     * sections around its section (27 PalettedContainer copies); neighbouring rebuilds copied the same sections again, up
+     * to 27 times (block 6: 300-500 rebuilds pending, 17-36 MB allocated in a slow frame). A copy is read-only for the
+     * builders, so one copy per section per batch is shared. The cache lives for one scheduling batch
+     * ({@link #beginBatch}) and is dropped whenever a block changes ({@link #remove}). On: -Diroh.graph.cloneCache=true (default off).
+     */
+    /** Runtime switch (PerfSwitches iroh.graph.cloneCache), read once per batch. */
+    private boolean cloneCacheOn;
+    private final it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap<PalettedContainer<BlockState>> clones =
+            new it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap<>();
+    public int clonesMade, clonesShared;
+
+    /** Render thread, before a batch of rebuilds is scheduled. */
+    public void beginBatch() {
+        if (!this.clones.isEmpty()) this.clones.clear();
+        this.cloneCacheOn = dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.CLONE_CACHE);
+    }
+
+    private PalettedContainer<BlockState> cloneOf(LevelChunkSection section, int x, int y, int z) {
+        if (!this.cloneCacheOn) return section.getStates().copy();
+        long key = SectionPos.asLong(x, y, z);
+        PalettedContainer<BlockState> c = this.clones.get(key);
+        if (c != null) {
+            this.clonesShared++;
+            return c;
+        }
+        c = section.getStates().copy();
+        this.clones.put(key, c);
+        this.clonesMade++;
+        return c;
     }
 }

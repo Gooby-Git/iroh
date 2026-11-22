@@ -111,6 +111,11 @@ public final class FrameHooks {
             if (!e.paths.contains(path)) continue;
             StateGuard.capture();
             DrawImpl.insideHook = true;
+            long hookT0 = 0;
+            if (dev.elemore.iroh.diag.SlowFrames.ON) { // perf/frame-attrib
+                hookT0 = dev.elemore.iroh.diag.SlowFrames.now();
+                dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.MOD_HOOKS);
+            }
             try {
                 e.hook.run(c);
                 if (c.gui != null) c.gui.flush();
@@ -125,6 +130,10 @@ public final class FrameHooks {
                 if (stage != FrameStage.AFTER_PRESENT) DrawImpl.flush();
                 DrawImpl.insideHook = false;
                 StateGuard.verifyAndRestore(e.hook, stage);
+                if (dev.elemore.iroh.diag.SlowFrames.ON) {
+                    dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.MOD_HOOKS);
+                    dev.elemore.iroh.diag.SlowFrames.hook(e.hook, dev.elemore.iroh.diag.SlowFrames.now() - hookT0);
+                }
             }
         }
     }

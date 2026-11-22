@@ -113,6 +113,10 @@ public class StagingBuffer extends Buffer {
         // rc8: bounded. Each round submits pending uploads and waits for the oldest in-flight epoch (fence waits time out,
         // see Synchronization); if nothing in flight can free room, the request is refused (no unbounded allocation,
         // no endless loop): the caller's frame is abandoned through the memory guard.
+        if (a == null && dev.elemore.iroh.diag.SlowFrames.ON) { // perf/frame-attrib
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.STAGING_WAITS, 1);
+            dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.STAGING_WAIT);
+        }
         for (int round = 0; a == null; round++) {
             if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.stagingOverflows++;
             submitAllConsumers();
@@ -131,6 +135,7 @@ public class StagingBuffer extends Buffer {
                 throw new dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory("staging budget exhausted");
             }
         }
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.STAGING_WAIT);
         nmemcpy(a.address, src, size);
         return a;
     }

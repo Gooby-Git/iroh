@@ -115,6 +115,15 @@ public class AreaBuffer {
     }
 
     public Segment reallocate(int uploadSize) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.AREA_REALLOC); // perf/frame-attrib
+        try {
+            return reallocate0(uploadSize);
+        } finally {
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.AREA_REALLOC);
+        }
+    }
+
+    private Segment reallocate0(int uploadSize) {
         int oldSize = this.size;
 
         int minIncrement = this.size >> 3;
@@ -126,6 +135,10 @@ public class AreaBuffer {
             throw new RuntimeException(String.format("Size increment %d < %d (Upload size)", increment, uploadSize));
 
         int newSize = oldSize + increment;
+        if (dev.elemore.iroh.diag.SlowFrames.ON) {
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.AREA_REALLOCS, 1);
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.AREA_GROW_KB, newSize >> 10);
+        }
 
         this.size = newSize;
         Buffer dst = this.allocateBuffer();

@@ -72,6 +72,8 @@ public class WorldRenderer {
 
     private SectionGraph sectionGraph;
     private boolean graphNeedsUpdate;
+    /** perf/hitches (graph cache): a full (non translucent-resort) section upload may have changed connectivity. */
+    private boolean graphStructureDirty = true;
 
     private final Set<BlockEntity> globalBlockEntities = Sets.newHashSet();
 
@@ -139,6 +141,7 @@ public class WorldRenderer {
     private int pruneTick;
 
     public void setupRenderer(Camera camera, Frustum frustum, boolean isCapturedFrustum, boolean spectator) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.SETUP_TERRAIN); // perf/frame-attrib
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Setup_Renderer");
 
@@ -198,8 +201,18 @@ public class WorldRenderer {
                 this.lastCamRotX = camera.getXRot();
                 this.lastCamRotY = camera.getYRot();
 
-                this.sectionGraph.update(camera, frustum, spectator);
+                if (dev.elemore.iroh.diag.SlowFrames.ON) {
+                    dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.GRAPH_UPDATES, 1);
+                    dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.GRAPH_UPDATE);
+                }
+                // hitches2 (block 7 verify: the 100 ms refresh throttle lost up to 229 visible sections): with the graph
+                // cache, ANY structural upload since the last walk forces a full walk, so a filter pass only ever runs
+                // on an unchanged graph and equals a fresh full walk by construction.
+                boolean refresh = !net.vulkanmod.render.chunk.graph.SectionGraph.cacheEnabled() || this.graphStructureDirty;
+                this.graphStructureDirty = false;
+                this.sectionGraph.update(camera, frustum, spectator, refresh);
                 this.waitForImportantRebuilds(camera, frustum, spectator);
+                if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.GRAPH_UPDATE);
             }
         }
 
@@ -207,6 +220,7 @@ public class WorldRenderer {
 
         this.minecraft.getProfiler().pop();
         profiler.pop();
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.SETUP_TERRAIN);
     }
 
     private static final boolean DEFER_STATS = Boolean.getBoolean("iroh.deferStats");
@@ -260,6 +274,7 @@ public class WorldRenderer {
     }
 
     public void uploadSections() {
+        this.taskDispatcher.adaptBuilders(); // perf/hitches: adaptive builder count from the backlog
         this.minecraft.getProfiler().push("upload");
 
         Profiler profiler = Profiler.getMainProfiler();
@@ -280,8 +295,10 @@ public class WorldRenderer {
         }
 
         try {
-            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections())
+            if (waitedForSections ? this.taskDispatcher.updateSections(true) : this.taskDispatcher.updateSections()) {
                 this.graphNeedsUpdate = true;
+                if (this.taskDispatcher.takeStructuralUpload()) this.graphStructureDirty = true; // connectivity may have changed
+            }
         } catch (Exception e) {
             Initializer.LOGGER.error(e.getMessage());
             allChanged();
@@ -393,6 +410,10 @@ public class WorldRenderer {
     public void renderSectionLayer(RenderType renderType, double camX, double camY, double camZ, Matrix4f modelView, Matrix4f projection) {
         if (Renderer.recordingCommandBuffer("renderSectionLayer") == null) // rc3r2 (td-7937f0): no frame recording
             return;
+        if (dev.elemore.iroh.diag.SlowFrames.ON) { // perf/frame-attrib
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.LAYERS, 1);
+            dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.TERRAIN_DRAW);
+        }
         TerrainRenderType terrainRenderType = TerrainRenderType.get(renderType);
         renderType.setupRenderState();
         // td-242adb experiment: -Diroh.debug.terrainNoCull=true draws terrain without GPU back-face culling (pair it with
@@ -460,10 +481,12 @@ public class WorldRenderer {
 
         this.minecraft.getProfiler().pop();
         renderType.clearRenderState();
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.TERRAIN_DRAW);
     }
 
     private void sortTranslucentSections(double camX, double camY, double camZ) {
         this.minecraft.getProfiler().push("translucent_sort");
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.SORT); // perf/frame-attrib
         double d0 = camX - this.xTransparentOld;
         double d1 = camY - this.yTransparentOld;
         double d2 = camZ - this.zTransparentOld;
@@ -483,8 +506,10 @@ public class WorldRenderer {
 
                 ++j;
             }
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SORTED, j);
         }
 
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.SORT);
         this.minecraft.getProfiler().pop();
     }
 
@@ -493,7 +518,16 @@ public class WorldRenderer {
         Profiler profiler = Profiler.getMainProfiler();
         profiler.pop();
         profiler.push("Block-entities");
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.BLOCK_ENTITIES); // perf/frame-attrib
+        try {
+            renderBlockEntities0(poseStack, camX, camY, camZ, destructionProgress, gameTime);
+        } finally {
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.BLOCK_ENTITIES);
+        }
+    }
 
+    private void renderBlockEntities0(PoseStack poseStack, double camX, double camY, double camZ,
+                                      Long2ObjectMap<SortedSet<BlockDestructionProgress>> destructionProgress, float gameTime) {
         MultiBufferSource bufferSource = this.renderBuffers.bufferSource();
 
         for (RenderSection renderSection : this.sectionGraph.getBlockEntitiesSections()) {
@@ -518,6 +552,7 @@ public class WorldRenderer {
                     }
 
                     this.minecraft.getBlockEntityRenderDispatcher().render(blockEntity, gameTime, poseStack, bufferSource1);
+                    if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.BLOCK_ENTITIES, 1);
                     poseStack.popPose();
                 }
             }
@@ -558,6 +593,9 @@ public class WorldRenderer {
     }
 
     public void setSectionDirty(int x, int y, int z, boolean flag) {
+        // hitches4: count only. Block 8: timing each call (tens of thousands per frame: every set block and each
+        // section of a loaded chunk with its neighbours) made the tool's own exit() show up in 98 slow-frame samples.
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.DIRTY_MARKS, 1);
         this.sectionGrid.setDirty(x, y, z, flag);
 
         this.renderRegionCache.remove(x, z);
