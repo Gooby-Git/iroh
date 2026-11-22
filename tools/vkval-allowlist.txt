@@ -1,0 +1,3 @@
+# V-0 Vulkan validation allowlist for the lavapipe harnesses (build.gradle vkvalCheck).
+# One line per accepted message: VUID | substring of MainMessage, or * | written reason (lavapipe quirk or vendor SDK, with evidence).
+# Nothing goes here without a reason; Iroh and harness bugs are fixed, not listed.
