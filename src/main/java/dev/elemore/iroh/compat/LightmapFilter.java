@@ -10,6 +10,12 @@ package dev.elemore.iroh.compat;
 public final class LightmapFilter {
     /** GL id of LightTexture's DynamicTexture; -1 until the LightTexture exists. */
     public static volatile int lightmapTextureId = -1;
+    /** api 4: the lightmap's texture id (LightTexture.lightTextureLocation), null until the LightTexture exists. */
+    public static volatile net.minecraft.resources.ResourceLocation location;
+
+    public static net.minecraft.resources.ResourceLocation lightmapLocation() {
+        return location;
+    }
 
     private LightmapFilter() {}
 

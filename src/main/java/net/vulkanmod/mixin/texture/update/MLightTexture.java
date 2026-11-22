@@ -33,6 +33,7 @@ public class MLightTexture {
 
     @Shadow @Final private DynamicTexture lightTexture;
     @Shadow @Final private NativeImage lightPixels;
+    @Shadow @Final private net.minecraft.resources.ResourceLocation lightTextureLocation;
 
 
     /**
@@ -65,6 +66,7 @@ public class MLightTexture {
     @Inject(method = "<init>", at = @At("RETURN"))
     private void irohRememberLightmap(GameRenderer renderer, Minecraft minecraft, CallbackInfo ci) {
         dev.elemore.iroh.compat.LightmapFilter.lightmapTextureId = this.lightTexture.getId();
+        dev.elemore.iroh.compat.LightmapFilter.location = this.lightTextureLocation; // api 4: IrohTextures.lightmap()
     }
 
     @Inject(method = "updateLightTexture", at = @At(value = "INVOKE", target = UPLOAD))

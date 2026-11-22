@@ -402,6 +402,8 @@ public class RenderSection {
     }
 
     private void reset() {
+        if (dev.elemore.iroh.apiimpl.Sections.any() && this.compileStatus.compiledSection != CompiledSection.UNCOMPILED)
+            dev.elemore.iroh.apiimpl.Sections.reset(this.xOffset >> 4, this.yOffset >> 4, this.zOffset >> 4); // api 4
         if (this.waitingForChunk) { // relocated by the section grid: the parked entry belongs to the old chunk
             this.waitingForChunk = false;
             var w = WorldRenderer.rebuildWaiting();

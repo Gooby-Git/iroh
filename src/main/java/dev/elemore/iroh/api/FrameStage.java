@@ -48,5 +48,12 @@ public enum FrameStage {
      * the GUI left it. {@link FrameContext#guiGraphics()} is the frame's GuiGraphics (flushed after each hook).
      * Draws land on top of everything, menus included: check {@code Minecraft.screen} if a letterbox should hide under them.
      */
-    OVERLAY
+    OVERLAY,
+    /**
+     * api 4 (card V-M1): the frame's command buffer is recording and NO render pass is bound: before the main pass
+     * begins (Renderer.beginRenderPass). Declared last so earlier ordinals do not move; in frame order it comes after
+     * the frame fence and before {@link #FRAME_BEGIN}. Every frame, with or without a level. For IrohCompute dispatches,
+     * IrohBuffers uploads and IrohTargets passes; IrohDraw immediate geometry is not drawn here (no main target bound).
+     */
+    BEFORE_MAIN_PASS
 }

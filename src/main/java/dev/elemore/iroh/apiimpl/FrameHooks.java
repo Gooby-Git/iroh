@@ -118,6 +118,7 @@ public final class FrameHooks {
                 if (++e.failures >= 3) {
                     net.vulkanmod.Initializer.LOGGER.error("Iroh: frame hook {} at {} failed 3 times; removed", e.hook.getClass().getName(), stage, t);
                     remove(stage, e);
+                    dev.elemore.iroh.gpu.game.GpuLifecycle.ownerFailed(e.hook); // api 4: its GPU objects go too
                 } else {
                     net.vulkanmod.Initializer.LOGGER.error("Iroh: frame hook {} at {} threw ({} of 3)", e.hook.getClass().getName(), stage, e.failures, t);
                 }

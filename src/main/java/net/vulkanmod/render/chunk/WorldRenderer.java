@@ -338,6 +338,7 @@ public class WorldRenderer {
         this.lastCameraSectionZ = Integer.MIN_VALUE;
 
 //        this.entityRenderDispatcher.setLevel(level);
+        if (level == null) dev.elemore.iroh.gpu.game.GpuLifecycle.worldUnloaded(); // api 4: owner dies = Iroh frees
         this.level = level;
         ChunkStatusMap.createInstance(renderDistance);
         if (level != null) {
@@ -395,6 +396,7 @@ public class WorldRenderer {
             return;
         TerrainRenderType terrainRenderType = TerrainRenderType.get(renderType);
         renderType.setupRenderState();
+        if (terrainRenderType == TerrainRenderType.SOLID) dev.elemore.iroh.apiimpl.Sections.captureFog(); // api 4: IrohApi.fogState()
         // td-242adb experiment: -Diroh.debug.terrainNoCull=true draws terrain without GPU back-face culling (pair it with
         // iroh.json "backFaceCulling": false for the per-facing CPU buckets). If the powder-snow column then looks like the
         // OpenGL reference, OpenGL is showing the column's own faces from inside.

@@ -21,4 +21,14 @@ public final class IrohTextures {
     public static DynamicTextureHandle createDynamic(ResourceLocation id, int width, int height, Filter filter, Wrap wrap) {
         return DynamicTextures.create(id, width, height, filter, wrap);
     }
+
+    /** api 4: the block atlas id (bind with {@link IrohDraw#texture}). */
+    public static ResourceLocation blockAtlas() {
+        return net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS;
+    }
+
+    /** api 4: the lightmap texture id (linear filtered, like vanilla's turnOnLightLayer). */
+    public static ResourceLocation lightmap() {
+        return dev.elemore.iroh.compat.LightmapFilter.lightmapLocation();
+    }
 }

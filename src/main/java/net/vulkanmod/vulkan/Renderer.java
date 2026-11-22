@@ -60,6 +60,8 @@ public class Renderer {
     public static void initRenderer() {
         INSTANCE = new Renderer();
         INSTANCE.init();
+        // api 4 (card V-M1): mod GPU buffers / compute / targets on Iroh's device
+        dev.elemore.iroh.gpu.game.GpuLifecycle.install(INSTANCE.framesNum, INSTANCE.swapChain.getWidth(), INSTANCE.swapChain.getHeight());
     }
 
     public static Renderer getInstance() {
@@ -303,6 +305,7 @@ public class Renderer {
         // perf/uploads: the frame that last used this slot finished; complete finished upload epochs (no wait) and make
         // sure everything submitted before that frame is done before the slot's deferred frees run below.
         Synchronization.INSTANCE.frameSlotDone(currentFrame);
+        dev.elemore.iroh.gpu.game.GpuLifecycle.frameStart(currentFrame); // api 4: this slot's descriptor sets are free
 
         // Iroh (rc5, td-08dc9f): the previous frame acquired a swapchain image but never submitted (an exception between
         // acquire and submit, e.g. the td-1cb256 OutOfMemoryError in endFrame). Its acquire semaphore is still signaled;
@@ -366,6 +369,9 @@ public class Renderer {
         // Iroh (td-4a9be3): a new frame command buffer; uses recorded in the previous one have executed or will
         // execute before anything recorded from now on (see VulkanImage.uploadOwned / frameUse).
         net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
+        // api 4 (card V-M1): BEFORE_MAIN_PASS: the frame command buffer records, no render pass is bound (mod compute,
+        // uploads, own passes). Fires every frame, also on menus.
+        dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.BEFORE_MAIN_PASS);
         mainPass.begin(commandBuffer, stack);
 
         resetDynamicState(commandBuffer);
@@ -668,8 +674,10 @@ public class Renderer {
         this.lastResizeW = newW;
         this.lastResizeH = newH;
         this.onResizeCallbacks.forEach(Runnable::run);
-        if (sizeChanged)
+        if (sizeChanged) {
             ((WindowAccessor) (Object) Minecraft.getInstance().getWindow()).getEventHandler().resizeDisplay();
+            dev.elemore.iroh.gpu.game.GpuLifecycle.resize(newW, newH); // api 4 screen-scaled targets
+        }
 
         currentFrame = 0;
     }
