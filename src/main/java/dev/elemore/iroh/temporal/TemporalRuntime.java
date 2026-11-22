@@ -1,5 +1,7 @@
 package dev.elemore.iroh.temporal;
 
+import dev.elemore.iroh.diag.FeatureFailures;
+
 import com.mojang.blaze3d.platform.Window;
 import dev.elemore.iroh.debug.DebugSwitches;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -71,16 +73,20 @@ public final class TemporalRuntime {
     private static final double OBJECT_RANGE = 128.0;
 
     private static boolean warnedPack;
+    private static boolean velocityFailed;
+    private static final VulkanImage[] OUTS = new VulkanImage[4];
+    private static final Matrix4f HAND_MV = new Matrix4f();
 
     /** GameRenderer.render HEAD */
     public static void onRenderHead() {
-        if (!TemporalFrame.ACTIVE && !UpscaleSwitches.mode().on())
+        if (!TemporalFrame.ACTIVE && !UpscaleSwitches.modeSet) // INT-2: one volatile read when off
             return;
         // integration/next: the Navidson pack path and render scale are not combined before card P4-8 (the pack would
         // run at render size on the world image set with no upscale cut point): the pack wins, upscaling stays off
         if (dev.elemore.iroh.shaderpack.runtime.PackRuntime.active()) {
             if (!warnedPack) {
-                Initializer.LOGGER.warn("Iroh upscale: off while the shader pack path runs (pack + upscaler is card P4-8)");
+                Initializer.LOGGER.warn("Iroh upscale: OFF because the Navidson shader pack path is on: the pack wins over render scale "
+                        + "until the pack's own upscaler cut lands (card P4-8); the world renders at window size");
                 warnedPack = true;
             }
             if (!TemporalFrame.ACTIVE)
@@ -147,8 +153,25 @@ public final class TemporalRuntime {
         partialTick = entityPartialTick;
         haveSceneDepth = haveOpaque = false;
         MainPass mp = Renderer.getInstance().getMainPass();
-        if (mp instanceof DefaultMainPass dmp && dmp.beginWorld(TemporalFrame.renderW, TemporalFrame.renderH))
-            TemporalFrame.IN_WORLD = true;
+        try {
+            if (mp instanceof DefaultMainPass dmp && dmp.beginWorld(TemporalFrame.renderW, TemporalFrame.renderH))
+                TemporalFrame.IN_WORLD = true;
+        } catch (RuntimeException e) {
+            // INT-2: world images could not be made (beginWorld allocates before touching the frame): window size
+            offForSession("renderScale", e);
+        }
+    }
+
+    /** INT-2: a render-scale failure: ONE log line, the mode switch goes off, the world renders at window size. */
+    public static void offForSession(String feature, Throwable t) {
+        FeatureFailures.record(feature, t, "render scale and upscaling off for this session (the world renders at window size)");
+        UpscaleSwitches.registerAll();
+        DebugSwitches.set(UpscaleSwitches.MODE, "off");
+    }
+
+    /** DefaultMainPass.endWorld: recordWorldEnd threw; the display set is restored by the caller */
+    public static void worldEndFailed(RuntimeException e) {
+        offForSession("upscale", e);
     }
 
     /** the velocity pass will run this frame (it needs the device features) */
@@ -182,7 +205,7 @@ public final class TemporalRuntime {
     public static void onHand(PoseStack poseStack) {
         if (!velocityFrame())
             return;
-        Matrix4f mv = new Matrix4f(RenderSystem.getModelViewMatrix()).mul(poseStack.last().pose());
+        Matrix4f mv = HAND_MV.set(RenderSystem.getModelViewMatrix()).mul(poseStack.last().pose()); // INT-2: no per-frame Matrix4f
         TemporalFrame.onHand(RenderSystem.getProjectionMatrix(), mv);
     }
 
@@ -297,15 +320,25 @@ public final class TemporalRuntime {
             mergedDepth = ensure(mergedDepth, rw, rh, VK_FORMAT_R32_SFLOAT, st, "merged depth R32F");
             reactive = ensure(reactive, rw, rh, VK_FORMAT_R8_UNORM, st, "reactive mask R8");
             transparency = ensure(transparency, rw, rh, VK_FORMAT_R8_UNORM, st, "transparency+composition mask R8");
-            if (velocityPass == null)
-                velocityPass = new VelocityPass(Vulkan.getVkDevice(), Renderer.getFramesNum());
+            if (velocityPass == null && !velocityFailed) {
+                try {
+                    FeatureFailures.inject("velocity");
+                    velocityPass = new VelocityPass(Vulkan.getVkDevice(), Renderer.getFramesNum());
+                } catch (RuntimeException e) {
+                    velocityFailed = true; // INT-2: no motion vectors for the session: temporal upscalers fall back to bilinear
+                    FeatureFailures.record("velocity", e, "no motion vectors: the upscale stays bilinear for this session");
+                }
+            }
+        }
+        if (TemporalFrame.velocityOn && velocityPass != null && DeviceCaps.velocityCapable() && (worldColor.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0) {
 
             int cs = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             VulkanImage.transitionLayout(stack, cmd, worldDepth, worldDepth.getCurrentLayout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT);
             VulkanImage.transitionLayout(stack, cmd, worldColor, worldColor.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-            for (VulkanImage out : new VulkanImage[]{velocityImage, mergedDepth, reactive, transparency})
+            OUTS[0] = velocityImage; OUTS[1] = mergedDepth; OUTS[2] = reactive; OUTS[3] = transparency; // INT-2: no per-frame array
+            for (VulkanImage out : OUTS)
                 VulkanImage.transitionLayout(stack, cmd, out, out.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, cs, VK_ACCESS_SHADER_WRITE_BIT);
 
@@ -332,7 +365,7 @@ public final class TemporalRuntime {
             velocityPass.record(cmd, Renderer.getCurrentFrame(), f);
 
             int rd = cs | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            for (VulkanImage out : new VulkanImage[]{velocityImage, mergedDepth, reactive, transparency})
+            for (VulkanImage out : OUTS)
                 VulkanImage.transitionLayout(stack, cmd, out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                         cs, VK_ACCESS_SHADER_WRITE_BIT, rd, VK_ACCESS_SHADER_READ_BIT);
             VulkanImage.transitionLayout(stack, cmd, worldColor, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

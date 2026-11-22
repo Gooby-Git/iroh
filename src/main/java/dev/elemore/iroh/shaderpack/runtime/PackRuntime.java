@@ -49,7 +49,8 @@ public final class PackRuntime {
     public static void onWorldStart() {
         PackRuntimeImpl i = impl;
         boolean on = active && i != null && i.fullReady();
-        net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive = on;
+        if (net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive != on) // INT-2: no volatile write per frame when off
+            net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive = on;
     }
 
     /** P3-6 FULL mode, WorldRenderEvents.BEFORE_ENTITIES: shadow + gbuffers + the whole chain, output and depth back */
@@ -70,11 +71,23 @@ public final class PackRuntime {
     /** IrohDebug / startup: switch the pack path on or off (off frees everything) */
     public static synchronized String setEnabled(boolean on) {
         if (on) {
-            if (impl == null)
-                impl = new PackRuntimeImpl();
-            String r = impl.enable();
-            active = impl.usable();
-            return r;
+            try {
+                dev.elemore.iroh.diag.FeatureFailures.inject("pack");
+                if (impl == null)
+                    impl = new PackRuntimeImpl();
+                String r = impl.enable();
+                active = impl.usable();
+                return r;
+            } catch (RuntimeException | LinkageError e) {
+                // INT-2: an exception here used to reach WorldRenderEvents.END (crash): the raster picture stays
+                active = false;
+                net.vulkanmod.render.chunk.WorldRenderer.packTerrainActive = false;
+                try {
+                    if (impl != null) impl.disable();
+                } catch (RuntimeException ignored) {
+                }
+                return "error: " + dev.elemore.iroh.diag.FeatureFailures.record("pack", e, "shader pack path off for this session (raster picture)");
+            }
         }
         active = false;
         if (impl != null)

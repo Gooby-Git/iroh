@@ -177,5 +177,86 @@ final class ApiV4Checks {
             GpuCore.uninstall();
         }
         check.accept("no core installed: api 4 throws UnsupportedOperationException", GpuCore.orNull() == null);
+        phaseSize(check);
+        lazyInstall(check);
+    }
+
+    /**
+     * INT-2 phase-size rule (api 4 + render scale): scaled targets follow the phase they are drawn in; fixed targets
+     * never change; the world phase is render size, the rest window size.
+     */
+    static void phaseSize(BiConsumer<String, Boolean> check) {
+        Rec rec = new Rec();
+        GpuCore core = GpuCore.install(rec);
+        try {
+            core.resize(2560, 1440);                                     // window (display) size
+            RenderTargetHandle lodCol = IrohTargets.createScaled("vista", "lod colour", IrohTargets.Format.RGBA8, 1f);
+            RenderTargetHandle lodDep = IrohTargets.createScaled("vista", "lod depth", IrohTargets.Format.DEPTH32F, 1f);
+            RenderTargetHandle fixed = IrohTargets.create("vista", "fixed", IrohTargets.Format.RGBA8, 64, 64);
+            check.accept("outside the world phase a scaled target is window size", lodCol.width() == 2560 && lodCol.height() == 1440);
+
+            core.setWorldPhase(true, 1706, 960);                         // render scale Quality: world at render size
+            IrohTargets.beginRendering(lodCol, lodDep, true, null, 1f);
+            IrohTargets.endRendering();
+            check.accept("drawn in the world phase: scale 1 target refit to render size 1706x960 (" + lodCol.width() + "x" + lodCol.height() + ")",
+                    lodCol.width() == 1706 && lodCol.height() == 960 && lodDep.width() == 1706 && lodDep.height() == 960);
+            long expectBytes = 1706L * 960 * 4 * 2 + 64L * 64 * 4;
+            check.accept("owner accounting follows the refit (" + IrohBuffers.ownerBytes("vista") + " == " + expectBytes + ")",
+                    IrohBuffers.ownerBytes("vista") == expectBytes);
+            RenderTargetHandle madeInWorld = IrohTargets.createScaled("vista", "half", IrohTargets.Format.R32F, 0.5f);
+            check.accept("created inside the world phase: render size x scale (853x480)", madeInWorld.width() == 853 && madeInWorld.height() == 480);
+            core.resize(1920, 1080);                                     // a window resize while the target is world-sized
+            check.accept("a window resize leaves world-sized targets to their next fit", lodCol.width() == 1706);
+            core.setWorldPhase(true, 1280, 720);                         // new render size (mode or window change)
+            IrohTargets.beginRendering(lodCol, null, true, null, 1f);
+            IrohTargets.endRendering();
+            check.accept("next world-phase draw takes the new render size", lodCol.width() == 1280 && lodCol.height() == 720);
+            core.setWorldPhase(false, 0, 0);
+            long refitsBefore = core.refits();
+            IrohTargets.beginRendering(fixed, null, true, null, 1f);
+            IrohTargets.endRendering();
+            check.accept("fixed-size targets never refit", fixed.width() == 64 && core.refits() == refitsBefore);
+            IrohTargets.beginRendering(lodCol, null, true, null, 1f);
+            IrohTargets.endRendering();
+            check.accept("drawn outside the world phase again: back to window size 1920x1080", lodCol.width() == 1920 && lodCol.height() == 1080);
+            check.accept("colour and depth of different phases are refused, never drawn mismatched",
+                    throwsIae(() -> IrohTargets.beginRendering(madeInWorld, lodDep, true, null, 1f)));
+        } finally {
+            GpuCore.uninstall();
+        }
+    }
+
+    /** INT-2 (RQ-INT1-a): the device is created on the first api-4 call, once; a failed create refuses with the reason. */
+    static void lazyInstall(BiConsumer<String, Boolean> check) {
+        int[] runs = {0};
+        Rec rec = new Rec();
+        GpuCore.setLazyInstaller(() -> { runs[0]++; GpuCore.install(rec); });
+        try {
+            check.accept("lazy: nothing installed before the first call", GpuCore.orNull() == null && runs[0] == 0);
+            IrohBuffers.create("vista", "b", 64, IrohBuffers.STORAGE);
+            IrohBuffers.create("vista", "c", 64, IrohBuffers.STORAGE);
+            check.accept("lazy: the first api-4 call created the device, exactly once", GpuCore.orNull() != null && runs[0] == 1);
+        } finally {
+            GpuCore.uninstall();
+            GpuCore.setLazyInstaller(null);
+        }
+        GpuCore.setLazyInstaller(() -> { runs[0]++; GpuCore.setUnavailableReason("device creation failed: test"); });
+        boolean refused = false;
+        String msg = "";
+        try {
+            IrohBuffers.create("vista", "b", 64, IrohBuffers.STORAGE);
+        } catch (UnsupportedOperationException e) {
+            refused = true;
+            msg = e.getMessage();
+        }
+        boolean refusedAgain = false;
+        try {
+            IrohBuffers.create("vista", "b", 64, IrohBuffers.STORAGE);
+        } catch (UnsupportedOperationException e) {
+            refusedAgain = true;
+        }
+        check.accept("lazy create failed: refused with the reason (" + msg + "), no retry storm", refused && refusedAgain
+                && msg.contains("device creation failed") && runs[0] == 2);
+        GpuCore.setUnavailableReason("no device yet, or capability off");
     }
 }

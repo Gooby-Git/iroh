@@ -53,7 +53,7 @@ public final class TemporalFrame {
     /** P4-1b velocity pass parameters of this frame (objects, hand) */
     public static final VelocityPass.Frame params = new VelocityPass.Frame();
     // hand: P_hand * W (view bob / hurt bob) of this and the previous frame
-    private static final Matrix4d handCur = new Matrix4d(), handPrev = new Matrix4d();
+    private static final Matrix4d handCur = new Matrix4d(), handPrev = new Matrix4d(), HAND_SCRATCH = new Matrix4d();
     private static boolean haveHandCur, haveHandPrev;
     /** hand reprojection of this frame, valid when {@link #handValid} */
     public static final Matrix4d handReproject = new Matrix4d();
@@ -191,7 +191,7 @@ public final class TemporalFrame {
     public static void onHand(Matrix4fc projection, Matrix4fc modelView) {
         if (!ACTIVE)
             return;
-        handCur.set(projection).mul(new Matrix4d().set(modelView));
+        handCur.set(projection).mul(HAND_SCRATCH.set(modelView)); // INT-2: no per-frame Matrix4d
         haveHandCur = true;
     }
 

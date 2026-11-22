@@ -38,11 +38,68 @@ public final class HotPathAudit {
         HOT.put("net/vulkanmod/mixin/profiling/slow/SlowFramesMinecraftM.java", new String[]{"*"});
         HOT.put("net/vulkanmod/mixin/profiling/slow/SlowFramesTaskM.java", new String[]{"*"});
         HOT.put("net/vulkanmod/mixin/profiling/slow/SlowFramesChunkM.java", new String[]{"*"});
+        // INT-2: per-frame / per-update paths of the perf switches and api 4
+        HOT.put("net/vulkanmod/render/chunk/graph/SectionGraph.java", new String[]{"update", "scheduleRebuilds0"});
+        HOT.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java", new String[]{"beginBatch"});
+        HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate"});
+        HOT.put("net/vulkanmod/render/chunk/RenderSection.java", new String[]{"reset"});
+    }
+
+    /**
+     * INT-2: the helpers the hot paths call must return at once through a plain static read when everything is off.
+     * file#method -> the token their FIRST statement must contain; and no switch-map lookup (DebugSwitches) may run
+     * before it. A helper that grows a map lookup or work before its guard fails integrationInertTest.
+     */
+    public static final Map<String, String> CALLEE_GUARD = new LinkedHashMap<>();
+    static {
+        CALLEE_GUARD.put("dev/elemore/iroh/perf/TaskBudget.java#enabled", "PerfSwitches.tasksBudgetOn");
+        CALLEE_GUARD.put("net/vulkanmod/render/chunk/graph/SectionGraph.java#cacheEnabled", "PerfSwitches.graphCacheOn");
+        CALLEE_GUARD.put("net/vulkanmod/render/chunk/graph/SectionGraph.java#rebuildBudget", "PerfSwitches.rebuildBudgetOn");
+        CALLEE_GUARD.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java#beginBatch", "clones.isEmpty()");
+        CALLEE_GUARD.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java#adaptBuilders", "this.adaptive");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#onRenderHead", "UpscaleSwitches.modeSet");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#onRenderTail", "inGameRender");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#onRenderLevelHead", "TemporalFrame.ACTIVE");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#onBeforeHandClear", "TemporalFrame.IN_WORLD");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#onHand", "velocityFrame()");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#velocityFrame", "TemporalFrame.IN_WORLD");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#onBeforeGui", "TemporalFrame.IN_WORLD");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#chainWidth", "TemporalFrame.ACTIVE");
+        CALLEE_GUARD.put("dev/elemore/iroh/temporal/TemporalRuntime.java#chainHeight", "TemporalFrame.ACTIVE");
+        CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/Sections.java#captureFog", "fogWanted");
+        CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/Sections.java#any", "LISTENERS.isEmpty()");
+        CALLEE_GUARD.put("dev/elemore/iroh/gpu/game/GpuLifecycle.java#frameStart", "device");
+        CALLEE_GUARD.put("dev/elemore/iroh/gpu/game/GpuLifecycle.java#worldPhase", "worldPhase = active");
+        CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onWorldEnd", "!active");
+        CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onBeforeEntities", "!active");
+        CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onWorldStart", "impl");
+        CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/FrameHooks.java#dispatch", "FrameProfiler.ON");
+    }
+
+    /** CALLEE_GUARD violations (empty = every helper returns through its plain static read) */
+    public static List<String> calleeViolations(Path src) throws Exception {
+        List<String> bad = new ArrayList<>();
+        for (var e : CALLEE_GUARD.entrySet()) {
+            String[] fm = e.getKey().split("#");
+            List<String> bodies = bodies(Files.readString(src.resolve(fm[0])), fm[1]);
+            if (bodies.isEmpty()) {
+                bad.add(e.getKey() + ": method not found");
+                continue;
+            }
+            for (String b : bodies) {
+                String body = stripComments(b).substring(1).trim();
+                int end = body.indexOf(';');
+                String first = end < 0 ? body : body.substring(0, end);
+                if (!first.contains(e.getValue()) || first.contains("DebugSwitches"))
+                    bad.add(e.getKey() + ": first statement is '" + first.replaceAll("\\s+", " ") + "', expected a plain read of " + e.getValue());
+            }
+        }
+        return bad;
     }
 
     /** feature guards and hook calls: the things that run when everything is off */
     static final Pattern GUARD = Pattern.compile(
-            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|FrameHooks|GpuLifecycle|TemporalRuntime|FrameProfiler|EmuStats)"
+            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
                     + "\\s*\\.\\s*(\\w+)");
 
     public static Map<String, List<String>> audit(Path src) throws Exception {
@@ -60,6 +117,10 @@ public final class HotPathAudit {
                     Matcher pt = Pattern.compile("\\bpackTerrainActive\\b").matcher(stripComments(b));
                     while (pt.find())
                         hits.add("WorldRenderer.packTerrainActive");
+                    // INT-2: unqualified / instance calls of the perf-switch helpers
+                    Matcher uq = Pattern.compile("(?<![\\w.])(cacheEnabled|rebuildBudget)\\s*\\(|\\.(beginBatch)\\s*\\(").matcher(stripComments(b));
+                    while (uq.find())
+                        hits.add(uq.group(1) != null ? "SectionGraph." + uq.group(1) : "RenderRegionBuilder." + uq.group(2));
                 }
                 out.put(e.getKey().replaceAll(".*/", "").replace(".java", "") + "." + m, hits);
             }

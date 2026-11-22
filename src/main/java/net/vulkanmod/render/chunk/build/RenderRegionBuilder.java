@@ -142,7 +142,7 @@ public class RenderRegionBuilder {
     /** Render thread, before a batch of rebuilds is scheduled. */
     public void beginBatch() {
         if (!this.clones.isEmpty()) this.clones.clear();
-        this.cloneCacheOn = dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.CLONE_CACHE);
+        this.cloneCacheOn = dev.elemore.iroh.perf.PerfSwitches.cloneCacheOn; // INT-2: one volatile read
     }
 
     private PalettedContainer<BlockState> cloneOf(LevelChunkSection section, int x, int y, int z) {

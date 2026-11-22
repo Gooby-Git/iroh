@@ -74,7 +74,7 @@ public class SectionGraph {
      */
     /** Runtime switch (PerfSwitches iroh.graph.cache), read once per update into {@link #cacheOn}. */
     public static boolean cacheEnabled() {
-        return dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.GRAPH_CACHE);
+        return dev.elemore.iroh.perf.PerfSwitches.graphCacheOn; // INT-2: one volatile read
     }
 
     private boolean cacheOn;
@@ -380,7 +380,7 @@ public class SectionGraph {
      * (waited-for) rebuilds are never limited. On: -Diroh.graph.rebuildBudget=true (default off).
      */
     static boolean rebuildBudget() {
-        return dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.REBUILD_BUDGET);
+        return dev.elemore.iroh.perf.PerfSwitches.rebuildBudgetOn; // INT-2: one volatile read
     }
 
     /** Pure rule (tested): how many more async rebuilds to schedule this update. */

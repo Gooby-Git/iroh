@@ -34,6 +34,18 @@ public final class UpscaleSwitches {
 
     private static volatile boolean registered;
 
+    /**
+     * INT-2: whether {@link #MODE} is set to anything but off, as ONE volatile read for the per-frame guard
+     * (TemporalRuntime.onRenderHead; was a switch-map lookup + parse every frame). Starts from the -D property and is
+     * kept equal to the registry by MODE's change handler.
+     */
+    public static volatile boolean modeSet = parseOn(System.getProperty(MODE, "off"));
+
+    static boolean parseOn(String v) {
+        ScaleMode m = v == null ? null : ScaleMode.parse(v);
+        return m != null && m.on();
+    }
+
     private UpscaleSwitches() {}
 
     public static void registerAll() {
@@ -43,7 +55,10 @@ public final class UpscaleSwitches {
             if (registered)
                 return;
             DebugSwitches.register(new Switch(MODE, "off", "upscaler quality mode: " + ScaleMode.keys() + " (off = rc14 path, one window-size scene target)",
-                    v -> ScaleMode.parse(v) == null ? "expected one of " + ScaleMode.keys() : null, v -> "ok"));
+                    v -> ScaleMode.parse(v) == null ? "expected one of " + ScaleMode.keys() : null, v -> {
+                        modeSet = parseOn(v);
+                        return "ok";
+                    }));
             DebugSwitches.register(new Switch(SCALE, "1.5", "display/render ratio for mode=custom (1..4)",
                     v -> {
                         try {
@@ -87,6 +102,7 @@ public final class UpscaleSwitches {
                     DebugSwitches.oneOf("auto", "on", "off"), v -> "restart"));
             DebugSwitches.register(new Switch(DEBUG_VIEW, "off", "debug view of an upscaler input: off | velocity | reactive | depth | jitter (needs iroh.upscale.mode)",
                     DebugSwitches.oneOf("off", "velocity", "reactive", "depth", "jitter"), v -> "ok"));
+            modeSet = parseOn(DebugSwitches.getOr(MODE, "off"));
             registered = true;
         }
     }

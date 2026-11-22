@@ -33,7 +33,7 @@ import java.util.function.LongSupplier;
 public final class TaskBudget {
     /** Runtime switch (PerfSwitches), read every frame. */
     public static boolean enabled() {
-        return PerfSwitches.on(PerfSwitches.TASKS_BUDGET);
+        return PerfSwitches.tasksBudgetOn; // INT-2: one volatile read (was a switch-map lookup, 7x per frame)
     }
     static final long MIN_BUDGET_NS = (long) (Double.parseDouble(System.getProperty("iroh.tasks.minBudgetMs", "1")) * 1e6);
     static final long MAX_DELAY_NS = (long) (Double.parseDouble(System.getProperty("iroh.tasks.maxDelayMs", "50")) * 1e6);

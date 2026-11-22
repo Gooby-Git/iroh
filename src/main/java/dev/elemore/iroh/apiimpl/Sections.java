@@ -52,14 +52,34 @@ public final class Sections {
         return s.isCompiled();
     }
 
+    /**
+     * INT-2 (RQ-INT1-a): the per-frame fog snapshot runs only once a mod has asked for it ({@link #fog}); until then
+     * captureFog is one static boolean test (no FogState allocation per frame).
+     */
+    private static volatile boolean fogWanted;
+
     /** WorldRenderer.renderSectionLayer (solid): the fog values the terrain shader reads this frame. */
     public static void captureFog() {
+        if (!fogWanted)
+            return;
         float[] c = com.mojang.blaze3d.systems.RenderSystem.getShaderFogColor();
         fog = new FogState(com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart(), com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd(),
                 com.mojang.blaze3d.systems.RenderSystem.getShaderFogShape().getIndex(), c[0], c[1], c[2], c[3]);
     }
 
     public static FogState fog() {
+        if (!fogWanted) {
+            fogWanted = true; // first ask: start capturing (this frame's terrain, or the next, fills it)
+            try {
+                captureFog(); // render thread (api contract): the fog currently set, so the first answer is not empty
+            } catch (Throwable ignored) {
+            }
+        }
         return fog;
+    }
+
+    /** tests: whether the per-frame capture is armed */
+    public static boolean fogWanted() {
+        return fogWanted;
     }
 }

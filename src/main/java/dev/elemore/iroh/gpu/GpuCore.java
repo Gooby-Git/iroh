@@ -25,10 +25,34 @@ public final class GpuCore {
     public static final double OWNER_SHARE = Double.parseDouble(System.getProperty("iroh.gpu.ownerShare", "0.40"));
 
     private static volatile GpuCore instance;
+    /**
+     * INT-2 (RQ-INT1-a): the game side registers how to create the device here instead of creating it at renderer init;
+     * the first {@link #get} (a mod's first api-4 call) runs it once. Nobody calls api 4 = no device objects, no
+     * per-frame work. Cleared after its one run (success or failure).
+     */
+    private static volatile Runnable lazyInstaller;
+    private static volatile String unavailableReason = "no device yet, or capability off";
+
+    public static void setLazyInstaller(Runnable r) {
+        lazyInstaller = r;
+    }
+
+    /** why {@link #get} throws (the lazy install failed, or no device) */
+    public static void setUnavailableReason(String why) {
+        unavailableReason = why;
+    }
 
     public static GpuCore get() {
         GpuCore c = instance;
-        if (c == null) throw new UnsupportedOperationException("Iroh GPU api 4 is not available (no device yet, or capability off)");
+        if (c == null && lazyInstaller != null) {
+            synchronized (GpuCore.class) {
+                Runnable r = lazyInstaller;
+                lazyInstaller = null;
+                if (instance == null && r != null) r.run();
+            }
+            c = instance;
+        }
+        if (c == null) throw new UnsupportedOperationException("Iroh GPU api 4 is not available (" + unavailableReason + ")");
         return c;
     }
 
@@ -52,6 +76,17 @@ public final class GpuCore {
     private final Map<String, Owner> owners = new LinkedHashMap<>();
     private String lastRefusal;
     private int screenW = 1, screenH = 1;
+    /**
+     * INT-2 phase-size rule (combination of api 4 with render scale, knowledge/api.md "api 4 and render scale"): a SCALED
+     * target follows the size of the frame phase it is drawn in. While Iroh's world phase renders at render size
+     * ({@link #setWorldPhase}), beginRendering / mainDepthCopy on a scaled target fit it to scale x render size; outside
+     * the world phase to scale x window size. A refit recreates the image (contents lost, as on a window resize).
+     * Fixed-size targets never change. Use one scaled target per phase: a target used in both phases is refit twice per
+     * frame (counted in {@link #refits()}).
+     */
+    private boolean worldPhase;
+    private int worldW = 1, worldH = 1;
+    private long refits;
 
     public GpuCore(GpuDevice device) {
         this(device, OWNER_SHARE);
@@ -222,6 +257,8 @@ public final class GpuCore {
         final IrohTargets.Format format;
         int width, height;
         final float scale;
+        /** INT-2: last fitted to the world phase (render size); window resizes then leave it to the next fit */
+        boolean worldSized;
 
         Target(Owner o, String name, IrohTargets.Format format, int w, int h, float scale, Object dev) {
             super(o, name, (long) w * h * format.bytesPerTexel);
@@ -230,6 +267,7 @@ public final class GpuCore {
             this.height = h;
             this.scale = scale;
             this.dev = dev;
+            this.worldSized = scale > 0 && worldPhase;
         }
 
         @Override public IrohTargets.Format format() { return format; }
@@ -406,8 +444,8 @@ public final class GpuCore {
         if (format == null) throw new IllegalArgumentException("format required");
         if (scale > 0) {
             if (scale > 2) throw new IllegalArgumentException("scale 0..2");
-            width = Math.max(1, Math.round(screenW * scale));
-            height = Math.max(1, Math.round(screenH * scale));
+            width = Math.max(1, Math.round((worldPhase ? worldW : screenW) * scale)); // INT-2: size of the phase it is made in
+            height = Math.max(1, Math.round((worldPhase ? worldH : screenH) * scale));
         }
         if (width < 1 || height < 1 || width > 16384 || height > 16384) throw new IllegalArgumentException("target size " + width + "x" + height);
         long bytes = (long) width * height * format.bytesPerTexel;
@@ -424,17 +462,47 @@ public final class GpuCore {
         screenH = Math.max(1, h);
         for (Owner o : owners.values())
             for (Res r : o.live)
-                if (r instanceof Target t && t.scale > 0) {
-                    int nw = Math.max(1, Math.round(screenW * t.scale)), nh = Math.max(1, Math.round(screenH * t.scale));
-                    if (nw == t.width && nh == t.height) continue;
-                    device.destroyImage(t.dev);
-                    o.bytes -= t.bytes;
-                    t.dev = device.createImage(t.name, nw, nh, t.format.vkFormat, t.format.depth);
-                    t.width = nw;
-                    t.height = nh;
-                    t.bytes = (long) nw * nh * t.format.bytesPerTexel;
-                    o.bytes += t.bytes;
-                }
+                if (r instanceof Target t && t.scale > 0 && !t.worldSized)
+                    refit(t, Math.max(1, Math.round(screenW * t.scale)), Math.max(1, Math.round(screenH * t.scale)));
+    }
+
+    /** INT-2: Iroh's world phase opens (render size w x h) or closes. Render thread. */
+    public void setWorldPhase(boolean active, int w, int h) {
+        worldPhase = active;
+        if (active) {
+            worldW = Math.max(1, w);
+            worldH = Math.max(1, h);
+        }
+    }
+
+    public boolean worldPhase() {
+        return worldPhase;
+    }
+
+    /** how many times a scaled target was recreated to follow its phase (diagnostics, tests) */
+    public long refits() {
+        return refits;
+    }
+
+    /** INT-2 phase-size rule: a scaled target takes scale x the CURRENT phase size before it is drawn into. */
+    public void fitPhase(RenderTargetHandle h) {
+        Target t = target(h);
+        if (t.scale <= 0) return;
+        int pw = worldPhase ? worldW : screenW, ph = worldPhase ? worldH : screenH;
+        t.worldSized = worldPhase;
+        refit(t, Math.max(1, Math.round(pw * t.scale)), Math.max(1, Math.round(ph * t.scale)));
+    }
+
+    private void refit(Target t, int nw, int nh) {
+        if (nw == t.width && nh == t.height) return;
+        device.destroyImage(t.dev);
+        t.owner.bytes -= t.bytes;
+        t.dev = device.createImage(t.name, nw, nh, t.format.vkFormat, t.format.depth);
+        t.width = nw;
+        t.height = nh;
+        t.bytes = (long) nw * nh * t.format.bytesPerTexel;
+        t.owner.bytes += t.bytes;
+        refits++;
     }
 
     Target target(RenderTargetHandle h) {
@@ -555,6 +623,8 @@ public final class GpuCore {
     public void beginRendering(RenderTargetHandle color, RenderTargetHandle depth, boolean clear, float[] clearRgba, float clearDepth, GpuBuffer... reads) {
         Target c = color == null ? null : target(color), d = depth == null ? null : target(depth);
         if (c == null && d == null) throw new IllegalArgumentException("a colour or a depth target");
+        if (c != null) fitPhase(c); // INT-2 phase-size rule
+        if (d != null) fitPhase(d);
         if (c != null && c.format.depth) throw new IllegalArgumentException(c.name + " is a depth target");
         if (d != null && !d.format.depth) throw new IllegalArgumentException(d.name + " is not a depth target");
         if (c != null && d != null && (c.width != d.width || c.height != d.height)) throw new IllegalArgumentException("colour and depth sizes differ");

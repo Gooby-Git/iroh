@@ -41,22 +41,28 @@ public final class IntegrationInertTest {
     /** the pinned hot-path list: method -> guard / hook reads it performs when everything is off (count per name) */
     static final Map<String, String> PINNED = new TreeMap<>();
     static {
+        // INT-2 minimal list: every entry is a plain static read (static final, or one volatile/plain static field)
         PINNED.put("Renderer.bindGraphicsPipeline", "");
         PINNED.put("Renderer.preInitFrame", "SlowFrames.ON x2 (static final)");
-        PINNED.put("Renderer.beginFrame0", "SlowFrames.ON x4, GpuLifecycle.frameStart x1 (api 4: vkResetDescriptorPool)");
-        PINNED.put("Renderer.endFrame", "SlowFrames.ON x5, FrameHooks.dispatch x1");
+        PINNED.put("Renderer.beginFrame0", "SlowFrames.ON x4 (static final), GpuLifecycle.frameStart x1 (one volatile null test: api 4 is lazy)");
+        PINNED.put("Renderer.endFrame", "SlowFrames.ON x5 (static final), FrameHooks.dispatch x1 (AFTER_PRESENT: FrameProfiler.ON + empty-array test)");
         PINNED.put("Renderer.beginRendering", "");
         PINNED.put("Framebuffer.beginRenderPass", "");
         PINNED.put("DefaultMainPass.begin", "");
         PINNED.put("DefaultMainPass.rebindMainTarget", "");
-        PINNED.put("WorldRenderer.renderSectionLayer", "WorldRenderer.packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (api 4, solid layer)");
-        PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1");
-        PINNED.put("Pipeline.needsUpdate", "TemporalFrame.MIP_ON x1 (per image descriptor)");
-        PINNED.put("GlState.viewport", "TemporalFrame.IN_WORLD x1");
-        PINNED.put("GlState.applyScissor", "TemporalFrame.IN_WORLD x1");
-        PINNED.put("UniformSlots.jittered", "TemporalFrame.JITTER_ON x1 (per converted-shader ProjMat read)");
-        PINNED.put("TaskBudgetM.*", "TaskBudget.enabled x7 (DebugSwitches map lookup), runAllTasks wrapped (original called), SlowFrames.ON x3");
-        PINNED.put("IrohRenderScaleGameM.*", "TemporalRuntime.onRenderHead/Tail/onRenderLevelHead/onBeforeHandClear/onHand/onBeforeGui: one static read each (+ mode(): map lookup in onRenderHead)");
+        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog)");
+        PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1 (plain static)");
+        PINNED.put("Pipeline.needsUpdate", "TemporalFrame.MIP_ON x1 per image descriptor (plain static; IN_WORLD only read when MIP_ON)");
+        PINNED.put("GlState.viewport", "TemporalFrame.IN_WORLD x1 (plain static)");
+        PINNED.put("GlState.applyScissor", "TemporalFrame.IN_WORLD x1 (plain static)");
+        PINNED.put("UniformSlots.jittered", "TemporalFrame.JITTER_ON x1 per converted-shader ProjMat read (plain static)");
+        PINNED.put("TaskBudgetM.*", "TaskBudget.enabled x7 = PerfSwitches.tasksBudgetOn (one volatile read each; was a switch-map lookup), runAllTasks wrapped (original called), SlowFrames.ON x3");
+        PINNED.put("IrohRenderScaleGameM.*", "TemporalRuntime.onRenderHead (UpscaleSwitches.modeSet volatile) / onRenderTail / onRenderLevelHead / onBeforeHandClear / onHand / onBeforeGui / chainWidth / chainHeight: one plain static read each");
+        PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON");
+        PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
+        PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
+        PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
+        PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
     }
 
     public static void main(String[] args) throws Exception {
@@ -100,7 +106,21 @@ public final class IntegrationInertTest {
                 PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL))
             perfOff &= !PerfSwitches.on(k);
         check("every perf switch off", perfOff);
-        check("api 4 not installed offline (Renderer init installs it in game)", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
+        check("api 4 not installed offline", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
+        // INT-2 (RQ-INT1-a): what Renderer init does in game creates NOTHING until a mod calls api 4
+        dev.elemore.iroh.gpu.game.GpuLifecycle.install(3, 1920, 1080);
+        for (int i = 0; i < 1000; i++) {
+            dev.elemore.iroh.gpu.game.GpuLifecycle.frameStart(i % 3);
+            dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.BEFORE_MAIN_PASS);
+            dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.AFTER_PRESENT);
+        }
+        check("api 4 lazy: Renderer-init install + 1000 frames created no device, no descriptor pool (state "
+                + dev.elemore.iroh.gpu.game.GpuLifecycle.state() + ")", dev.elemore.iroh.gpu.GpuCore.orNull() == null
+                && !dev.elemore.iroh.gpu.game.GpuLifecycle.installed() && dev.elemore.iroh.gpu.game.GpuLifecycle.available());
+        dev.elemore.iroh.gpu.game.GpuLifecycle.resetForTest();
+        check("fog capture not armed (no FogState per frame) until a mod asks", !dev.elemore.iroh.apiimpl.Sections.fogWanted());
+        check("per-frame guards are plain flags and all off", !PerfSwitches.tasksBudgetOn && !PerfSwitches.graphCacheOn
+                && !PerfSwitches.cloneCacheOn && !PerfSwitches.rebuildBudgetOn && !UpscaleSwitches.modeSet);
 
         // --- one registry ---
         check("IrohDebug.set refused without -Dproctor=1 / -Diroh.debug=true", IrohDebug.set(UpscaleSwitches.MODE, "quality").startsWith("refused"));
@@ -126,15 +146,53 @@ public final class IntegrationInertTest {
         check("render-pass begin / main pass begin untouched", audit.get("Renderer.beginRendering").isEmpty()
                 && audit.get("Framebuffer.beginRenderPass").isEmpty() && audit.get("DefaultMainPass.begin").isEmpty()
                 && audit.get("DefaultMainPass.rebindMainTarget").isEmpty());
-        check("renderSectionLayer: pack skip + slow frames + api 4 fog capture only",
-                summarize(audit.get("WorldRenderer.renderSectionLayer")).equals("{Sections.captureFog=1, SlowFrames.ON=2, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, WorldRenderer.packTerrainActive=1}"));
-        check("projection upload: one JITTER_ON read", summarize(audit.get("VRenderSystem.applyProjectionMatrix")).equals("{TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}"));
-        check("frame begin: api 4 frameStart is the only non-guard call", summarize(audit.get("Renderer.beginFrame0")).equals(
-                "{GpuLifecycle.frameStart=1, SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}"));
-        check("frame end: AFTER_PRESENT dispatch + slow-frame guards", summarize(audit.get("Renderer.endFrame")).equals(
-                "{FrameHooks.dispatch=1, SlowFrames.ON=5, SlowFrames.enter=3, SlowFrames.exit=3}"));
-        check("task drain: budget guard + slow-frame guards only", summarize(audit.get("TaskBudgetM.*")).equals(
-                "{SlowFrames.ON=3, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, TaskBudget.enabled=7, TaskBudget.forGame=1, TaskBudget.targetNs=1}"));
+        Map<String, String> expect = new TreeMap<>();
+        expect.put("WorldRenderer.renderSectionLayer", "{Sections.captureFog=1, SlowFrames.ON=2, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, WorldRenderer.packTerrainActive=1}");
+        expect.put("VRenderSystem.applyProjectionMatrix", "{TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}");
+        expect.put("Renderer.beginFrame0", "{GpuLifecycle.frameStart=1, SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");
+        expect.put("Renderer.endFrame", "{FrameHooks.dispatch=1, SlowFrames.ON=5, SlowFrames.enter=3, SlowFrames.exit=3}");
+        expect.put("TaskBudgetM.*", "{SlowFrames.ON=3, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, TaskBudget.enabled=7, TaskBudget.forGame=1, TaskBudget.targetNs=1}");
+        expect.put("SectionGraph.update", "{SectionGraph.cacheEnabled=1, SlowFrames.ON=1, SlowFrames.count=1}");
+        expect.put("SectionGraph.scheduleRebuilds0", "{RenderRegionBuilder.beginBatch=1, SectionGraph.rebuildBudget=1, SlowFrames.ON=1, SlowFrames.count=1}");
+        expect.put("TaskDispatcher.adaptBuilders", "{}");
+        expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
+        expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
+        // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
+        expect.put("Renderer.bindGraphicsPipeline", "{}");
+        expect.put("Renderer.preInitFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
+        expect.put("Renderer.preInitFrame0", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
+        expect.put("Renderer.beginFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
+        expect.put("Renderer.beginRendering", "{}");
+        expect.put("Renderer.endRenderPass", "{}");
+        expect.put("Framebuffer.beginRenderPass", "{}");
+        expect.put("SceneTarget.getFramebufferId", "{}");
+        expect.put("DefaultMainPass.begin", "{}");
+        expect.put("DefaultMainPass.end", "{}");
+        expect.put("DefaultMainPass.rebindMainTarget", "{}");
+        expect.put("Pipeline.needsUpdate", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.mipBias=1}");
+        expect.put("Pipeline.updateDescriptorSet", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.mipBias=1}");
+        expect.put("GlState.viewport", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
+        expect.put("GlState.applyScissor", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
+        expect.put("UniformSlots.jittered", "{TemporalFrame.IN_WORLD=1, TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}");
+        expect.put("WorldStages.register", "{FrameHooks.dispatch=7, FrameHooks.setInWorld=2, FrameHooks.setWorld=1, PackRuntime.onBeforeEntities=1, PackRuntime.onWorldEnd=1, PackRuntime.onWorldStart=1, TemporalFrame.IN_WORLD=2, TemporalRuntime.onAfterEntities=1, TemporalRuntime.onWorldStart=1}");
+        expect.put("IrohRenderScaleGameM.*", "{TemporalRuntime.chainHeight=1, TemporalRuntime.chainWidth=1, TemporalRuntime.onBeforeGui=1, TemporalRuntime.onBeforeHandClear=1, TemporalRuntime.onHand=1, TemporalRuntime.onRenderHead=1, TemporalRuntime.onRenderLevelHead=1, TemporalRuntime.onRenderTail=1}");
+        expect.put("IrohRenderScaleLevelM.*", "{TemporalRuntime.chainHeight=1, TemporalRuntime.chainWidth=1}");
+        expect.put("SlowFramesGameRendererM.*", "{SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");
+        expect.put("SlowFramesLevelM.*", "{SlowFrames.ON=10, SlowFrames.count=1, SlowFrames.enter=5, SlowFrames.exit=5}");
+        expect.put("SlowFramesLevel2M.*", "{SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");
+        expect.put("SlowFramesMinecraftM.*", "{SlowFrames.ON=7, SlowFrames.count=1, SlowFrames.enter=2, SlowFrames.exit=2, SlowFrames.frameEnd=1, SlowFrames.frameStart=1, SlowFrames.quit=1, SlowFrames.set=3, SlowStacks.ON=1, SlowStacks.setWorldActive=1}");
+        expect.put("SlowFramesTaskM.*", "{SlowFrames.ON=2, SlowFrames.now=2, SlowFrames.task=1}");
+        expect.put("SlowFramesChunkM.*", "{SlowFrames.ON=2, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1}");
+        expect.put("RenderRegionBuilder.beginBatch", "{PerfSwitches.cloneCacheOn=1}");
+        check("every audited hot path is pinned (" + audit.size() + ")", expect.keySet().containsAll(audit.keySet()));
+        for (var e : expect.entrySet()) {
+            String got = summarize(audit.get(e.getKey()));
+            check("hot path " + e.getKey() + " = pinned " + e.getValue() + " (got " + got + ")", got.equals(e.getValue()));
+        }
+        List<String> callee = HotPathAudit.calleeViolations(Path.of("src/main/java"));
+        callee.forEach(v -> System.out.println("  callee: " + v));
+        check("every helper a hot path calls returns through ONE plain static read when off (" + HotPathAudit.CALLEE_GUARD.size() + " helpers)", callee.isEmpty());
+        check("no hot path or helper reads the switch map (DebugSwitches) per frame", audit.values().stream().flatMap(List::stream).noneMatch(x -> x.startsWith("DebugSwitches")));
 
         System.out.println("# integrationinert " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
