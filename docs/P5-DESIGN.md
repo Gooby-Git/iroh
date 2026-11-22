@@ -272,3 +272,25 @@ compute-queue build executor.
   would still need a second attachment; the MRT target costs 16 B/px (25 MiB at 1707x960) and one more colour write in
   the terrain pass (ESTIMATE 0.1-0.3 ms), and the mesher must write tint-only vertex colour in RT mode (face shade + AO
   out of the colour, rt-iroh.md trap) and the atlas must be read as sRGB (P5-1 trap).
+
+## 14. P5-3 entities (built offline; `./gradlew rtEntities`, numbers in knowledge/rt-iroh.md "P5-3 entities")
+
+Unchanged choice, now built: one BLAS per rigid (model, part) built once; each frame one TLAS instance per admitted part with its
+full 3x4 pose (`RtAccel.Instance(float[12], ...)`); hit normals from the triangle through the instance's object-to-world
+matrix; the G-buffer draws posed parts with current AND previous pose (object motion vectors). Masks: entities SOLID|ENTITY;
+the first-person player's body SELF only (shadow + reflection rays include SELF, GI rays do not); the first-person hand and held
+item never enter the TLAS. Budget (`RtEntityBudget`): 48 blocks, nearest 64 entities, 512 part instances, 32 refit entities
+(free-form renderers: ALLOW_UPDATE BLAS, refit per frame, rebuilt every 30), 15% hysteresis. Changed by measurement: the own
+denoiser's shadow lag guard now resets fully on a decisive flip (a moving entity shadow trailed 3 frames otherwise).
+Game side still to build: ModelPart capture into the per-part BLAS cache (16-byte vertex, part-local), the entity render list
+-> budget -> instances, previous pose per (entity, part) (`RtEntityBudget.Motion`), the entity MRT G-buffer draw.
+
+## 15. P5-3 many lights (built offline; `./gradlew rtLights`, numbers in knowledge/rt-iroh.md "P5-3 many lights")
+
+Built: per-section light grid (`RtLightGrid`, 3x3x3 neighbourhood candidates weighted power/(d^2+4)) mixed 50/50 with the global
+power CDF (mixture pdf: no range cutoff, unbiased; a grid-only variant = a range cut measured -6% in a 48-block hall) and ReSTIR
+DI temporal reuse (`restir.comp`, Bitterli et al. 2020; unshadowed area-measure target, 1/Z, one visibility ray, dead history
+dropped, stored samples re-validated against their light). All presets use it (same rays per pixel as RIS; per-frame error 2-4x
+lower than RIS at 1 ray, better than RIS at 8 rays). Spatial reuse and visibility reuse are built behind switches and OFF
+(measured biased). Game side: each section owns a stable slot range of the light list (removed quads = power-0 slots) so a
+remesh rebuilds only the 27 cells around it (0.12 ms CPU measured) and never renumbers other lights; full rebuild on compaction.
