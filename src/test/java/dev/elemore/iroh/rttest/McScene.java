@@ -79,10 +79,10 @@ public final class McScene {
         return new float[]{x / (z * a * t) * 0.5f + 0.5f, 0.5f - y / (z * t) * 0.5f, z};
     }
 
-    static float[] primaryDir(int f, float x, float y) {          // pixel coordinates (continuous, x right, y down)
+    static float[] primaryDir(int f, float x, float y, int w, int h) {          // pixel coordinates (continuous, x right, y down)
         float[][] b = basis(f);
         float t = (float) Math.tan(Math.toRadians(60) / 2), a = (float) W / H;
-        float sx = (2 * (x / W) - 1) * a * t, sy = (1 - 2 * (y / H)) * t;
+        float sx = (2 * (x / w) - 1) * a * t, sy = (1 - 2 * (y / h)) * t;
         return norm(new float[]{b[0][0] * sx + b[1][0] * sy + b[2][0], b[0][1] * sx + b[1][1] * sy + b[2][1], b[0][2] * sx + b[1][2] * sy + b[2][2]});
     }
 
@@ -133,20 +133,30 @@ public final class McScene {
     }
 
     public static final class Frame {
-        public final float[] viewZ = new float[W * H], normal = new float[W * H * 3], albedo = new float[W * H * 3], radiance = new float[W * H * 3];
-        public float[] mv = new float[W * H * 2];
-        public final int[] id = new int[W * H];
+        public final int w, h;
+        public final float[] viewZ, normal, albedo, radiance;
+        public float[] mv;
+        public final int[] id;
+
+        Frame(int w, int h) {
+            this.w = w; this.h = h;
+            viewZ = new float[w * h]; normal = new float[w * h * 3]; albedo = new float[w * h * 3]; radiance = new float[w * h * 3]; mv = new float[w * h * 2]; id = new int[w * h];
+        }
     }
 
     /** torchOn: intensity multiplier of the torch (before flicker); jitter in pixels (content shifts by +jitter). */
     public static Frame render(int f, int spp, int seedBase, float torchOn, float jx, float jy) {
-        Frame fr = new Frame();
+        return render(W, H, f, spp, seedBase, torchOn, jx, jy);
+    }
+
+    public static Frame render(int rw, int rh, int f, int spp, int seedBase, float torchOn, float jx, float jy) {
+        Frame fr = new Frame(rw, rh);
         float[][] bx = boxesFixed(f), bp = boxesFixed(Math.max(0, f - 1));
         float[] e = eye(f);
-        IntStream.range(0, H).parallel().forEach(j -> {
-            for (int i = 0; i < W; i++) {
-                int px = j * W + i;
-                float[] d = primaryDir(f, i + 0.5f - jx, j + 0.5f - jy);
+        IntStream.range(0, rh).parallel().forEach(j -> {
+            for (int i = 0; i < rw; i++) {
+                int px = j * rw + i;
+                float[] d = primaryDir(f, i + 0.5f - jx, j + 0.5f - jy, rw, rh);
                 float[] h = trace(e, d, bx, 1e9f);
                 if (h[1] == 0) { fr.viewZ[px] = 100000f; continue; }
                 float[] p = {e[0] + d[0] * h[0], e[1] + d[1] * h[0], e[2] + d[2] * h[0]};
