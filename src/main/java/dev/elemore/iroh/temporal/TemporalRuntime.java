@@ -214,8 +214,10 @@ public final class TemporalRuntime {
                 continue;
             double yaw = e instanceof LivingEntity le ? Mth.rotLerp(partialTick, le.yBodyRotO, le.yBodyRot) : e.getViewYRot(partialTick);
             AABB b = e.getBoundingBox().move(p.x - e.getX(), p.y - e.getY(), p.z - e.getZ());
+            // living things: +0.6 on top so the name tag (drawn above the head, moves with it) takes the object's motion
+            double top = e instanceof LivingEntity ? 0.6 : 0.0;
             TemporalFrame.objects.submit((long) e.getId() << 8, p.x, p.y, p.z, yaw,
-                    new double[]{b.minX, b.minY, b.minZ}, new double[]{b.maxX, b.maxY, b.maxZ});
+                    new double[]{b.minX, b.minY, b.minZ}, new double[]{b.maxX, b.maxY + top, b.maxZ});
         }
     }
 

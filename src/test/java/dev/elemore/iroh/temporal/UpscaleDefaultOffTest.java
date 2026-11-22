@@ -62,6 +62,9 @@ public final class UpscaleDefaultOffTest {
         check("ProjMat float[] untouched", java.util.Arrays.equals(a, b));
         int[] r = {0, 0, 2560, 1440};
         check("viewport untouched", !TemporalFrame.fixRect(r) && r[2] == 2560 && r[3] == 1440);
+        check("P4-1b: no object history, no hand, no FSR memory counted while off", TemporalFrame.objects.historySize() == 0
+                && !TemporalFrame.handValid && dev.elemore.iroh.memory.MemoryGuard.EXTERNAL.get() == 0 && !DeviceCaps.configRequested);
+        check("P4-1b: FSR not usable without the device features (no native load attempted through the adapter)", !FsrAdapter.INSTANCE.usable());
         check("post chains keep the window size", TemporalRuntime.chainWidth(2560) == 2560 && TemporalRuntime.chainHeight(1440) == 1440);
 
         MappedBuffer vanilla = new MappedBuffer(64);
@@ -111,7 +114,8 @@ public final class UpscaleDefaultOffTest {
                 "net/vulkanmod/vulkan/pass/DefaultMainPass.java", "dev/elemore/iroh/apiimpl/WorldStages.java",
                 "net/vulkanmod/vulkan/device/DeviceManager.java", "net/vulkanmod/vulkan/Vulkan.java",
                 "net/vulkanmod/mixin/render/upscale/IrohRenderScaleGameM.java", "net/vulkanmod/mixin/render/upscale/IrohRenderScaleLevelM.java",
-                "dev/elemore/iroh/api/IrohDebug.java", "net/vulkanmod/vulkan/framebuffer/SceneTarget.java"));
+                "dev/elemore/iroh/api/IrohDebug.java", "net/vulkanmod/vulkan/framebuffer/SceneTarget.java",
+                "dev/elemore/iroh/config/IrohOptions.java"));
         Set<String> found = new TreeSet<>();
         Path root = Path.of("src/main/java");
         for (Path p : Files.walk(root).filter(p -> p.toString().endsWith(".java") && !p.toString().contains("dev/elemore/iroh/temporal/") && !p.toString().contains("dev/elemore/iroh/upscale/")).toList())
