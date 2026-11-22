@@ -25,6 +25,8 @@ import java.nio.ByteOrder;
 public final class WideTerrainVertex {
 
     public static final int BYTES = 36;
+    /** gl_TextureMatrix[0] scale for uv0 read as UNORM16 (stored x32768) */
+    public static final double UV0_TO_UNIT = 65535.0 / 32768.0;
     public static final int QUAD_BYTES = 4 * BYTES;
     static final float POS_OFFSET = -4.0f;
 
@@ -53,8 +55,10 @@ public final class WideTerrainVertex {
             int light = q.light()[i];
             b.put(o + 6, (byte) (light & 0xFF));
             b.put(o + 7, (byte) ((light >>> 16) & 0xFF));
-            b.putShort(o + 8, unorm16(q.uv()[2 * i]));
-            b.putShort(o + 10, unorm16(q.uv()[2 * i + 1]));
+            // P3-6: uv0 on the compressed format's x32768 grid (the raster fallback reads these 16 bytes as-is); the
+            // pack pipeline reads it as UNORM16 and gl_TextureMatrix[0] scales by 65535/32768 (UV0_TO_UNIT)
+            b.putShort(o + 8, (short) (q.uv()[2 * i] * 32768f));
+            b.putShort(o + 10, (short) (q.uv()[2 * i + 1] * 32768f));
             int c = q.argb()[i];
             float ao = q.ao()[i];
             float r = ((c >> 16) & 0xFF) / 255f, g = ((c >> 8) & 0xFF) / 255f, bl = (c & 0xFF) / 255f;

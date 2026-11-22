@@ -151,6 +151,39 @@ public class BlockRenderer extends AbstractBlockRenderContext {
         }
     }
 
+    /** Iroh P3-6: sections are meshed in the 36-byte pack vertex (startup-only, -Diroh.pack.mode=full) */
+    private static final boolean PACK_WIDE = net.vulkanmod.render.PipelineManager.terrainVertexFormat
+            == net.vulkanmod.render.vertex.CustomVertexFormat.PACK_WIDE_TERRAIN;
+
+    /** the per-quad fields the 16-byte vertex() call does not carry: sprite bounds (from the quad's uvs, as Iris'
+     *  mc_midTexCoord is the quad's uv centre), block origin in the section, face normal, emission, block id, layer */
+    private void packQuadContext(ModelQuadView quad, int startIdx, TerrainRenderType target) {
+        var c = dev.elemore.iroh.shaderpack.mesh.WideVertexBuilder.CONTEXT.get();
+        float u0 = Float.MAX_VALUE, v0 = Float.MAX_VALUE, u1 = -Float.MAX_VALUE, v1 = -Float.MAX_VALUE;
+        for (int i = 0; i < 4; i++) {
+            u0 = Math.min(u0, quad.getU(i));
+            u1 = Math.max(u1, quad.getU(i));
+            v0 = Math.min(v0, quad.getV(i));
+            v1 = Math.max(v1, quad.getV(i));
+        }
+        c.sprite[0] = u0;
+        c.sprite[1] = v0;
+        c.sprite[2] = u1;
+        c.sprite[3] = v1;
+        c.blockOrigin[0] = this.blockPos.getX() & 15;
+        c.blockOrigin[1] = this.blockPos.getY() & 15;
+        c.blockOrigin[2] = this.blockPos.getZ() & 15;
+        Vec3i n = quad.getFacingDirection().getNormal();
+        c.normal[0] = n.getX();
+        c.normal[1] = n.getY();
+        c.normal[2] = n.getZ();
+        c.emission = this.blockState.getLightEmission();
+        final net.minecraft.world.level.block.Block block = this.blockState.getBlock();
+        c.blockId = dev.elemore.iroh.shaderpack.runtime.PackStartup.blockId(block,
+                () -> net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(block).toString());
+        c.renderType = target.ordinal();
+    }
+
     public void bufferQuad(TerrainBuilder terrainBuilder, Vector3f pos, ModelQuadView quad, QuadLightData quadLightData) {
         QuadFacing quadFacing = quad.getQuadFacing();
 
@@ -175,6 +208,8 @@ public class BlockRenderer extends AbstractBlockRenderContext {
         int idx = QuadUtils.getIterationStartIdx(brightnessArr, lights);
 
         bufferBuilder.ensureCapacity();
+        if (PACK_WIDE)
+            packQuadContext(quad, idx, target);
 
         for (byte i = 0; i < 4; ++i) {
             final float x = pos.x() + quad.getX(idx);

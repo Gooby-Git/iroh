@@ -641,7 +641,8 @@ public final class FrameExecutor {
     }
 
     /** gl_TextureMatrix[0] identity, [1] the lightmap matrix (0..240 raw light -> texel centres of the 16x16 lightmap) */
-    static final double[] LIGHTMAP_TEXTURE_MATRICES = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+    static final double[] LIGHTMAP_TEXTURE_MATRICES = {dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.UV0_TO_UNIT, 0, 0, 0,
+            0, dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.UV0_TO_UNIT, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
             1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 0, 0, 0, 1 / 256.0, 0, 8 / 256.0, 8 / 256.0, 8 / 256.0, 1};
 
     /** Iris renderStage constants (MC_RENDER_STAGE_*) for the classes Iroh draws; 0 = none */

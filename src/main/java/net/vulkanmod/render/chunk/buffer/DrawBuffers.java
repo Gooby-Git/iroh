@@ -141,7 +141,7 @@ public class DrawBuffers {
     }
 
     // TODO: refactor
-    public static final float POS_OFFSET = PipelineManager.terrainVertexFormat == CustomVertexFormat.COMPRESSED_TERRAIN ? 4.0f : 0.0f;
+    public static final float POS_OFFSET = CustomVertexFormat.compressedLayout(PipelineManager.terrainVertexFormat) ? 4.0f : 0.0f;
 
     private void updateChunkAreaOrigin(VkCommandBuffer commandBuffer, Pipeline pipeline, double camX, double camY, double camZ, MemoryStack stack) {
         float xOffset = (float) ((this.origin.x) + POS_OFFSET - camX);

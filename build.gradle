@@ -538,3 +538,13 @@ tasks.register('packFullTest', JavaExec) {
 	jvmArgs '-Xmx4g', '-Djava.awt.headless=true', '-Ddebug=' + (project.findProperty('debug') ?: 'false')
 	workingDir = projectDir
 }
+
+// P3-6: 36-byte pack sections through the real builder path keep the 16-byte layout's first 16 bytes. ./gradlew sectionFormatTest
+tasks.register('sectionFormatTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack-wide vs compressed section vertices'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.SectionFormatTest'
+	workingDir = projectDir
+}

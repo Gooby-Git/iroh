@@ -46,7 +46,7 @@ public final class WideVertexTest {
         }
         check("light block/sky v0 = 240/176", (b.get(6) & 0xFF) == 240 && (b.get(7) & 0xFF) == 176);
         check("light v2 = 48/240", (b.get(2 * 36 + 6) & 0xFF) == 48 && (b.get(2 * 36 + 7) & 0xFF) == 240);
-        check("uv0 v1 = 0.25, 0.5625", (b.getShort(36 + 8) & 0xFFFF) == Math.round(0.25f * 65535) && (b.getShort(36 + 10) & 0xFFFF) == Math.round(0.5625f * 65535));
+        check("uv0 v1 = 0.25, 0.5625 on the x32768 grid (P3-6)", (b.getShort(36 + 8) & 0xFFFF) == (int) (0.25f * 32768) && (b.getShort(36 + 10) & 0xFFFF) == (int) (0.5625f * 32768));
         check("separateAo: alpha = AO 0.5", (b.get(36 + 15) & 0xFF) == 128 && (b.get(36 + 12) & 0xFF) == 255);
         check("tint kept in rgb (v2 grey 0x80)", (b.get(2 * 36 + 12) & 0xFF) == 0x80);
         check("normal +Y", b.get(16) == 0 && b.get(17) == 127 && b.get(18) == 0);
