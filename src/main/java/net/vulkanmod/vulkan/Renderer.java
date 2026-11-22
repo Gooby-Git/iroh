@@ -84,8 +84,21 @@ public class Renderer {
     }
 
     private final Set<Pipeline> usedPipelines = new ObjectOpenHashSet<>();
-    private Pipeline boundPipeline;
-    private long boundPipelineHandle;
+    // Iroh (int-2b, td-0cc003): bound pipeline + depth bias / line width of the frame command buffer, by the Vulkan
+    // dynamic-state rules (dev.elemore.iroh.render.CmdState; offline: passResumeTest)
+    private final dev.elemore.iroh.render.CmdState cmdState = new dev.elemore.iroh.render.CmdState(new dev.elemore.iroh.render.CmdState.Backend() {
+        public void bindPipeline(long handle) {
+            vkCmdBindPipeline(currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, handle);
+        }
+
+        public void depthBias(float constant, float slope) {
+            vkCmdSetDepthBias(currentCmdBuffer, constant, 0.0f, slope);
+        }
+
+        public void lineWidth(float width) {
+            vkCmdSetLineWidth(currentCmdBuffer, width);
+        }
+    });
 
     private Drawer drawer;
 
@@ -121,7 +134,7 @@ public class Renderer {
         }
         VkCommandBuffer cb = recordingCommandBuffer("setLineWidth");
         if (cb == null) return;
-        vkCmdSetLineWidth(cb, width);
+        INSTANCE.cmdState.setLineWidth(width); // int-2b: deferred while the bound pipeline makes line width static
     }
 
     private void init() {
@@ -383,6 +396,7 @@ public class Renderer {
         }
 
         recordingCmds = true;
+        cmdState.forgetBinding(); // int-2b: a new command buffer has nothing bound (flushCmds kept a stale handle before)
         // Iroh (P1-13a): GPU timestamps start outside the render pass
         if (dev.elemore.iroh.apiimpl.FrameProfiler.ON)
             dev.elemore.iroh.apiimpl.FrameProfiler.frameStart(commandBuffer, currentFrame);
@@ -394,7 +408,7 @@ public class Renderer {
         dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.BEFORE_MAIN_PASS);
         mainPass.begin(commandBuffer, stack);
 
-        resetDynamicState(commandBuffer);
+        cmdState.newCommandBuffer(); // depth bias 0, line width 1 (was resetDynamicState)
 
         // Iroh (P1-13a): frame hooks, FRAME_BEGIN (main target bound, nothing drawn yet)
         dev.elemore.iroh.apiimpl.FrameHooks.beginFrame(Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false),
@@ -629,10 +643,17 @@ public class Renderer {
         StagingBuffer.flushConsumersAndReset();
     }
 
-    /** Iroh (G1 fix): something recorded its own pipeline into the frame command buffer: the next bind must not be skipped */
+    /**
+     * Iroh (G1 fix; int-2b): something bound its own graphics pipeline into the frame command buffer: the next bind must
+     * not be skipped and depth bias / line width are undefined (set again at the next bind that declares them).
+     */
     public void invalidateBoundState() {
-        boundPipeline = null;
-        boundPipelineHandle = 0;
+        cmdState.foreign();
+    }
+
+    /** int-2b: bound pipeline + dynamic state of the frame command buffer (PassResume restores Iroh's bind through it) */
+    public dev.elemore.iroh.render.CmdState cmdState() {
+        return cmdState;
     }
 
     private void resetDescriptors() {
@@ -641,8 +662,7 @@ public class Renderer {
         }
 
         usedPipelines.clear();
-        boundPipeline = null;
-        boundPipelineHandle = 0;
+        cmdState.forgetBinding();
     }
 
     void waitForSwapChain() {
@@ -751,13 +771,12 @@ public class Renderer {
         PipelineState currentState = PipelineState.getCurrentPipelineState(boundRenderPass);
         final long handle = pipeline.getHandle(currentState);
 
-        if (boundPipelineHandle == handle) {
+        if (cmdState.boundHandle() == handle) {
             return;
         }
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, handle);
-        boundPipelineHandle = handle;
-        boundPipeline = pipeline;
+        // int-2b: records the bind, then the depth bias / line width this pipeline declares and that are stale
+        cmdState.bind(handle, GraphicsPipeline.dynamicStates(currentState), pipeline);
         addUsedPipeline(pipeline);
     }
 
@@ -784,7 +803,7 @@ public class Renderer {
     }
 
     public Pipeline getBoundPipeline() {
-        return boundPipeline;
+        return (Pipeline) cmdState.boundOwner();
     }
 
     public void setBoundFramebuffer(Framebuffer framebuffer) {
@@ -815,17 +834,11 @@ public class Renderer {
         return swapChain;
     }
 
-    private static void resetDynamicState(VkCommandBuffer commandBuffer) {
-        vkCmdSetDepthBias(commandBuffer, 0.0F, 0.0F, 0.0F);
-
-        vkCmdSetLineWidth(commandBuffer, 1.0F);
-    }
-
     public static void setDepthBias(float constant, float slope) {
         VkCommandBuffer commandBuffer = recordingCommandBuffer("setDepthBias");
         if (commandBuffer == null) return;
 
-        vkCmdSetDepthBias(commandBuffer, constant, 0.0f, slope);
+        INSTANCE.cmdState.setDepthBias(constant, slope); // int-2b: deferred while a foreign pipeline may be bound
     }
 
     public static void clearAttachments(int v) {

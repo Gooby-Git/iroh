@@ -52,6 +52,17 @@ public class GraphicsPipeline extends Pipeline {
         PIPELINES.add(this);
     }
 
+    /**
+     * int-2b: the depth bias / line width bits (CmdState) the pipeline created for {@code state} declares dynamic.
+     * Viewport and scissor are dynamic in every pipeline. Used at creation and at every bind (Renderer).
+     */
+    public static int dynamicStates(PipelineState state) {
+        int ars = state.assemblyRasterState;
+        return PipelineState.AssemblyRasterState.decodeTopology(ars) == VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                || PipelineState.AssemblyRasterState.decodePolygonMode(ars) == VK_POLYGON_MODE_LINE
+                ? dev.elemore.iroh.render.CmdState.ALL : dev.elemore.iroh.render.CmdState.DEPTH_BIAS;
+    }
+
     public long getHandle(PipelineState state) {
         return graphicsPipelines.computeIfAbsent(state, this::createGraphicsPipeline);
     }
@@ -164,7 +175,7 @@ public class GraphicsPipeline extends Pipeline {
             VkPipelineDynamicStateCreateInfo dynamicStates = VkPipelineDynamicStateCreateInfo.calloc(stack);
             dynamicStates.sType(VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
 
-            if (topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || polygonMode == VK_POLYGON_MODE_LINE) {
+            if ((dynamicStates(state) & dev.elemore.iroh.render.CmdState.LINE_WIDTH) != 0) { // int-2b: one source with the bind
                 dynamicStates.pDynamicStates(
                         stack.ints(VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
                                    VK_DYNAMIC_STATE_LINE_WIDTH));

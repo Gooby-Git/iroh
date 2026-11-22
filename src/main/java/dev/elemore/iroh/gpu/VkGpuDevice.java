@@ -36,6 +36,12 @@ public abstract class VkGpuDevice implements GpuDevice {
     /** Run {@code r} once the GPU no longer uses what it frees. */
     protected abstract void deferFree(Runnable r);
 
+    /**
+     * int-2b (td-0cc003): a graphics pipeline was bound into {@link #cmd()}. On Iroh's frame command buffer this voids
+     * the renderer's bound pipeline and its depth bias / line width (CmdState.foreign); nothing on a private one.
+     */
+    protected void graphicsPipelineBound() {}
+
     protected abstract long sampler();
 
     /** A buffer: Vulkan handle, size, the subclass' allocation. */
@@ -262,6 +268,8 @@ public abstract class VkGpuDevice implements GpuDevice {
     private void bind(MemoryStack s, Pipe p, Object[] buffers, Object[] textures, ByteBuffer push, int bindPoint, int pushStages) {
         VkCommandBuffer c = cmd();
         vkCmdBindPipeline(c, bindPoint, p.pipeline);
+        if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS)
+            graphicsPipelineBound();
         int n = p.storage + p.textures;
         if (n > 0) {
             long set = allocateSet(p.setLayout);

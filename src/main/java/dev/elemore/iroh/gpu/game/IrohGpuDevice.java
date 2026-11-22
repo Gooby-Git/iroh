@@ -86,6 +86,11 @@ public final class IrohGpuDevice extends VkGpuDevice {
     }
 
     @Override
+    protected void graphicsPipelineBound() {
+        Renderer.getInstance().invalidateBoundState(); // int-2b: the next Iroh draw binds again and sets its dynamic state
+    }
+
+    @Override
     protected long allocateSet(long layout) {
         try (MemoryStack s = stackPush()) {
             LongBuffer lb = s.mallocLong(1);
