@@ -100,7 +100,12 @@ tasks.withType(AbstractArchiveTask).configureEach {
 	reproducibleFileOrder = true
 }
 
+// P4-2a: prebuilt natives (iroh-native/build-fsr.sh) go into the jar under natives/<os>-<arch>/ when they exist; the Gradle
+// build never needs the native toolchain, and without them the FSR feature reports "unavailable".
+def irohNatives = file('iroh-native/natives')
 jar {
+	if (irohNatives.exists()) from(irohNatives) { into 'natives' }
+	from("THIRD_PARTY.md") { into 'META-INF/iroh' }
 	from("LICENSE") {
 		rename { "${it}_${project.base.archivesName.get()}"}
 	}
@@ -348,6 +353,45 @@ tasks.register('chunkDeferTest', JavaExec) {
 	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
 }
 
+// Lavapipe (CPU Vulkan; never the GPU) for offline Vulkan tests: a system lavapipe ICD if installed (vulkan-swrast),
+// else the libvulkan_lvp.so of an installed flatpak GL runtime (system or user installation), used in place through an
+// ICD file under build/lvp (nothing is installed). Shared by velocityGoldenTest, fsrReplay and upscaleGoldenTest.
+def useLavapipe = { JavaExec t ->
+	def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
+	def icd = null
+	def ld = null
+	if (sys != null) {
+		icd = sys
+	} else {
+		def lvp = null
+		['/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64',
+		 System.getProperty('user.home') + '/.local/share/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64'].each { root ->
+			def r = new File(root)
+			if (lvp == null && r.isDirectory()) r.eachDirRecurse { d ->
+				def f = new File(d, 'libvulkan_lvp.so')
+				if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
+			}
+		}
+		if (lvp == null) throw new GradleException('no lavapipe found: install the vulkan-swrast package (owner) or a flatpak GL runtime')
+		def dir = file("${buildDir}/lvp/lib")
+		dir.mkdirs()
+		lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
+			def link = new File(dir, src.name)
+			link.delete()
+			java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
+		}
+		def json = file("${buildDir}/lvp/lvp_icd.json")
+		json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
+		icd = json.absolutePath
+		ld = dir.absolutePath
+	}
+	t.environment 'VK_DRIVER_FILES', icd
+	t.environment 'VK_ICD_FILENAMES', icd
+	t.environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
+	if (ld != null) t.environment 'LD_LIBRARY_PATH', ld
+	t.logger.lifecycle("${t.name}: lavapipe ICD ${icd}")
+}
+
 // P4-1a upscaler-input maths: render sizes, SDK jitter, projection jitter + Y sign, motion vectors. ./gradlew temporalMathTest
 // last line "# temporalmath PASS n/n"
 tasks.register('temporalMathTest', JavaExec) {
@@ -370,9 +414,7 @@ tasks.register('upscaleDefaultOffTest', JavaExec) {
 	workingDir = projectDir
 }
 
-// P4-1a velocity pass golden test on LAVAPIPE (CPU Vulkan; never the GPU: the loader sees only the lavapipe ICD and
-// the test refuses any non-CPU device). ICD: system vulkan-swrast if installed, else the libvulkan_lvp.so of an installed
-// flatpak GL runtime, used in place through an ICD file under build/lvp (same recipe as card/P3-3's packReplay).
+// P4-1a velocity pass golden test on lavapipe (the test also refuses any non-CPU device).
 // ./gradlew velocityGoldenTest ; last line "# velocitygolden PASS n/n"; debug PNGs in build/p4-1a/
 tasks.register('velocityGoldenTest', JavaExec) {
 	group = 'verification'
@@ -382,39 +424,51 @@ tasks.register('velocityGoldenTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.temporal.VelocityGoldenTest'
 	jvmArgs '-Djava.awt.headless=true'
 	workingDir = projectDir
+	doFirst { useLavapipe(it) }
+}
+
+// P4-2a native FSR library (CI-style; not part of build): ./gradlew fsrNative [-PfsrArgs=--linux-only]
+tasks.register('fsrNative', Exec) {
+	group = 'build'
+	description = 'Build libiroh_fsr (FidelityFX 1.1.4 FSR 3.1 + shim) with iroh-native/build-fsr.sh'
+	workingDir = projectDir
+	environment 'IROH_JAVA_HOME', System.getenv('IROH_JAVA_HOME') ?: '/usr/lib/jvm/java-21-openjdk'
+	def a = ['./iroh-native/build-fsr.sh']
+	if (project.hasProperty('fsrArgs')) a.addAll(project.property('fsrArgs').toString().split(' ') as List)
+	commandLine a
+}
+
+def fsrLib = file('iroh-native/natives/linux-x64/libiroh_fsr.so')
+
+// P4-2a pure upscaler parts (+ native jitter/phase/render-size cross-checks when the library is built).
+// ./gradlew upscaleTest ; last line "# upscale PASS n/n"
+tasks.register('upscaleTest', JavaExec) {
+	group = 'verification'
+	description = 'Jitter sequence, phase counts, mip bias, quality modes; compared with the SDK through the shim when built'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.UpscaleTest'
+	jvmArgs '-ea'
+	doFirst { if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath }
+}
+
+// P4-2a FSR on lavapipe. ./gradlew fsrReplay [-Pcapture=dir] [-Pgolden=check|update] [-Pdump=dir] [-Pforce16]
+// last line "# fsrreplay PASS|FAIL ..."
+tasks.register('fsrReplay', JavaExec) {
+	group = 'verification'
+	description = 'FSR 3.1 through the JNI shim on lavapipe: synthetic scene pair + captured Navidson frame'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['capture', 'golden', 'dump', 'mode'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	if (project.hasProperty('force16')) a << '--force16'
+	args a
 	doFirst {
-		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
-		def icd = null
-		def ld = null
-		if (sys != null) {
-			icd = sys
-		} else {
-			def lvp = null
-			['/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64',
-			 System.getProperty('user.home') + '/.local/share/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64'].each { root ->
-				def r = new File(root)
-				if (lvp == null && r.isDirectory()) r.eachDirRecurse { d ->
-					def f = new File(d, 'libvulkan_lvp.so')
-					if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
-				}
-			}
-			if (lvp == null) throw new GradleException('no lavapipe found: install the vulkan-swrast package (owner) or a flatpak GL runtime')
-			def dir = file("${buildDir}/lvp/lib")
-			dir.mkdirs()
-			lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
-				def link = new File(dir, src.name)
-				link.delete()
-				java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
-			}
-			def json = file("${buildDir}/lvp/lvp_icd.json")
-			json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
-			icd = json.absolutePath
-			ld = dir.absolutePath
-		}
-		environment 'VK_DRIVER_FILES', icd
-		environment 'VK_ICD_FILENAMES', icd
-		environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
-		if (ld != null) environment 'LD_LIBRARY_PATH', ld
-		logger.lifecycle("velocityGoldenTest: lavapipe ICD ${icd}")
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
 	}
 }

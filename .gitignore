@@ -36,3 +36,7 @@ run/
 reference/
 logs/
 run/
+iroh-native/natives/
+iroh-native/build-fsr/
+iroh-native/fsr/sdk-src/
+iroh-native/fsr/.sdk-cache/
