@@ -178,6 +178,9 @@ final class PackRuntimeImpl {
         } catch (NumberFormatException ignored) {
         }
         inputs.setCustom(loaded.data().pack.getAsJsonArray("customUniforms"));
+        var dir = loaded.plan().frames.get(folder).directives;
+        inputs.shadowDistance = SyntheticFullScene.parse(dir.get("shadowDistance"), 96);
+        inputs.shadowInterval = SyntheticFullScene.parse(dir.get("shadowIntervalSize"), 2);
         inputs.update(FrameHooks.context(), st.getWidth(), st.getHeight(), copies, clears, sunPath);
         Set<String> skip = new HashSet<>();
         for (String s : DebugSwitches.getOr(PackSwitches.SKIP, "").split(","))

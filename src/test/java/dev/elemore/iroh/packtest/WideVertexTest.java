@@ -78,7 +78,53 @@ public final class WideVertexTest {
         WideTerrainVertex.writeQuad(d, 0, q2, true);
         check("midBlock from the unsnapped position", d.get(28) == -32);
         check("block id over 65535 wraps (block.properties ids stay below 65536: Navidson max 32016)", (d.getShort(32) & 0xFFFF) == (70000 & 0xFFFF));
+        builderMatchesWriter();
         System.out.println("# widevertex " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
+    }
+
+    /** P3-5: WideVertexBuilder through the mesher's vertex() calls == WideTerrainVertex.writeQuad (separateAo=false) */
+    static void builderMatchesWriter() {
+        dev.elemore.iroh.shaderpack.mesh.WideVertexBuilder b = new dev.elemore.iroh.shaderpack.mesh.WideVertexBuilder();
+        var c = dev.elemore.iroh.shaderpack.mesh.WideVertexBuilder.CONTEXT.get();
+        c.sprite = new float[]{0.25f, 0.5f, 0.3125f, 0.5625f};
+        c.blockOrigin = new float[]{3, 7, 11};
+        c.normal = new float[]{0, 0, -1};
+        c.emission = 9;
+        c.blockId = 10257;
+        c.renderType = 1;
+        float[] pos = {4, 8, 11, 4, 7, 11, 3, 7, 11, 3, 8, 11};
+        float[] uv = {0.25f, 0.5f, 0.25f, 0.5625f, 0.3125f, 0.5625f, 0.3125f, 0.5f};
+        int[] rgba = {0xFF4080C0, 0xFF102030, 0x80FFFFFF, 0xFF000000};
+        int[] light = {0x00F00030, 0x00A00000, 0x000000F0, 0x00100010};
+        long mem = org.lwjgl.system.MemoryUtil.nmemCalloc(1, 2 * dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.QUAD_BYTES);
+        try {
+            for (int i = 0; i < 4; i++)
+                b.vertex(mem + (long) i * 36, pos[3 * i], pos[3 * i + 1], pos[3 * i + 2], rgba[i], uv[2 * i], uv[2 * i + 1], light[i], 0);
+            int[] argb = new int[4];
+            for (int i = 0; i < 4; i++) {
+                int r = rgba[i] & 0xFF, g = (rgba[i] >>> 8) & 0xFF, bl = (rgba[i] >>> 16) & 0xFF, a = rgba[i] >>> 24;
+                argb[i] = a << 24 | r << 16 | g << 8 | bl;
+            }
+            java.nio.ByteBuffer want = java.nio.ByteBuffer.allocate(144).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.writeQuad(want, 0, new dev.elemore.iroh.shaderpack.mesh.WideTerrainVertex.Quad(
+                    pos, argb, new float[]{1, 1, 1, 1}, uv, light, c.normal, c.sprite, c.blockOrigin, 9, 10257, 1), false);
+            java.nio.ByteBuffer got = org.lwjgl.system.MemoryUtil.memByteBuffer(mem, 144);
+            boolean same = true;
+            for (int i = 0; i < 144; i++)
+                same &= got.get(i) == want.get(i);
+            check("WideVertexBuilder == writeQuad, byte for byte", same);
+            check("WideVertexBuilder stride 36", b.getStride() == 36);
+            // a second quad right after: the context restarts
+            for (int i = 0; i < 4; i++)
+                b.vertex(mem + 144 + (long) i * 36, pos[3 * i], pos[3 * i + 1], pos[3 * i + 2], rgba[i], uv[2 * i], uv[2 * i + 1], light[i], 0);
+            java.nio.ByteBuffer got2 = org.lwjgl.system.MemoryUtil.memByteBuffer(mem + 144, 144);
+            boolean same2 = true;
+            for (int i = 0; i < 144; i++)
+                same2 &= got2.get(i) == want.get(i);
+            check("second quad written at its own pointer", same2);
+        } finally {
+            org.lwjgl.system.MemoryUtil.nmemFree(mem);
+        }
     }
 }

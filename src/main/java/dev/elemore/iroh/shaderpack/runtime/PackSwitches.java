@@ -32,8 +32,8 @@ public final class PackSwitches {
                 return;
             DebugSwitches.register(new Switch(ENABLED, "off", "Navidson pack path on/off (default off: the raster path only)",
                     DebugSwitches.BOOL, v -> PackRuntime.setEnabled(DebugSwitches.on(ENABLED))));
-            DebugSwitches.register(new Switch(MODE, "post", "post = Navidson's deferred/composite/final over the raster picture; full = gbuffers + shadow (NOT implemented in P3-4: runs post)",
-                    DebugSwitches.oneOf("post", "full"), v -> v.equals("full") ? "ok (full is not implemented yet: post runs)" : "ok"));
+            DebugSwitches.register(new Switch(MODE, "post", "post = Navidson's deferred/composite/final over the raster picture; full = shadow + gbuffers from real geometry (offline replay only so far: in game the chunk-mesher hookup is the next step, post runs)",
+                    DebugSwitches.oneOf("post", "full"), v -> v.equals("full") ? "restart (full mode needs the 36-byte section format chosen at startup; not wired in game yet: post runs)" : "ok"));
             DebugSwitches.register(new Switch(PATH, "", "pack folder (empty = <gameDir>/shaderpacks/Navidson); a change reloads the pack",
                     null, v -> PackRuntime.reload()));
             DebugSwitches.register(new Switch(FOLDER, "auto", "program folder: auto (from the dimension) or world0 / world-1 / world1 / world2 / <root>",

@@ -825,7 +825,10 @@ public abstract class VkPackBackend implements GpuBackend {
                 if (gb.quads() <= 0)
                     continue;
                 vkCmdBindDescriptorSets(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout(), 0, s.longs(ds[i][0], ds[i][1]), null);
-                vkCmdBindVertexBuffers(cmd(), 0, s.longs(vbufs.get(gb.vertexBuffer()).buffer()), s.longs(0));
+                if (gb.vertexBuffer() >= 0)
+                    vkCmdBindVertexBuffers(cmd(), 0, s.longs(vbufs.get(gb.vertexBuffer()).buffer()), s.longs(0));
+                else
+                    vkCmdBindVertexBuffers(cmd(), 0, s.longs(gb.externalBuffer()), s.longs(gb.externalOffset()));
                 vkCmdDrawIndexed(cmd(), gb.quads() * 6, 1, 0, 0, 0);
             }
             vkCmdEndRenderPass(cmd());

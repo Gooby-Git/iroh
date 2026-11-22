@@ -312,7 +312,7 @@ public final class RecordingBackend implements GpuBackend {
             write(d.depth(), d.pass());
         }
         for (GeoBatch gb : d.batches())
-            if (freedBuffers.contains(gb.vertexBuffer()) || gb.vertexBuffer() >= vertexBuffers)
+            if (gb.vertexBuffer() < 0 ? gb.externalBuffer() == 0 : freedBuffers.contains(gb.vertexBuffer()) || gb.vertexBuffer() >= vertexBuffers)
                 violations.add(d.pass() + " draws from a freed or unknown vertex buffer " + gb.vertexBuffer());
         geoDraws.add(d);
         calls.add("geometry " + d.pass() + " batches " + d.batches().size());

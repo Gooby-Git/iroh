@@ -49,7 +49,16 @@ public interface GpuBackend extends AutoCloseable {
     record GeoDraw(String pass, int pipeline, int[] colour, int depth, int[] viewport, Map<Integer, Bind> set0,
                    Map<Integer, Bind> set1, List<GeoBatch> batches) {}
 
-    record GeoBatch(byte[] uniforms, int vertexBuffer, int quads) {}
+    /**
+     * One batch. {@code vertexBuffer} = a buffer from {@link #createVertexBuffer} (replay), or -1 with
+     * {@code externalBuffer} = a VkBuffer the renderer owns (in game: Iroh's section AreaBuffer) read from byte
+     * {@code externalOffset} (P3-5 hookup point; the executor never frees external buffers).
+     */
+    record GeoBatch(byte[] uniforms, int vertexBuffer, int quads, long externalBuffer, long externalOffset) {
+        public GeoBatch(byte[] uniforms, int vertexBuffer, int quads) {
+            this(uniforms, vertexBuffer, quads, 0L, 0L);
+        }
+    }
 
     /** what feeds one slot: an image (with a sampler kind LINEAR / NEAREST / COMPARE / STORAGE) or a buffer */
     record Bind(int image, String sampler, int buffer) {

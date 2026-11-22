@@ -40,6 +40,8 @@ final class GameInputs implements PackFrameInputs {
     private double frameTimeCounter;
     private long lastNanos;
     private CustomEval custom;
+    /** folder directives (P3-5 shadow camera) */
+    double shadowDistance = 96, shadowInterval = 2;
     private JsonArray customSource;
 
     void setCustom(JsonArray decls) {
@@ -114,6 +116,16 @@ final class GameInputs implements PackFrameInputs {
             u.put("moonPosition", new double[]{-sun.x, -sun.y, -sun.z});
             boolean day0 = sunAngle < 0.5;
             u.put("shadowLightPosition", day0 ? new double[]{sun.x, sun.y, sun.z} : new double[]{-sun.x, -sun.y, -sun.z});
+            // P3-5: shadow camera from the WORLD-space light direction (the celestial rotation without the view)
+            Matrix4f w = new Matrix4f().rotateY((float) Math.toRadians(-90)).rotateZ((float) Math.toRadians(sunPathRotationDeg))
+                    .rotateX((float) (celestial * Math.PI * 2));
+            org.joml.Vector4f sw = w.transform(new org.joml.Vector4f(0, 1, 0, 0));
+            double sgn = day0 ? 1 : -1;
+            double[][] sh = Mat.shadow(new double[]{sw.x * sgn, sw.y * sgn, sw.z * sgn}, cam, shadowDistance, shadowInterval);
+            u.put("shadowModelView", sh[0]);
+            u.put("shadowModelViewInverse", Mat.invert(sh[0]));
+            u.put("shadowProjection", sh[1]);
+            u.put("shadowProjectionInverse", Mat.invert(sh[1]));
             org.joml.Vector4f up = new Matrix4f(ctx.viewMatrix()).transform(new org.joml.Vector4f(0, 100, 0, 0));
             u.put("upPosition", new double[]{up.x, up.y, up.z});
             Vec3 sky = level.getSkyColor(new Vec3(cam[0], cam[1], cam[2]), pt);
