@@ -248,4 +248,13 @@ public final class LvpDevice implements DenoiseGpu {
     public static ByteBuffer bytes(Buf b) {
         return MemoryUtil.memByteBuffer(b.ptr(), (int) b.size()).order(ByteOrder.LITTLE_ENDIAN);
     }
+
+    /** P5-1: tear the device down (the RT harness opens several devices in one JVM). */
+    public void close() {
+        vkDeviceWaitIdle(device);
+        vkDestroyFence(device, fence, null);
+        vkDestroyCommandPool(device, pool, null);
+        vkDestroyDevice(device, null);
+        vkDestroyInstance(instance, null);
+    }
 }

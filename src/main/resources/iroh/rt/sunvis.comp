@@ -1,0 +1,30 @@
+#version 460
+// P5-1 sun/moon VISIBILITY for the shadow denoiser channel (IROH_SHADOW reads IN_PENUMBRA: r >= 60000 = lit): one
+// cone-sampled shadow ray per pixel, as sun.comp, but the result is visibility, so compose can apply E * cos * cloud
+// shadow analytically to the denoised visibility. Out: r = penumbra code (60000 lit / 1 occluded), g = raw visibility
+// 0/1 (the noisy path), b = cos to the light.
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) writeonly buffer Out { vec4 outv[]; };
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    Surf s = surface(px);
+    uint rays = 0u;
+    vec4 o = vec4(60000.0, 1.0, 0.0, 1.0);
+    if (s.valid && mat0(s.tile).z == 0.0) {
+        rngInit(px, fr.dims.z, 1u);
+        vec3 l = sunSampleDir();
+        float c = dot(s.n, l);
+        o.b = max(dot(s.n, fr.sunDir.xyz), 0.0);
+        if (c > 0.0) {
+            rays++;
+            bool vis = visible(s.pos + s.n * EPS, l, TMAX, MASK_SHADOW);
+            o.r = vis ? 60000.0 : 1.0;
+            o.g = vis ? 1.0 : 0.0;
+        }
+    }
+    outv[i] = o;
+    if (rays > 0u) atomicAdd(counters[1], rays);
+}

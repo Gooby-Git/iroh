@@ -346,6 +346,7 @@ public class Vulkan {
             allocatorCreateInfo.pVulkanFunctions(vulkanFunctions);
             allocatorCreateInfo.instance(instance);
             allocatorCreateInfo.vulkanApiVersion(VK_API_VERSION_1_2);
+            allocatorCreateInfo.flags(dev.elemore.iroh.rt.game.RtVma.allocatorFlags()); // P5-2: BDA only with the RT features
 
             PointerBuffer pAllocator = stack.pointers(VK_NULL_HANDLE);
 

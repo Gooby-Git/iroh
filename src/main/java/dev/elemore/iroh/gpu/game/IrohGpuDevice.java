@@ -62,6 +62,7 @@ public final class IrohGpuDevice extends VkGpuDevice {
 
     @Override public String name() { return "iroh"; }
     @Override public boolean supportsDrawIndirectCount() { return indirectCount; }
+    @Override public boolean supportsDeviceAddress() { return dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled; } // P5-2: RT buffers (AS storage, scratch)
 
     @Override
     public long capBytes() {

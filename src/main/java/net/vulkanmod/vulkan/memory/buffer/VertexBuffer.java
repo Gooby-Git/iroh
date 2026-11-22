@@ -16,4 +16,10 @@ public class VertexBuffer extends Buffer {
         this.createBuffer(size);
     }
 
+    /** Iroh P5-2: extra usage bits (the terrain arena with RT on: device address + AS build input; 0 = as above). */
+    public VertexBuffer(int size, MemoryType type, int extraUsage) {
+        super(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | extraUsage, type);
+        this.createBuffer(size);
+    }
+
 }

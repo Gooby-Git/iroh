@@ -1,0 +1,36 @@
+#version 460
+// Radiance cache resolve: blend this frame's sum into the resolved value (running mean capped at maxSamples, then an
+// exponential blend: old light fades in about maxSamples frames), clear the frame accumulators.
+// P5-1 lag guard: field 10 keeps a running estimate of the squared frame-to-resolved luminance change (the cell's noise);
+// a change beyond 3 sigma AND 25% of the level (a light switched on/off, a door opened) cuts the history to 4 samples, so
+// GI follows a light switch in a few frames instead of ~maxSamples (rtReplay step (i) measured the slow creep).
+layout(local_size_x = 64) in;
+#include "rt_frame.glsl"
+layout(std430, set = 0, binding = 1) readonly buffer FrameB { Frame fr; };
+layout(std430, set = 0, binding = 2) buffer Cache { uint cache[]; };
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    if (e > fr.counts.y) return;
+    uint b = e * 12u;
+    uint n = cache[b + 1u];
+    if (n == 0u) return;
+    vec3 mean = vec3(cache[b + 2u], cache[b + 3u], cache[b + 4u]) / (256.0 * float(n));
+    uint total = min(cache[b + 8u] + n, fr.counts.w);
+    vec3 old = vec3(uintBitsToFloat(cache[b + 5u]), uintBitsToFloat(cache[b + 6u]), uintBitsToFloat(cache[b + 7u]));
+    const vec3 Y = vec3(0.2126, 0.7152, 0.0722);
+    float lm = dot(mean, Y), lo = dot(old, Y);
+    float var = cache[b + 8u] == 0u ? lm * lm : uintBitsToFloat(cache[b + 10u]);
+    float d = lm - lo;
+    if (cache[b + 8u] != 0u && d * d > 9.0 * (var / float(n) + 1e-6) && abs(d) > 0.25 * max(lo, lm) + 1e-3) total = min(total, n + 4u);
+    cache[b + 10u] = floatBitsToUint(mix(var, d * d * float(n), 0.1));
+    vec3 r = cache[b + 8u] == 0u ? mean : mix(old, mean, float(n) / float(total));
+    cache[b + 5u] = floatBitsToUint(r.x);
+    cache[b + 6u] = floatBitsToUint(r.y);
+    cache[b + 7u] = floatBitsToUint(r.z);
+    cache[b + 8u] = total;
+    cache[b + 9u] = fr.dims.z;
+    cache[b + 1u] = 0u;
+    cache[b + 2u] = 0u;
+    cache[b + 3u] = 0u;
+    cache[b + 4u] = 0u;
+}

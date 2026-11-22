@@ -111,7 +111,13 @@ void main() {
         len = min(hm.z, lenCap);
         float varH = max(0.0, hm.y - hm.x * hm.x);
         if (p.lagK > 0.0 && p.mode > 1.5) {            // shadow: per-pixel visibility change vs the (low-variance) history
-            if (abs(lc - hm.x) > p.lagK * sqrt(varH) + p.lagBias) len = min(len, 1.0);
+            // P5-3: a fired guard is a FULL reset (len 0 -> alpha 1). Cutting to len 1 still blended 50% of the stale history
+            // in, so a moving entity shadow trailed and stayed faint (rtEntities step C: denoised lag 1.67 -> see rt-iroh.md)
+            // Only a decisive flip (|sample - mean| > 0.75: a confident history on the other side) resets fully; other
+            // firings keep the old cut to len 1 (static flicker doubled with an unconditional full reset: rtReplay step i).
+            float dv = abs(lc - hm.x);
+            // (a 3x3 neighbourhood confirmation was tried: no flicker gain, entity-shadow error 0.109 -> 0.116; not kept)
+            if (dv > p.lagK * sqrt(varH) + p.lagBias) len = dv > 0.75 ? 0.0 : min(len, 1.0);
         } else if (p.lagK > 0.0) {                      // radiance: 5x5 neighbourhood MEAN of the current noisy frame vs the history mean (variance of the mean as tolerance)
             float s1 = 0.0, s2 = 0.0, sn = 0.0;
             for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {

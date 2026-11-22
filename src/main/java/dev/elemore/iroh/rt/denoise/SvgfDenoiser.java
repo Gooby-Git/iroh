@@ -19,8 +19,9 @@ import static org.lwjgl.vulkan.VK12.*;
  * length, temporal moments, spatial variance for short history, firefly clamp) and N edge-stopping a-trous passes (depth /
  * normal / variance-scaled luminance weights) whose first iteration feeds the colour history. Channels: IROH_DIFFUSE
  * (demodulated radiance), IROH_SPECULAR (roughness- and hit-distance-limited history; NO virtual-motion reprojection), IROH_SHADOW
- * (IN_PENUMBRA -> visibility). If {@code IN_ALBEDO} is bound the noisy input is modulated: it is divided by the albedo before
- * denoising and multiplied back at the end (keeps pixel-art texture detail out of the filter).
+ * (IN_PENUMBRA -> visibility). If {@code IN_ALBEDO} is bound the noisy DIFFUSE input is modulated: it is divided by the albedo
+ * before denoising and multiplied back at the end (keeps pixel-art texture detail out of the filter). Specular and shadow are
+ * never divided by it (P5-2, RQ-P51-a), so one instance can denoise diffuse + specular + shadow with IN_ALBEDO bound.
  * Image contract as for all Denoisers (layout GENERAL, STORAGE|SAMPLED). Inputs: IN_MV (UV, previous minus current), IN_VIEWZ
  * (R32F), IN_NORMAL_ROUGHNESS (A2B10G10R10_UNORM, NRD-compatible oct packing). Outputs: RGBA16F (rgb, a = history length;
  * shadow: r = visibility). No checkerboard / half-rate input support (UNVERIFIED need). THREAD RULE: render thread only.
@@ -229,7 +230,9 @@ public final class SvgfDenoiser implements Denoiser {
                 Slot in = t == DenoiserType.IROH_DIFFUSE ? Slot.IN_DIFF_RADIANCE_HITDIST : t == DenoiserType.IROH_SPECULAR ? Slot.IN_SPEC_RADIANCE_HITDIST : Slot.IN_PENUMBRA;
                 Slot out = t == DenoiserType.IROH_DIFFUSE ? Slot.OUT_DIFF_RADIANCE_HITDIST : t == DenoiserType.IROH_SPECULAR ? Slot.OUT_SPEC_RADIANCE_HITDIST : Slot.OUT_SHADOW_TRANSLUCENCY;
                 ImageRef noisy = need(fr, in), o = need(fr, out);
-                boolean albedo = alb != null && alb.present() && t != DenoiserType.IROH_SHADOW;
+                // RQ-P51-a (P5-2): IN_ALBEDO demodulates the DIFFUSE channel only. Specular radiance is scaled by F0 / the BRDF,
+                // never by the diffuse albedo (dividing it by the albedo spread 20x jumps across pixel-art texels).
+                boolean albedo = alb != null && alb.present() && t == DenoiserType.IROH_DIFFUSE;
                 float mode = t == DenoiserType.IROH_DIFFUSE ? 0 : t == DenoiserType.IROH_SPECULAR ? 1 : 2;
                 boolean reset = first[id] || fr.settings.reset;
                 // ---- temporal

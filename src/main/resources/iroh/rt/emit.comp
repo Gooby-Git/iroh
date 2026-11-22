@@ -1,0 +1,19 @@
+#version 460
+// (c) block-light direct lighting: one light-list sample (power CDF over emissive quads) + one shadow ray.
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) writeonly buffer Out { vec4 outv[]; };
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    Surf s = surface(px);
+    uint rays = 0u;
+    vec3 e = vec3(0.0);
+    if (s.valid && mat0(s.tile).z == 0.0) {
+        rngInit(px, fr.dims.z, 2u);
+        e = emitIrradiance(s.pos, s.n, rays);
+    }
+    outv[i] = vec4(e, 1.0);
+    if (rays > 0u) atomicAdd(counters[2], rays);
+}
