@@ -50,6 +50,8 @@ public final class IrohVkBackend extends VkPackBackend {
     }
 
     private final long[] pools;
+    /** P3-11: extra pools per frame slot (in use this frame / spare after the reset) */
+    private final java.util.List<java.util.List<Long>> usedPools = new java.util.ArrayList<>(), sparePools = new java.util.ArrayList<>();
 
     // per-pass GPU timestamps (G1 item 4): one query pool, MAXQ per frame slot, read when the slot comes round again
     private static final int MAXQ = 128;
@@ -70,8 +72,11 @@ public final class IrohVkBackend extends VkPackBackend {
                     .queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(MAXQ * pools.length), null, p) == VK_SUCCESS)
                 queryPool = p.get(0);
         }
-        for (int i = 0; i < pools.length; i++)
+        for (int i = 0; i < pools.length; i++) {
             slotNames.add(new java.util.ArrayList<>());
+            usedPools.add(new java.util.ArrayList<>());
+            sparePools.add(new java.util.ArrayList<>());
+        }
     }
 
     private void readTimes(int f) {
@@ -152,10 +157,28 @@ public final class IrohVkBackend extends VkPackBackend {
     }
 
     @Override
+    protected boolean descriptorPoolExhausted() {
+        int f = Renderer.getCurrentFrame();
+        if (pools[f] == 0)
+            return false;
+        java.util.List<Long> spare = sparePools.get(f);
+        if (usedPools.get(f).size() + spare.size() >= 64)
+            return false; // bound: 64 extra pools per slot (UNVERIFIED: check in G3b, iroh.pack.world report)
+        usedPools.get(f).add(pools[f]);
+        pools[f] = spare.isEmpty() ? HeadlessVkBackend.createDescriptorPool(device()) : spare.remove(spare.size() - 1);
+        return true;
+    }
+
+    @Override
     public void beginFrame() {
         int f = Renderer.getCurrentFrame();
         if (pools[f] != 0)
             vkResetDescriptorPool(device(), pools[f], 0);
+        for (long up : usedPools.get(f)) { // the slot's frame completed: every extra pool is free again
+            vkResetDescriptorPool(device(), up, 0);
+            sparePools.get(f).add(up);
+        }
+        usedPools.get(f).clear();
         // the slot's previous frame has completed (Renderer waited its fence): its timestamps are ready
         readTimes(f);
         resetUboRing(f);
@@ -330,6 +353,11 @@ public final class IrohVkBackend extends VkPackBackend {
             if (p != 0)
                 releaseLater(() -> vkDestroyDescriptorPool(device(), p, null));
             pools[i] = 0;
+            for (java.util.List<Long> l : java.util.List.of(usedPools.get(i), sparePools.get(i))) {
+                for (long x : l)
+                    releaseLater(() -> vkDestroyDescriptorPool(device(), x, null));
+                l.clear();
+            }
         }
     }
 }

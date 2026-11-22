@@ -188,7 +188,7 @@ public final class WorldPassTest {
         Phased in = new Phased(scene);
         Object skyKey = new Object(), guiKey = new Object(), entKey = new Object(), entSolidKey = new Object(), crumbKey = new Object(),
                 modKey = new Object(), skipKey = new Object(), partKey = new Object(), entTrKey = new Object(), lineKey = new Object(),
-                weirdKey = new Object();
+                weirdKey = new Object(), weatherKey = new Object();
         int firstFrameStart = 0;
         iroh.outside(w, () -> w.begin(in)); // the game warms after the first begin of an executor
         int warmed = w.warm();
@@ -261,6 +261,9 @@ public final class WorldPassTest {
             check(frame + ": opaque-only class after deferred stays raster (outline)", !bind(w, lineKey, "rendertype_lines", POS_COLOR_NORMAL, true, false));
             iroh.rasterBind(14, rec);
             check(frame + ": entity after deferred -> translucent program", bind(w, entKey, "rendertype_entity_cutout_no_cull", NEW_ENTITY, true, false) && w.beforeDraw());
+            int wb0 = rec.calls.size();
+            check(frame + ": rain (particle shader inside renderSnowAndRain) -> gbuffers_weather", bind(w, weatherKey, "iroh:weather", PARTICLE, false, true) && w.beforeDraw()
+                    && idxFrom(rec.calls, "beginAttachments gbuffers_weather:translucent [pack:colortex12", wb0) >= 0);
             iroh.outside(w, () -> w.end(in));
             check(frame + ": phase OFF after end", w.phase() == WorldPass.Phase.OFF);
             check(frame + ": attachments closed at frame end", !w.attachmentsOpen() && rec.openAttachments == null);
@@ -286,7 +289,7 @@ public final class WorldPassTest {
                     entTr >= 0 && c.get(entTr).contains("pack:colortex0#alt") && c.get(entTr).contains("+ pack:depthtex0"));
             check(frame + ": sky attachments colortex0 main: " + (sky >= 0 ? c.get(sky) : "-"), sky >= 0 && c.get(sky).contains("[pack:colortex0#main] + pack:depthtex0"));
             check(frame + ": every bindExternalDraw inside its own pass (no violations) " + rec.violations, rec.violations.isEmpty());
-            check(frame + ": 10 substituted draws (" + w.substitutedDraws + ")", w.substitutedDraws == 10);
+            check(frame + ": 11 substituted draws (" + w.substitutedDraws + ")", w.substitutedDraws == 11);
             check(frame + ": scene colour cleared transparent before entities", idx(c, "clear scene colour") >= 0 && idx(c, "clear scene colour") < ents);
             check(frame + ": depth back before entities", idx(c, "blit pack:depthtex0 -> scene depth") >= 0 && idx(c, "blit pack:depthtex0 -> scene depth") < ents);
             check(frame + ": one beginFrame / endFrame", count(c, "beginFrame") == 1 && count(c, "endFrame") == 1 && idx(c, "beginFrame") < idx(c, "endFrame"));

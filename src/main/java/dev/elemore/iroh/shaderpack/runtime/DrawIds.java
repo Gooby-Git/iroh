@@ -15,6 +15,8 @@ public final class DrawIds {
 
     /** written only while the world pass is live (the mixins test one volatile first) */
     public static int entityId = -1, blockEntityId = -1, itemId = -1;
+    /** inside LevelRenderer.renderSnowAndRain (rain/snow use the particle shader): draws are class weather */
+    public static boolean weather;
     /** vanilla hurt / creeper flash overlay as Iris' entityColor (rgb, a = strength) */
     public static final float[] entityColor = new float[4];
 

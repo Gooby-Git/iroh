@@ -13,6 +13,7 @@
     "render.IrohLeavesM",
     "render.IrohDrawIdsM",
     "render.IrohBlockEntityIdsM",
+    "render.IrohWeatherContextM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",

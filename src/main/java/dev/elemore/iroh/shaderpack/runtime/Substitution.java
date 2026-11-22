@@ -68,6 +68,9 @@ public final class Substitution {
             case "rendertype_clouds", "clouds" -> {
                 return "clouds";
             }
+            case "weather" -> { // "iroh:weather": the particle shader inside renderSnowAndRain (P3-11)
+                return "weather";
+            }
             case "rendertype_world_border" -> {
                 return "world_border";
             }

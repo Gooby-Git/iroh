@@ -15,6 +15,7 @@ import java.util.Map;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
+import static org.lwjgl.vulkan.VK11.VK_ERROR_OUT_OF_POOL_MEMORY;
 
 /**
  * The Vulkan half of a {@link GpuBackend} shared by the offline replay device ({@link HeadlessVkBackend}, lavapipe) and
@@ -100,6 +101,11 @@ public abstract class VkPackBackend implements GpuBackend {
     protected abstract void freeHostBufferAfterFrame(HostBuf b);
 
     protected abstract long descriptorPool();
+
+    /** P3-11: the current pool is full: switch {@link #descriptorPool} to a fresh one for this frame; false = cannot */
+    protected boolean descriptorPoolExhausted() {
+        return false;
+    }
 
     protected void initQuad() {
         quad = hostBuffer(4L * QUAD_STRIDE, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -723,8 +729,13 @@ public abstract class VkPackBackend implements GpuBackend {
     private long[] sets(Pipe p, Map<Integer, Bind> set0, Map<Integer, Bind> set1, byte[] ubo) {
         try (MemoryStack s = stackPush()) {
             LongBuffer lb = s.mallocLong(2);
-            check(vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
-                    .pSetLayouts(s.longs(p.set0(), p.set1())), lb), "descriptor sets");
+            int r = vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
+                    .pSetLayouts(s.longs(p.set0(), p.set1())), lb);
+            if ((r == VK_ERROR_OUT_OF_POOL_MEMORY || r == VK_ERROR_FRAGMENTED_POOL) && descriptorPoolExhausted())
+                // P3-11: substituted draws take two sets each; a busy world pass outgrows one pool per frame
+                r = vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
+                        .pSetLayouts(s.longs(p.set0(), p.set1())), lb);
+            check(r, "descriptor sets");
             long s0 = lb.get(0), s1 = lb.get(1);
             long[] at = uboAlloc(Math.max(16, ubo.length));
             HostBuf u = uboChunks.get(uboSlot).get((int) at[0]);

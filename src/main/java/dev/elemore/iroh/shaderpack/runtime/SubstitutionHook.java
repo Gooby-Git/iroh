@@ -47,19 +47,41 @@ public final class SubstitutionHook {
         if ((h & Substitution.OBS) != 0)
             observe(pipeline.name, pipeline.getVertexFormat());
         WorldPass w = active;
-        if (w == null)
+        if (w == null || !net.vulkanmod.vulkan.Renderer.isRecording())
             return false;
-        VertexFormat f = pipeline.getVertexFormat();
-        PipelineState.BlendInfo b = PipelineState.blendInfo;
-        return w.onBind(pipeline, pipeline.name, f == null ? null : f.getElementAttributeNames(), VRenderSystem.topology,
-                VRenderSystem.depthTest, VRenderSystem.depthMask, VRenderSystem.cull, b.enabled, b.srcRgbFactor, b.dstRgbFactor,
-                b.srcAlphaFactor, b.dstAlphaFactor, dev.elemore.iroh.apiimpl.FrameHooks.context().inWorld());
+        try {
+            VertexFormat f = pipeline.getVertexFormat();
+            PipelineState.BlendInfo b = PipelineState.blendInfo;
+            // rain/snow use the particle shader: inside renderSnowAndRain the class is weather (separate decision key)
+            boolean weather = DrawIds.weather;
+            return w.onBind(weather ? WEATHER_KEYS.computeIfAbsent(pipeline, k -> new Object()) : pipeline,
+                    weather ? "iroh:weather" : pipeline.name, f == null ? null : f.getElementAttributeNames(), VRenderSystem.topology,
+                    VRenderSystem.depthTest, VRenderSystem.depthMask, VRenderSystem.cull, b.enabled, b.srcRgbFactor, b.dstRgbFactor,
+                    b.srcAlphaFactor, b.dstAlphaFactor, dev.elemore.iroh.apiimpl.FrameHooks.context().inWorld());
+        } catch (RuntimeException e) { // never into vanilla rendering: the world pass turns itself off, this draw is raster
+            w.failNow("bind " + pipeline.name + ": " + e);
+            return false;
+        }
     }
 
-    /** Renderer.uploadAndBindUBOs: true = a substituted draw follows and its descriptor sets are bound (skip the vanilla ones) */
-    public static boolean beforeDraw() {
+    private static final java.util.Map<Object, Object> WEATHER_KEYS = new java.util.IdentityHashMap<>();
+
+    /**
+     * Renderer.uploadAndBindUBOs: true = a substituted draw follows and its descriptor sets are bound (skip the vanilla
+     * ones). On a failure the world pass turns off and the vanilla pipeline is bound again, so the draw stays raster.
+     */
+    public static boolean beforeDraw(net.vulkanmod.vulkan.shader.Pipeline pipeline) {
         WorldPass w = active;
-        return w != null && w.beforeDraw();
+        if (w == null)
+            return false;
+        try {
+            return w.beforeDraw();
+        } catch (RuntimeException e) {
+            w.failNow("draw: " + e);
+            if (pipeline instanceof GraphicsPipeline gp)
+                net.vulkanmod.vulkan.Renderer.getInstance().bindGraphicsPipeline(gp); // now raster (the world pass failed)
+            return false;
+        }
     }
 
     /** a render pass begin/end or an out-of-pass recording of Iroh's: close the world pass's attachments first */

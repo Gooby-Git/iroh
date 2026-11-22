@@ -735,7 +735,7 @@ public class Renderer {
     public void uploadAndBindUBOs(Pipeline pipeline) {
         // Iroh P3-11: a substituted draw binds the pack program's descriptor sets instead (one static volatile read when off)
         if (dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK != 0
-                && dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.beforeDraw())
+                && dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.beforeDraw(pipeline))
             return;
         VkCommandBuffer commandBuffer = recordingCommandBuffer("uploadAndBindUBOs");
         if (commandBuffer == null) return;

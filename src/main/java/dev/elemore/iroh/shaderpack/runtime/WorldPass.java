@@ -263,6 +263,10 @@ public final class WorldPass {
             long k = src.textureKey(tex);
             long[] t = textures.get(tex);
             if (t == null || t[1] != k) {
+                if (t != null) { // recreated in place: the old view is gone
+                    gpu.freeImage((int) t[0]);
+                    texBinds[(int) t[0]] = null;
+                }
                 t = new long[]{src.importTexture(tex), k};
                 textures.put(tex, t);
             }
@@ -294,6 +298,8 @@ public final class WorldPass {
 
     /** forget imported renderer textures (world unload / reload); handles are only forgotten by the backend */
     public void forgetTextures() {
+        for (long[] t : textures.values())
+            gpu.freeImage((int) t[0]); // imported: only forgotten by the backend
         textures.clear();
         java.util.Arrays.fill(texBinds, null);
     }
@@ -347,6 +353,17 @@ public final class WorldPass {
     private void fail(String why) {
         if (failure == null)
             failure = why;
+    }
+
+    /** an exception in a renderer hook: fail, close our attachments, forget the pending bind (the caller draws raster) */
+    public void failNow(String why) {
+        fail(why);
+        pendSp = null;
+        try {
+            leave();
+        } catch (RuntimeException ignored) {
+            open = null;
+        }
     }
 
     private Decision decide(String shader, List<String> elements, boolean inWorld) {
@@ -442,6 +459,7 @@ public final class WorldPass {
             {"position", POSITION, false, false, false, TRANSLUCENT},
             {"position_tex", POSITION_TEX, false, false, false, new int[]{6, 1, 1, 0}},
             {"rendertype_crumbling", BLOCK, true, false, true, new int[]{4, 2, 1, 0}},
+            {"iroh:weather", PARTICLE, true, false, false, TRANSLUCENT}, // rain/snow: depthMask false outside Fabulous, blend, no cull
     };
 
     /** compiles the WARM permutations for both phases now (pack load / executor rebuild); returns how many exist */

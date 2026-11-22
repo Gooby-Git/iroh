@@ -462,6 +462,8 @@ final class PackRuntimeImpl {
         worldFrame = false;
         SubstitutionHook.active = null;
         Substitution.setBit(Substitution.WORLD, false);
+        DrawIds.weather = false;
+        DrawIds.reset();
         stats.cpuNs += System.nanoTime() - cpu0;
         stats.frames++;
         stats.maybeLog(true);
@@ -550,8 +552,10 @@ final class PackRuntimeImpl {
     }
 
     void unload() {
-        if (world != null)
+        if (world != null) {
             world.abort();
+            world.forgetTextures();
+        }
         world = null;
         worldFrame = false;
         SubstitutionHook.active = null;
