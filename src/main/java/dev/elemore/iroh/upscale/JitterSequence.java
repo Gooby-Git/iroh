@@ -28,7 +28,7 @@ public final class JitterSequence {
         return new float[]{halton(i, 2) - 0.5f, halton(i, 3) - 0.5f};
     }
 
-    static float halton(int index, int base) {
+    public static float halton(int index, int base) {
         float f = 1.0f, result = 0.0f;
         for (int cur = index; cur > 0; ) {
             f /= (float) base;
@@ -38,9 +38,13 @@ public final class JitterSequence {
         return result;
     }
 
-    /** Projection-matrix translation (NDC) for a pixel jitter: {2*jx/renderW, -2*jy/renderH} (SDK convention; the sign of y
-     *  must be confirmed against Iroh's flipped viewport with the MV debug view). */
+    /**
+     * Projection-matrix translation (NDC) for a pixel jitter in IROH's axes: {+2*jx/renderW, +2*jy/renderH}. Iroh targets
+     * keep GL row order with a positive-height viewport, so texel rows grow with NDC y and the SDK's D3D sample sign
+     * ({@code -2*jy/H}) does not apply: content shifts by +jitter texels in x and y either way (P4-1a derivation in
+     * dev.elemore.iroh.temporal.TemporalMath; proved by temporalMathTest and by fsrReplay's convention check).
+     */
     public static float[] projectionOffsetNdc(float[] jitterPx, int renderW, int renderH) {
-        return new float[]{2.0f * jitterPx[0] / renderW, -2.0f * jitterPx[1] / renderH};
+        return new float[]{2.0f * jitterPx[0] / renderW, 2.0f * jitterPx[1] / renderH};
     }
 }

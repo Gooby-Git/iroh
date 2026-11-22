@@ -40,8 +40,8 @@ public final class UpscaleSwitches {
         synchronized (UpscaleSwitches.class) {
             if (registered)
                 return;
-            DebugSwitches.register(new Switch(MODE, "off", "upscaler quality mode: " + QualityMode.keys() + " (off = rc14 path, one window-size scene target)",
-                    v -> QualityMode.parse(v) == null ? "expected one of " + QualityMode.keys() : null, v -> "ok"));
+            DebugSwitches.register(new Switch(MODE, "off", "upscaler quality mode: " + ScaleMode.keys() + " (off = rc14 path, one window-size scene target)",
+                    v -> ScaleMode.parse(v) == null ? "expected one of " + ScaleMode.keys() : null, v -> "ok"));
             DebugSwitches.register(new Switch(SCALE, "1.5", "display/render ratio for mode=custom (1..4)",
                     v -> {
                         try {
@@ -79,8 +79,8 @@ public final class UpscaleSwitches {
     }
 
     /** The mode as given by the switch or the -D property; never registers anything (safe before game init). */
-    public static QualityMode mode() {
-        QualityMode m = QualityMode.parse(DebugSwitches.getOr(MODE, "off"));
-        return m == null ? QualityMode.OFF : m;
+    public static ScaleMode mode() {
+        ScaleMode m = ScaleMode.parse(DebugSwitches.getOr(MODE, "off"));
+        return m == null ? ScaleMode.OFF : m;
     }
 }

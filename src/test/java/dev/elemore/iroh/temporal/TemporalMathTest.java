@@ -42,7 +42,7 @@ public final class TemporalMathTest {
         // 1. render-size table (SDK truncation), 2560x1440 and 1920x1080
         int[][] t1440 = {{2560, 1440}, {1706, 960}, {1505, 847}, {1280, 720}, {853, 480}};
         int[][] t1080 = {{1920, 1080}, {1280, 720}, {1129, 635}, {960, 540}, {640, 360}};
-        QualityMode[] modes = {QualityMode.NATIVE_AA, QualityMode.QUALITY, QualityMode.BALANCED, QualityMode.PERFORMANCE, QualityMode.ULTRA_PERFORMANCE};
+        ScaleMode[] modes = {ScaleMode.NATIVE_AA, ScaleMode.QUALITY, ScaleMode.BALANCED, ScaleMode.PERFORMANCE, ScaleMode.ULTRA_PERFORMANCE};
         for (int i = 0; i < modes.length; i++) {
             float r = modes[i].ratio(0);
             check("1440p " + modes[i] + " w", TemporalMath.renderSize(2560, r) == t1440[i][0]);
@@ -50,9 +50,9 @@ public final class TemporalMathTest {
             check("1080p " + modes[i] + " w", TemporalMath.renderSize(1920, r) == t1080[i][0]);
             check("1080p " + modes[i] + " h", TemporalMath.renderSize(1080, r) == t1080[i][1]);
         }
-        check("custom ratio clamped", QualityMode.CUSTOM.ratio(9f) == 4f && QualityMode.CUSTOM.ratio(0.5f) == 1f);
-        check("parse names", QualityMode.parse("quality") == QualityMode.QUALITY && QualityMode.parse("ultra") == QualityMode.ULTRA_PERFORMANCE
-                && QualityMode.parse(null) == QualityMode.OFF && QualityMode.parse("sideways") == null);
+        check("custom ratio clamped", ScaleMode.CUSTOM.ratio(9f) == 4f && ScaleMode.CUSTOM.ratio(0.5f) == 1f);
+        check("parse names", ScaleMode.parse("quality") == ScaleMode.QUALITY && ScaleMode.parse("ultra") == ScaleMode.ULTRA_PERFORMANCE
+                && ScaleMode.parse(null) == ScaleMode.OFF && ScaleMode.parse("sideways") == null);
 
         // 2. jitter phase counts (doc table: 8, 18, 23, 32, 72)
         int[] phases = {8, 18, 23, 32, 72};

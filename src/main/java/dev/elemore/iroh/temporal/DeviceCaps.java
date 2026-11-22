@@ -34,7 +34,7 @@ public final class DeviceCaps {
             return true;
         if (f.equals("off"))
             return false;
-        QualityMode m = QualityMode.parse(System.getProperty(UpscaleSwitches.MODE));
+        ScaleMode m = ScaleMode.parse(System.getProperty(UpscaleSwitches.MODE));
         return m != null && m.on();
     }
 

@@ -30,7 +30,7 @@ public final class UpscaleDefaultOffTest {
 
     public static void main(String[] args) throws Exception {
         check("property unset", System.getProperty(UpscaleSwitches.MODE) == null);
-        check("mode() OFF", UpscaleSwitches.mode() == QualityMode.OFF);
+        check("mode() OFF", UpscaleSwitches.mode() == ScaleMode.OFF);
         check("no device features requested", !DeviceCaps.shouldEnable());
 
         Matrix4f persp = new Matrix4f().perspective(1.2f, 16 / 9f, 0.05f, Float.POSITIVE_INFINITY, true);
@@ -66,7 +66,7 @@ public final class UpscaleDefaultOffTest {
         check("ProjMat supplier returns vanilla's own buffer", s.get() == vanilla);
 
         check("IrohDebug.set refused without proctor/debug", IrohDebug.set(UpscaleSwitches.MODE, "quality").startsWith("refused"));
-        check("refused set changed nothing", UpscaleSwitches.mode() == QualityMode.OFF);
+        check("refused set changed nothing", UpscaleSwitches.mode() == ScaleMode.OFF);
         TemporalRuntime.onRenderHead();
         check("still inactive after the refused set", !TemporalFrame.ACTIVE);
         check("mode default off", IrohDebug.get(UpscaleSwitches.MODE).equals("off"));
@@ -111,7 +111,7 @@ public final class UpscaleDefaultOffTest {
                 "dev/elemore/iroh/api/IrohDebug.java", "net/vulkanmod/vulkan/framebuffer/SceneTarget.java"));
         Set<String> found = new TreeSet<>();
         Path root = Path.of("src/main/java");
-        for (Path p : Files.walk(root).filter(p -> p.toString().endsWith(".java") && !p.toString().contains("dev/elemore/iroh/temporal/")).toList())
+        for (Path p : Files.walk(root).filter(p -> p.toString().endsWith(".java") && !p.toString().contains("dev/elemore/iroh/temporal/") && !p.toString().contains("dev/elemore/iroh/upscale/")).toList())
             if (Files.readString(p).contains("dev.elemore.iroh.temporal"))
                 found.add(root.relativize(p).toString());
         check("hooks exactly in " + expected + " (found " + found + ")", found.equals(expected));

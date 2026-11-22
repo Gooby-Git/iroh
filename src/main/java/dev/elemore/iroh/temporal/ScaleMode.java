@@ -1,35 +1,38 @@
 package dev.elemore.iroh.temporal;
 
+import dev.elemore.iroh.upscale.QualityMode;
+
 import java.util.Locale;
 
 /**
- * Upscaler quality modes (card P4-1a). The ratio is display / render per axis, the same numbers as AMD's
- * {@code ffxFsr3UpscalerGetUpscaleRatioFromQualityMode} (FidelityFX SDK 1.1.4, MIT): Native AA 1.0, Quality 1.5,
- * Balanced 1.7, Performance 2.0, Ultra Performance 3.0. {@link #CUSTOM} takes its ratio from {@code iroh.upscale.scale}.
- * {@link #OFF} means the whole temporal path is inert (the default): one scene target at window size, as in rc14.
+ * The value of the {@code iroh.upscale.mode} switch (card P4-1a; renamed in P4-1b from temporal.QualityMode so there is
+ * ONE quality-mode table: {@link QualityMode} in dev.elemore.iroh.upscale, from card P4-2a). Adds what the switch needs
+ * beyond the presets: {@link #OFF} (the whole path inert, the default) and {@link #CUSTOM} (ratio from
+ * {@code iroh.upscale.scale}). Every preset's ratio comes from {@link QualityMode}.
  */
-public enum QualityMode {
-    OFF("off", 0f),
-    NATIVE_AA("native", 1.0f),
-    QUALITY("quality", 1.5f),
-    BALANCED("balanced", 1.7f),
-    PERFORMANCE("performance", 2.0f),
-    ULTRA_PERFORMANCE("ultra", 3.0f),
-    CUSTOM("custom", 0f);
+public enum ScaleMode {
+    OFF("off", null),
+    NATIVE_AA("native", QualityMode.NATIVE_AA),
+    QUALITY("quality", QualityMode.QUALITY),
+    BALANCED("balanced", QualityMode.BALANCED),
+    PERFORMANCE("performance", QualityMode.PERFORMANCE),
+    ULTRA_PERFORMANCE("ultra", QualityMode.ULTRA_PERFORMANCE),
+    CUSTOM("custom", null);
 
     public final String key;
-    private final float ratio;
+    /** the preset, null for OFF and CUSTOM */
+    public final QualityMode preset;
 
-    QualityMode(String key, float ratio) {
+    ScaleMode(String key, QualityMode preset) {
         this.key = key;
-        this.ratio = ratio;
+        this.preset = preset;
     }
 
     /** display / render ratio; for CUSTOM the given custom value clamped to [1, 4]; 0 for OFF */
     public float ratio(float custom) {
         if (this == CUSTOM)
             return Float.isFinite(custom) ? Math.max(1.0f, Math.min(4.0f, custom)) : 1.0f;
-        return ratio;
+        return preset == null ? 0f : preset.ratio;
     }
 
     public boolean on() {
@@ -37,13 +40,13 @@ public enum QualityMode {
     }
 
     /** "off" / "native" / "quality" / "balanced" / "performance" / "ultra" / "custom"; null for anything else */
-    public static QualityMode parse(String s) {
+    public static ScaleMode parse(String s) {
         if (s == null)
             return OFF;
         String k = s.trim().toLowerCase(Locale.ROOT);
         if (k.isEmpty() || k.equals("false"))
             return OFF;
-        for (QualityMode m : values())
+        for (ScaleMode m : values())
             if (m.key.equals(k))
                 return m;
         return switch (k) {
@@ -55,7 +58,7 @@ public enum QualityMode {
 
     public static String keys() {
         StringBuilder sb = new StringBuilder();
-        for (QualityMode m : values())
+        for (ScaleMode m : values())
             sb.append(sb.isEmpty() ? "" : "|").append(m.key);
         return sb.toString();
     }

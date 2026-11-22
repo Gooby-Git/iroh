@@ -52,7 +52,7 @@ public final class UpscaleTest {
         check(inRange, "jitter in range");
         check(java.util.Arrays.equals(JitterSequence.offset(5, 18), JitterSequence.offset(23, 18)), "jitter wraps");
         float[] pn = JitterSequence.projectionOffsetNdc(new float[]{0.5f, -0.25f}, 1000, 500);
-        check(pn[0] == 0.001f && pn[1] == 0.001f, "projection offset " + pn[0] + "," + pn[1]);
+        check(pn[0] == 0.001f && pn[1] == -0.001f, "projection offset (Iroh axes, rows grow with NDC y: +2jy/H) " + pn[0] + "," + pn[1]);
         check(FsrMemoryEstimateOk(), "memory estimate within 25% of the SDK table at 1440p Quality (106 MB)");
 
         if (NativeLoader.load()) {

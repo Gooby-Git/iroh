@@ -8,6 +8,8 @@ import org.joml.Vector4d;
 
 /**
  * Pure maths of the temporal-upscaler inputs (card P4-1a). No game, no Vulkan; {@code ./gradlew temporalMathTest}.
+ * P4-1b: the SDK formulas (render size, phase count, Halton jitter, mip bias) live ONCE in {@code dev.elemore.iroh.upscale}
+ * (ScaleMode, JitterSequence, MipBias: bit-exact against the SDK in upscaleTest); the methods here delegate.
  *
  * <h2>Pixel space (Iroh, RQ-16)</h2>
  * Every Iroh render target stores GL row order: image row 0 = the BOTTOM row, and a positive-height Vulkan viewport
@@ -49,36 +51,29 @@ public final class TemporalMath {
     public static int renderSize(int display, float ratio) {
         if (ratio <= 0f)
             return display;
-        return Math.max(1, (int) ((float) display / ratio));
+        return Math.max(1, dev.elemore.iroh.upscale.QualityMode.renderSize(display, display, Math.max(1f, ratio))[0]);
     }
 
     /** {@code int(8 * (display / render)^2)}, ffxFsr3UpscalerGetJitterPhaseCount; at least 1. */
     public static int jitterPhaseCount(int renderWidth, int displayWidth) {
-        float r = (float) displayWidth / (float) renderWidth;
-        return Math.max(1, (int) (8.0f * (float) Math.pow(r, 2.0f)));
+        return Math.max(1, dev.elemore.iroh.upscale.JitterSequence.phaseCount(renderWidth, displayWidth));
     }
 
     /** Radical inverse in float arithmetic, the same steps as the SDK's {@code halton()} (MIT). */
     public static float halton(int index, int base) {
-        float f = 1.0f, result = 0.0f;
-        for (int i = index; i > 0; ) {
-            f /= (float) base;
-            result = result + f * (float) (i % base);
-            i = (int) Math.floor((float) i / (float) base);
-        }
-        return result;
+        return dev.elemore.iroh.upscale.JitterSequence.halton(index, base);
     }
 
     /** Jitter in render pixels, each in [-0.5, 0.5]: Halton(2,3) at {@code (index % phaseCount) + 1} minus 0.5 (ffxFsr3UpscalerGetJitterOffset). */
     public static void jitterOffset(int index, int phaseCount, float[] out) {
-        int i = Math.floorMod(index, phaseCount) + 1;
-        out[0] = halton(i, 2) - 0.5f;
-        out[1] = halton(i, 3) - 0.5f;
+        float[] j = dev.elemore.iroh.upscale.JitterSequence.offset(Math.floorMod(index, phaseCount), phaseCount);
+        out[0] = j[0];
+        out[1] = j[1];
     }
 
     /** FSR's texture LOD bias for jittered rendering: {@code log2(render / display) - 1}. */
     public static float mipBias(int renderWidth, int displayWidth) {
-        return (float) (Math.log((double) renderWidth / displayWidth) / Math.log(2.0)) - 1.0f;
+        return dev.elemore.iroh.upscale.MipBias.forSizes(renderWidth, displayWidth);
     }
 
     /** NDC translation of a jitter (pixels) on a target of the given size, Iroh's axes (see class doc): +2j/size on both axes. */

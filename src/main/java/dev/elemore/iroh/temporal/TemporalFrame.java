@@ -26,7 +26,7 @@ public final class TemporalFrame {
     /** world-phase texture LOD bias in effect */
     public static boolean MIP_ON;
 
-    public static QualityMode mode = QualityMode.OFF;
+    public static ScaleMode mode = ScaleMode.OFF;
     public static int displayW, displayH, renderW, renderH;
     public static long frameIndex;
     public static int phaseCount = 1;
@@ -53,7 +53,7 @@ public final class TemporalFrame {
     private static final float[] JIT = new float[2];
     private static final Matrix4f SCRATCH = new Matrix4f();
     private static int lastRenderW, lastRenderH;
-    private static QualityMode lastMode = QualityMode.OFF;
+    private static ScaleMode lastMode = ScaleMode.OFF;
 
     /**
      * Reads the switches and sets this frame's sizes, jitter, bias. {@code temporalUpscaler} / {@code upscalerWantsVelocity}
@@ -61,9 +61,9 @@ public final class TemporalFrame {
      * @return true when the render size or on/off state changed (world post chains must be resized)
      */
     public static boolean beginFrame(int dispW, int dispH, boolean temporalUpscaler, boolean upscalerWantsVelocity) {
-        QualityMode m = UpscaleSwitches.mode();
+        ScaleMode m = UpscaleSwitches.mode();
         boolean on = m.on() && dispW > 0 && dispH > 0;
-        mode = on ? m : QualityMode.OFF;
+        mode = on ? m : ScaleMode.OFF;
         if (!on) {
             boolean changed = ACTIVE;
             ACTIVE = IN_WORLD = JITTER_ON = MIP_ON = false;
@@ -71,7 +71,7 @@ public final class TemporalFrame {
             debugMode = 0;
             haveCur = havePrev = false;
             reset = true;
-            lastMode = QualityMode.OFF;
+            lastMode = ScaleMode.OFF;
             return changed;
         }
         float custom;
@@ -233,7 +233,7 @@ public final class TemporalFrame {
     /** For tests: back to the state of a fresh JVM. */
     static void resetForTest() {
         ACTIVE = IN_WORLD = JITTER_ON = MIP_ON = false;
-        mode = lastMode = QualityMode.OFF;
+        mode = lastMode = ScaleMode.OFF;
         frameIndex = 0;
         haveCur = havePrev = false;
         reset = true;
