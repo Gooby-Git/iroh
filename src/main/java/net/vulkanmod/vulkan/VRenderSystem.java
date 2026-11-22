@@ -268,6 +268,14 @@ public abstract class VRenderSystem {
         }
     }
 
+    /** Iroh (G1 fix): after a foreign pipeline was bound the depth bias is undefined: set the current value again */
+    public static void reapplyDepthBias() {
+        if (depthBiasEnabled)
+            Renderer.setDepthBias(depthBiasConstant, depthBiasSlope);
+        else
+            Renderer.setDepthBias(0.0F, 0.0F);
+    }
+
     public static void disablePolygonOffset() {
         if (depthBiasEnabled) {
             Renderer.setDepthBias(0.0F, 0.0F);

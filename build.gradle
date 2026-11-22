@@ -495,3 +495,13 @@ tasks.register('packDefaultOffTest', JavaExec) {
 	jvmArgs '-Djava.awt.headless=true'
 	workingDir = projectDir
 }
+
+// G1 fix: endPassRunResume drops the bound-pipeline cache and re-sets dynamic state. ./gradlew passResumeTest
+tasks.register('passResumeTest', JavaExec) {
+	group = 'verification'
+	description = 'Pass resume invalidates bound state and re-sets dynamic state'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PassResumeTest'
+	workingDir = projectDir
+}

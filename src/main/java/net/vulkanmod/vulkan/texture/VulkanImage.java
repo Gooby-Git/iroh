@@ -416,23 +416,41 @@ public class VulkanImage {
     /** Ends the bound render pass (if any), runs {@code record} on the frame command buffer, resumes the pass. */
     public static void endPassRunResume(Runnable record) {
         Renderer renderer = Renderer.getInstance();
-        RenderPass boundPass = renderer.getBoundRenderPass();
-        if (boundPass == null) {
-            record.run();
-            return;
-        }
-        Framebuffer boundFb = renderer.getBoundFramebuffer();
-        VkGlFramebuffer glFb = VkGlFramebuffer.getBoundFramebuffer();
-        renderer.endRenderPass();
-        record.run();
-        if (glFb == null && boundFb instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
-            renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
-        } else if (boundFb != null) {
-            renderer.beginRendering(boundPass, boundFb);        // off-screen passes load (VkGlFramebuffer)
-            VkGlFramebuffer.restoreBinding(glFb);
-        }
-        // Framebuffer.beginRenderPass reset viewport and scissor to full size
-        dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+        RenderPass[] boundPass = {renderer.getBoundRenderPass()};
+        Framebuffer[] boundFb = {renderer.getBoundFramebuffer()};
+        VkGlFramebuffer[] glFb = {VkGlFramebuffer.getBoundFramebuffer()};
+        // Iroh (G1 fix): order + state invalidation in PassResume (tested offline by passResumeTest)
+        dev.elemore.iroh.render.PassResume.run(new dev.elemore.iroh.render.PassResume.Hooks() {
+            public boolean passBound() {
+                return boundPass[0] != null;
+            }
+
+            public void endPass() {
+                renderer.endRenderPass();
+            }
+
+            public void resumePass() {
+                if (glFb[0] == null && boundFb[0] instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
+                    renderer.getMainPass().rebindMainTarget();          // LOAD pass; the CLEAR pass is frame-start only
+                } else if (boundFb[0] != null) {
+                    renderer.beginRendering(boundPass[0], boundFb[0]);  // off-screen passes load (VkGlFramebuffer)
+                    VkGlFramebuffer.restoreBinding(glFb[0]);
+                }
+            }
+
+            public void invalidateBoundState() {
+                renderer.invalidateBoundState();
+            }
+
+            public void reapplyDynamicState() {
+                // depth bias / line width: legal outside a pass, and no pass begin sets them again
+                net.vulkanmod.vulkan.VRenderSystem.reapplyDepthBias();
+                if (renderer.getBoundRenderPass() != null)
+                    // Framebuffer.beginRenderPass reset viewport and scissor to full size
+                    dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
+                dev.elemore.iroh.glshim.GlState.reapplyDynamicState();
+            }
+        }, record);
     }
 
     public void readOnlyLayout() {
