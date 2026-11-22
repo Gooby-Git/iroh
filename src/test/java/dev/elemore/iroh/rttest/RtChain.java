@@ -39,9 +39,12 @@ final class RtChain implements AutoCloseable {
     final RtReplay.Light light;
     final JitterSequence js;
     final float fovY;
-    final VkBuf bSunVis, bEmit, bGi, bRefl, bDiff, bVis, bSpec, bOut;
+    final VkBuf bSunVis, bEmit, bDiff, bVis, bSpec, bOut;
+    VkBuf bGi, bRefl, bTmpG, bTmpR;
     static final float NEAR = 0.1f, FAR = 1000f, SKY_Z = 1e5f;
     final Map<String, double[]> cost = new LinkedHashMap<>();   // stage -> {nanos, calls}
+    /** Look mode: the G-buffer's albedo bytes are sRGB; decode them for the denoiser's IN_ALBEDO and the modulation. */
+    boolean srgbAlbedo;
 
     RtChain(RtScene scene, RtReplay.Light light, int rw, int rh, int dw, int dh, float fovY) {
         this.RW = rw;
@@ -59,6 +62,8 @@ final class RtChain implements AutoCloseable {
         bEmit = gpu.buf(N * 16L);
         bGi = gpu.buf(N * 16L);
         bRefl = gpu.buf(N * 16L);
+        bTmpG = gpu.buf(N * 16L);
+        bTmpR = gpu.buf(N * 16L);
         bDiff = gpu.buf(N * 16L);
         bVis = gpu.buf(N * 16L);
         bSpec = gpu.buf(N * 16L);
@@ -93,7 +98,9 @@ final class RtChain implements AutoCloseable {
             gpu.trace("block light", gpu.pEmit, bEmit);
             gpu.trace("GI 1 bounce + cache", gpu.pGi, gpu.cache, bGi);
             if ((flags & F_CACHE) != 0) gpu.cacheResolve();
+            if ((flags & F_HALF_GI) != 0) { gpu.trace("checkerboard recon", gpu.pRecon, bGi, bTmpG); VkBuf t = bGi; bGi = bTmpG; bTmpG = t; }
             gpu.trace("reflections", gpu.pRefl, bRefl);
+            if ((flags & F_HALF_REFL) != 0) { gpu.trace("checkerboard recon", gpu.pRecon, bRefl, bTmpR); VkBuf t = bRefl; bRefl = bTmpR; bTmpR = t; }
         });
         r.g = gpu.readUvec4(gpu.gbufCur);
         r.vis = gpu.readVec4(bSunVis);
@@ -144,7 +151,10 @@ final class RtChain implements AutoCloseable {
             in.viewZ[i] = valid ? vz : SKY_Z;
             int al = g[i * 4 + 1];
             float[] a = new float[3];
-            for (int k = 0; k < 3; k++) a[k] = valid ? ((al >>> (8 * k)) & 0xFF) / 255f : 1f;
+            for (int k = 0; k < 3; k++) {
+                float c = valid ? ((al >>> (8 * k)) & 0xFF) / 255f : 1f;
+                a[k] = srgbAlbedo && valid ? (float) (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)) : c;
+            }
             System.arraycopy(a, 0, in.albedo, i * 3, 3);
             int tile = (al >>> 24) & 63;
             RtScene.Material m = mats[tile];

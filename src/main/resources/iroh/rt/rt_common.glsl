@@ -112,6 +112,7 @@ Hit traceClosest(vec3 o, vec3 d, float tmax, uint mask) {
     h.tile = tileOf(ua, ub, uc);
     vec2 uv = ua * (1.0 - bary.x - bary.y) + ub * bary.x + uc * bary.y;
     h.albedo = texel(h.tile, uv).rgb * unpackUnorm4x8(a.w).rgb;
+    if (lookOn()) h.albedo = srgbDecode(h.albedo);
     return h;
 }
 
@@ -280,7 +281,7 @@ Surf surface(uvec2 px) {
     if (!s.valid) return s;
     s.n = octDecode(unpackUnorm2x16(g.x));
     vec4 al = unpackUnorm4x8(g.y);
-    s.albedo = al.rgb;
+    s.albedo = lookOn() ? srgbDecode(al.rgb) : al.rgb;   // look: textures and tints are sRGB (as Minecraft's); P5-0 steps keep raw values
     s.tile = int((g.y >> 24) & 63u);
     s.skyOpen = ((g.y >> 30) & 1u) != 0u;
     s.mv = unpackHalf2x16(g.w);

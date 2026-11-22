@@ -36,6 +36,7 @@ void main() {
     uvec2 px = gl_GlobalInvocationID.xy;
     if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
     uint i = px.y * fr.dims.x + px.x;
+    if ((fr.dims.w & F_HALF_REFL) != 0u && ((px.x + px.y + fr.dims.z) & 1u) == 1u) { outv[i] = vec4(-1.0); return; }  // checkerboard: recon.comp fills
     Surf s = surface(px);
     uint rays = 0u;
     vec4 o = vec4(0.0);

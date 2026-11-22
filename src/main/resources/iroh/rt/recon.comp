@@ -1,0 +1,41 @@
+#version 460
+// P5-1 checkerboard reconstruction (own): pixels skipped by a half-rate pass (marked w = -1) take the mean of their traced
+// 4-neighbours that lie on the same surface (viewZ within 3% + slope, normals within ~25 deg); no match -> the nearest
+// traced value along the 8-neighbourhood, else 0. The temporal denoiser then integrates both checkerboard fields, so a
+// pixel sees a traced sample every second frame. Output w keeps the neighbours' mean hit distance.
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) readonly buffer In { vec4 inv[]; };
+layout(std430, set = 0, binding = 10) writeonly buffer Out { vec4 outv[]; };
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    vec4 c = inv[i];
+    if (c.w >= -0.5) { outv[i] = c; return; }
+    uvec4 g = gbuf[i];
+    float z = uintBitsToFloat(g.z);
+    if (z <= 0.0) { outv[i] = vec4(0.0); return; }
+    vec3 n = octDecode(unpackUnorm2x16(g.x));
+    vec4 acc = vec4(0.0);
+    float wsum = 0.0;
+    vec4 any = vec4(0.0);
+    bool found = false;
+    for (int k = 0; k < 8; k++) {
+        ivec2 o = k < 4 ? ivec2(k == 0 ? 1 : k == 1 ? -1 : 0, k == 2 ? 1 : k == 3 ? -1 : 0) : ivec2((k & 1) == 0 ? 1 : -1, k < 6 ? 1 : -1);
+        ivec2 q = ivec2(px) + o;
+        if (q.x < 0 || q.y < 0 || q.x >= int(fr.dims.x) || q.y >= int(fr.dims.y)) continue;
+        uint j = uint(q.y) * fr.dims.x + uint(q.x);
+        vec4 v = inv[j];
+        if (v.w < -0.5) continue;
+        uvec4 gq = gbuf[j];
+        float zq = uintBitsToFloat(gq.z);
+        if (zq <= 0.0) continue;
+        if (!found) { any = v; found = true; }
+        if (k >= 4) continue;
+        if (abs(zq - z) > 0.03 * z + 0.05 || dot(octDecode(unpackUnorm2x16(gq.x)), n) < 0.9) continue;
+        acc += v;
+        wsum += 1.0;
+    }
+    outv[i] = wsum > 0.0 ? acc / wsum : (found ? any : vec4(0.0));
+}

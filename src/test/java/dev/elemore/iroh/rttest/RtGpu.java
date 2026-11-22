@@ -38,7 +38,7 @@ final class RtGpu implements AutoCloseable {
     VkBuf verts, inst, atlas, mats, lights, frame, counters, origins, cmds, cache;
     VkBuf gbufCur, gbufPrev;
     Object gImage, dImage, raster;
-    RtCompute.Pass pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost;
+    RtCompute.Pass pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon;
     /** P5-1: upscaler jitter in pixels for the next setFrame (content shifts by +jitter). */
     float[] jitterPx = {0, 0};
     RtAccel.Accel tlas;
@@ -294,6 +294,7 @@ final class RtGpu implements AutoCloseable {
         pSunVis = pass("sunvis.comp", true, 9, 0);
         pComposeLook = pass("compose_look.comp", true, 12, 0);
         pPost = pass("post.comp", false, 3, 4);
+        pRecon = pass("recon.comp", true, 10, 0);
     }
 
     RtCompute.Pass pass(String name, boolean traces, int buffers, int push) {
@@ -471,7 +472,7 @@ final class RtGpu implements AutoCloseable {
         for (RtAccel.Accel a : blas) accel.destroy(a);
         if (tlas != null) accel.destroy(tlas);
         accel.close();
-        for (RtCompute.Pass p : new RtCompute.Pass[]{pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost})
+        for (RtCompute.Pass p : new RtCompute.Pass[]{pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon})
             if (p != null) comp.destroy(p);
         comp.close();
         dev.destroyPipeline(raster);

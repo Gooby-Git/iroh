@@ -21,6 +21,9 @@ float lkNoise(vec2 p) {
 
 bool lookOn() { return (fr.dims.w & F_LOOK) != 0u; }
 
+/** sRGB -> linear (IEC 61966-2-1). Minecraft's textures and biome tints are sRGB; lighting needs linear reflectance. */
+vec3 srgbDecode(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
+
 vec3 lkStars(vec3 d) {
     // cube-map cells on the unit sphere, at most one soft star per cell; fixed to the world (in game: turns with the sky)
     vec3 a = abs(d);
