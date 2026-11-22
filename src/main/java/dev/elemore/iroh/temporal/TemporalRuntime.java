@@ -70,10 +70,24 @@ public final class TemporalRuntime {
     private static ScaleMode lastMode = ScaleMode.OFF;
     private static final double OBJECT_RANGE = 128.0;
 
+    private static boolean warnedPack;
+
     /** GameRenderer.render HEAD */
     public static void onRenderHead() {
         if (!TemporalFrame.ACTIVE && !UpscaleSwitches.mode().on())
             return;
+        // integration/next: the Navidson pack path and render scale are not combined before card P4-8 (the pack would
+        // run at render size on the world image set with no upscale cut point): the pack wins, upscaling stays off
+        if (dev.elemore.iroh.shaderpack.runtime.PackRuntime.active()) {
+            if (!warnedPack) {
+                Initializer.LOGGER.warn("Iroh upscale: off while the shader pack path runs (pack + upscaler is card P4-8)");
+                warnedPack = true;
+            }
+            if (!TemporalFrame.ACTIVE)
+                return;
+            UpscaleSwitches.registerAll();
+            DebugSwitches.set(UpscaleSwitches.MODE, "off");
+        }
         UpscaleSwitches.registerAll();
         inGameRender = true;
         SwapChain sc = Renderer.getInstance().getSwapChain();

@@ -62,7 +62,7 @@ public final class PackDefaultOffTest {
                 hooks++;
         check("WorldStages calls onWorldEnd", ws.contains("PackRuntime.onWorldEnd()"));
         check("LevelRendererMixin calls onSetLevel", lr.contains("PackRuntime.onSetLevel()"));
-        check("exactly 3 files outside the runtime reference PackRuntime (WorldStages, mixin, IrohDebug): " + hooks, hooks == 3);
+        check("exactly 4 files outside the runtime reference PackRuntime (WorldStages, mixin, IrohDebug, TemporalRuntime: pack wins over render scale): " + hooks, hooks == 4);
         System.out.println("# defaultoff " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
     }

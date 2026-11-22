@@ -45,12 +45,14 @@ public final class DeviceCaps {
 
     /**
      * Called from DeviceManager.createLogicalDevice. Queries what is available (always: cheap, read-only) and, when
-     * {@link #shouldEnable()}, sets the matching bits in {@code enable} / {@code enable12}.
-     * @return a Vulkan 1.2 feature struct to chain (float16) or null when nothing 1.2-level is enabled
+     * {@link #shouldEnable()}, sets the matching bits in {@code enable} / {@code enable11} / {@code enable12}. The caller
+     * owns the pNext chain: {@code enable12} is the device's ONE Vulkan 1.2 feature struct (api 4 puts drawIndirectCount
+     * in it; a second struct of the same sType in the chain would be invalid).
      */
-    public static VkPhysicalDeviceVulkan12Features apply(MemoryStack stack, VkPhysicalDevice pd,
-                                                        VkPhysicalDeviceFeatures available, VkPhysicalDeviceFeatures enable,
-                                                        VkPhysicalDeviceVulkan11Features available11, VkPhysicalDeviceVulkan11Features enable11) {
+    public static void apply(MemoryStack stack, VkPhysicalDevice pd,
+                             VkPhysicalDeviceFeatures available, VkPhysicalDeviceFeatures enable,
+                             VkPhysicalDeviceVulkan11Features available11, VkPhysicalDeviceVulkan11Features enable11,
+                             VkPhysicalDeviceVulkan12Features enable12) {
         storageExtendedFormats = available.shaderStorageImageExtendedFormats();
         storageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat();
         storageReadWithoutFormat = available.shaderStorageImageReadWithoutFormat();
@@ -78,16 +80,15 @@ public final class DeviceCaps {
 
         requested = shouldEnable();
         if (!requested)
-            return null;
+            return;
         enable.shaderStorageImageExtendedFormats(storageExtendedFormats);
         enable.shaderStorageImageWriteWithoutFormat(storageWriteWithoutFormat);
         enable.shaderStorageImageReadWithoutFormat(storageReadWithoutFormat);
         enable.shaderInt16(shaderInt16);
         if (enable11 != null)
             enable11.storageBuffer16BitAccess(storage16Bit);
-        if (!shaderFloat16)
-            return null;
-        return VkPhysicalDeviceVulkan12Features.calloc(stack).sType$Default().shaderFloat16(true);
+        if (shaderFloat16 && enable12 != null)
+            enable12.shaderFloat16(true);
     }
 
     /** the camera velocity compute pass can run */
