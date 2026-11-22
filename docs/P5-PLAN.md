@@ -72,6 +72,40 @@ First real-GPU measurements wanted, in order: AS bytes/triangle + compaction on 
 channel at 1707x960; FSR 3.1 ms; whether ray query in compute on RADV matches RT pipelines for one pass; VRAM of the
 whole RT set at RD 12 (target <= 1.5 GiB RT + denoiser/FSR targets).
 
+## 3c. FINAL R-ladder (P5-2, 2026-11-22; supersedes 3b where they differ). Each rung = ONE guarded launch, vanilla clone first
+
+Common to every rung: Proctor guard v2 (SYSTEM SAFETY v2), never two perf runs, fps cap 240 (60 for look rungs),
+`MESA_VK_ABORT_ON_DEVICE_LOSS=1`, one world per launch, Vista bounded, C2ME OpenCL off. RT flags: `-Diroh.rt=true
+-Diroh.rt.look=RAY_TRACED` (or iroh.json `look: RAY_TRACED` + the dev gate). Guard footprints for preflight: vanilla + RT
+**2.5 GiB**, pack + RT **5.0 GiB**, against the guard's **12.5 GiB** total-VRAM kill; Iroh's own owner `iroh-rt` cap 1.5 GiB
+(`-Diroh.rt.capMiB`), residency 8 chunks (`-Diroh.rt.residency`). A guard kill stops the ladder until the OWNER acks.
+Bisect switches on every rung: `-Diroh.test.failInit=rt` (RT must fall back to raster with ONE line and inert=NO only
+through failures{rt}); `-Diroh.rt.look=NAVIDSON` (same jar, RT inert: the self-check line must equal the int-3 line);
+`-Diroh.rt.residency=2` (BLAS set small); `-Diroh.rt.capMiB=256` (refusals: building must stall, never crash).
+
+- **R0 capability probe (title only, no world).** Flags: RT flags. Pass: self-check `device{... rt=[accelerationStructure
+  rayQuery bufferDeviceAddress snormAsVertex=true]}` and `api ... rt=on(MEDIUM,residency 8,cap 1536MiB)`; no validation
+  error; the same jar WITHOUT the flags prints the int-3 line byte for byte (inert=yes, no `rt=`). Record: whether RADV
+  offers R16G16B16A16_SNORM as an AS vertex format (if false: RT stays off with "unavailable"; the fix is a decode pass,
+  card P5-3), `VkPhysicalDeviceAccelerationStructurePropertiesKHR` limits. Bisect: failInit=rt -> one line, raster.
+- **R1 coverage + memory (one world, 3 fixed cameras, 60 fps).** Flags: RT flags + Iroh debug capture. Pass: RT primary
+  vs raster coverage >= 99.5% of pixels (the in-game step (a)); `iroh-rt` used <= 1.5 GiB; VRAM total within the R1
+  footprint; BLAS bytes per triangle built and compacted ON RADV (lavapipe: 104 B, 0% compaction; plan assumes 64 B);
+  quads per non-empty section; TLAS instances; per-frame build counts never above the budget (8 builds / 200k tris at
+  MEDIUM) in the RtSession stats line. Bisect: residency=2, capMiB=256, section positions (if coverage fails near
+  section borders: the TLAS translation vs the compressed vertex offset, VkRtBackend TRANSFORM).
+- **R2 sun shadows (one world, noon, 60 fps).** Pass: sun visibility matches the offline sheets at the same camera by
+  eye (owner-free objective part: shadow edges under trees and houses, no acne, no light leaks at section borders);
+  tint-only mesher colour active (no double AO: compare a flat grass field to the RT-off frame, luminance ratio within
+  the P5-2 calibration band 0.90-1.10 of flat). Bisect: `RtMeshMode` (rebuild with RT off -> shaded colours back).
+- **R3 full chain at MEDIUM with budgets (exclusive perf slot, load1 < 3).** Pass: timestamps per pass at 1707x960
+  for LOW / MEDIUM / HIGH (G-buffer, AS upkeep, sun, block light, GI + cache, reflections, recon, denoiser 3 channels,
+  compose, FSR 3.1, post); MEDIUM total within 16.6 ms at 1440p output on the RX 9070-class card or a written plan;
+  VRAM inside the footprints above for 10 minutes of flight; frame-time histogram while flying (BLAS build stalls
+  visible as > 2 ms spikes); light-switch lag in frames (lever + lamp). Replaces every ESTIMATE in P5-DESIGN 10/13 and
+  `RtPreset.estimateMs`. Bisect: presets, `-Diroh.rt.residency`, checkerboard off.
+R4 pack memory + rejoin, R5 look review (owner), R6 soak: unchanged from section 3.
+
 ## 4. Memory: per section, at render distance 12 / 24, and the caps
 
 Measured: lavapipe 104 B per triangle (208 B per quad), compaction saved 0% there; lavapipe's format says nothing about
