@@ -242,7 +242,9 @@ public abstract class DeviceManager {
 
             // Iroh P5-2: RT (only when requested at launch AND available): ONE AS + ONE ray-query feature struct in front of
             // the 1.2 struct's tail, bufferDeviceAddress in the SAME single 1.2 struct, + 3 extensions; else unchanged
+            dev.elemore.iroh.rt.game.RtFailures.sink = (step, t) -> dev.elemore.iroh.diag.FeatureFailures.record("rt", t, "at " + step + ": " + dev.elemore.iroh.rt.game.RtFailures.FALLBACK);
             deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(stack, physicalDevice, deviceVulkan12Features, deviceVulkan12Features.pNext()));
+            enabledFeatures += dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits(); // empty unless RT was requested
             createInfo.ppEnabledExtensionNames(asPointerBuffer(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION)));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);

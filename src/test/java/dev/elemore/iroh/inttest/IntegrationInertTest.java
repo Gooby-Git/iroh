@@ -68,6 +68,7 @@ public final class IntegrationInertTest {
         PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON");
         PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
         PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
+        PINNED.put("AbstractBlockRenderContext.shadeQuad", "RtMeshMode.tintOnly x1 per quad (volatile boolean; P5-2 RT tint-only colour)");
         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
         PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onAfterSky (INT-3: P3-11)/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
     }
@@ -164,6 +165,7 @@ public final class IntegrationInertTest {
         expect.put("TaskDispatcher.adaptBuilders", "{}");
         expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
         expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
+        expect.put("AbstractBlockRenderContext.shadeQuad", "{RtMeshMode.tintOnly=1}"); // P5-2: one volatile read per quad
         // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
         expect.put("Renderer.bindGraphicsPipeline", "{Substitution.HOOK=1}"); // INT-3: P3-10/P3-11
         expect.put("Renderer.uploadAndBindUBOs", "{Substitution.HOOK=1}"); // INT-3: P3-11, per draw

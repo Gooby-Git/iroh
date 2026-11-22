@@ -259,6 +259,8 @@ public final class IrohOptions {
     public static final Opt<String> SHADER_PACK;
     public static final Opt<Boolean> SHADERS_ENABLED;
     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Upscaler> UPSCALER;
+    /** P5-2: the Look switch row (owner "Settings UI": RT <-> Navidson) */
+    public static final Opt<dev.elemore.iroh.rt.RtLook> LOOK;
     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Quality> UPSCALE_QUALITY;
     public static final Opt<Integer> UPSCALE_SHARPNESS;
 
@@ -383,6 +385,21 @@ public final class IrohOptions {
         SHADERS_ENABLED = bool("shadersEnabled", Category.SHADERS, false, c -> c.shadersEnabled, (c, v) -> c.shadersEnabled = v);
         SHADERS_ENABLED.storage = Storage.READ_ONLY;
 
+        // ---- P5-2: the Look switch (RT <-> Navidson); RT needs its device features at launch (like FSR) ----
+        LOOK = enumOpt("look", Category.SHADERS, dev.elemore.iroh.rt.RtLook.class, dev.elemore.iroh.rt.RtLook.NAVIDSON,
+                c -> parse(dev.elemore.iroh.rt.RtLook.class, c.look, dev.elemore.iroh.rt.RtLook.NAVIDSON), (c, v) -> c.look = v.name());
+        LOOK.name("iroh.options.look").tooltip("iroh.options.look.tooltip")
+                .label(v -> Component.translatable("iroh.options.look." + v.name().toLowerCase()))
+                .choiceUnavailable(v -> {
+                    if (v != dev.elemore.iroh.rt.RtLook.RAY_TRACED) return null;
+                    String r = dev.elemore.iroh.rt.game.RtLookArbiter.rowDisabledReason(dev.elemore.iroh.rt.game.RtDeviceFeatures.caps.supported()
+                            || Availability.rayTracing() == null, dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled);
+                    return r == null || r.contains("restart") ? null : Component.translatable("iroh.reason.needsRt");
+                });
+        LOOK.applier = v -> {
+            config.look = v.name();
+            dev.elemore.iroh.rt.game.RtFrameHooks.applyLook(v == dev.elemore.iroh.rt.RtLook.RAY_TRACED);
+        };
         // ---- P4-1b: the Iroh section (upscaler); wired to the runtime switches by UpscaleSettings ----
         UPSCALER = enumOpt("upscaler", Category.SHADERS, dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.class,
                 dev.elemore.iroh.temporal.UpscaleSettings.Upscaler.OFF,
@@ -692,6 +709,7 @@ public final class IrohOptions {
             applyLeafCulling(false);
             // P4-1b: the upscaler choice is known before the Vulkan device exists (device features are enabled at creation)
             dev.elemore.iroh.temporal.DeviceCaps.configRequested = dev.elemore.iroh.temporal.UpscaleSettings.wantsDeviceFeatures(config);
+            dev.elemore.iroh.rt.game.RtSwitch.configLook = config.look; // P5-2: RT features are chosen at device creation
             return log;
         }
         log.add("no " + FILE + ": first run");

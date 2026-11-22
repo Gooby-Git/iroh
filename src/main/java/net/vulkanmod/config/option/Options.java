@@ -185,8 +185,7 @@ public abstract class Options {
      * own options get no screen.
      */
     public static OptionBlock[] getShadersOpts() {
-        InfoOption look = info("look", () -> reasonOr(lookReason(), "iroh.shaders.available"))
-                .setUnavailable(Options::lookReason);
+        Option<?> look = toOption(IrohOptions.LOOK); // P5-2: live (RT needs the -Diroh.rt dev gate until RT ships)
         InfoOption fg = info("shaders.frameGeneration", () -> reasonOr(Availability.frameGeneration(), "iroh.shaders.available"))
                 .setUnavailable(Availability::frameGeneration);
         return new OptionBlock[]{

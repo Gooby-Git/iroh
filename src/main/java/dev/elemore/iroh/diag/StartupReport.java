@@ -73,7 +73,8 @@ public final class StartupReport {
                     + " api4=" + dev.elemore.iroh.gpu.game.GpuLifecycle.state()
                     + " api41=" + (dev.elemore.iroh.gpu.GpuCore.api41() ? "on" : "withdrawn")
                     + " slowFrames=" + (dev.elemore.iroh.diag.SlowFrames.ON ? "on" : "off")
-                    + " upscaleDeviceFeatures=" + (dev.elemore.iroh.temporal.DeviceCaps.requested ? "requested" : "not requested");
+                    + " upscaleDeviceFeatures=" + (dev.elemore.iroh.temporal.DeviceCaps.requested ? "requested" : "not requested")
+                    + dev.elemore.iroh.rt.game.RtStartup.apiPart(); // P5-2: empty unless RT was requested at launch
             return build(switches, defaults, otherIrohProps(switches), net.vulkanmod.vulkan.device.DeviceManager.enabledFeatures,
                     api, natives, FeatureFailures.snapshot());
         } catch (Throwable t) {

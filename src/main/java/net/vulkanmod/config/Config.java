@@ -50,6 +50,8 @@ public class Config {
     public boolean shadersEnabled = false;
     /** P4-1b: OFF / FSR3 / FSR4 / DLSS (Iroh section of the video settings). OFF = the rc14 path. */
     public String upscaler = "OFF";
+    /** P5-2: the Look switch (NAVIDSON | RAY_TRACED); read before device creation (RtSwitch.configLook) */
+    public String look = "NAVIDSON";
     /** P4-1b: NATIVE_AA / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE */
     public String upscaleQuality = "QUALITY";
     /** P4-1b: FSR sharpening 0 (off) .. 100 */

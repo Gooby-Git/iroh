@@ -47,6 +47,7 @@ public final class HotPathAudit {
         HOT.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java", new String[]{"beginBatch"});
         HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate"});
         HOT.put("net/vulkanmod/render/chunk/RenderSection.java", new String[]{"reset"});
+        HOT.put("net/vulkanmod/render/chunk/build/frapi/render/AbstractBlockRenderContext.java", new String[]{"shadeQuad"}); // P5-2: per quad
     }
 
     /**
@@ -81,6 +82,12 @@ public final class HotPathAudit {
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onAfterSky", "!active"); // INT-3: P3-11
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onTranslucentTerrain", "!active"); // INT-3: P3-11
         CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/FrameHooks.java#dispatch", "FrameProfiler.ON");
+        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtFrameHooks.java#worldUnloaded", "RtSwitch.ON");          // P5-2
+        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#chain", "RtSwitch.requestedAtLaunch()"); // P5-2 (device creation)
+        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#extensions", "enabled");
+        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#deviceCreated", "enabled");
+        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtDeviceFeatures.java#selfCheckBits", "RtSwitch.requestedAtLaunch()");
+        CALLEE_GUARD.put("dev/elemore/iroh/rt/game/RtStartup.java#apiPart", "RtSwitch.requestedAtLaunch()");
     }
 
     /** CALLEE_GUARD violations (empty = every helper returns through its plain static read) */
@@ -106,7 +113,7 @@ public final class HotPathAudit {
 
     /** feature guards and hook calls: the things that run when everything is off */
     static final Pattern GUARD = Pattern.compile(
-            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
+            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy|RtMeshMode|RtFrameHooks|RtSwitch)"
                     + "\\s*\\.\\s*(\\w+)");
 
     public static Map<String, List<String>> audit(Path src) throws Exception {
