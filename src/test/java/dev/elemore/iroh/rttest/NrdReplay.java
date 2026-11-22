@@ -282,6 +282,7 @@ public final class NrdReplay {
         ck(oC > 0.7 * gC, "own: silhouettes keep at least 70% of the reference contrast");
         ck(oE < fbE, "own: better than the plain temporal fallback");
         png(ow, 3, "iroh_diffuse.png");
+        goldenCheck(ow, golden, "iroh-diffuse-320x180.png", "IROH_DIFFUSE (own)");
         // ---- NRD
         for (DenoiserType t : new DenoiserType[]{DenoiserType.RELAX_DIFFUSE, DenoiserType.REBLUR_DIFFUSE}) {
             fin[0] = true;
@@ -356,7 +357,11 @@ public final class NrdReplay {
     }
 
     static void goldenCheck(float[] o, String mode) throws Exception {
-        File gf = new File("src/test/resources/golden/nrd-relax-diffuse-320x180.png");
+        goldenCheck(o, mode, "nrd-relax-diffuse-320x180.png", "RELAX_DIFFUSE");
+    }
+
+    static void goldenCheck(float[] o, String mode, String file, String label) throws Exception {
+        File gf = new File("src/test/resources/golden/" + file);
         BufferedImage cur = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         for (int p = 0; p < W * H; p++) cur.setRGB(p % W, p / W, (clamp8(tm(o[p * 3])) << 16) | (clamp8(tm(o[p * 3 + 1])) << 8) | clamp8(tm(o[p * 3 + 2])));
         if (mode.equals("update") || !gf.exists()) {
@@ -372,7 +377,7 @@ public final class NrdReplay {
             for (int sh = 0; sh <= 16; sh += 8) { double d = Math.abs(((a >> sh) & 255) - ((b >> sh) & 255)); sum += d; mx = Math.max(mx, d); }
         }
         double mean = sum / (W * H * 3);
-        System.out.printf("golden (RELAX_DIFFUSE, last frame): mean abs diff %.3f/255, max %.0f/255%n", mean, mx);
+        System.out.printf("golden (" + label + ", last frame): mean abs diff %.3f/255, max %.0f/255%n", mean, mx);
         ck(mean <= 1.5 && mx <= 40, "matches the stored golden within tolerance (mean <= 1.5/255, max <= 40/255)");
     }
 }

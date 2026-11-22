@@ -25,7 +25,7 @@ import static org.lwjgl.vulkan.VK12.*;
  * (R32F), IN_NORMAL_ROUGHNESS (A2B10G10R10_UNORM, NRD-compatible oct packing). Outputs: RGBA16F (rgb, a = history length;
  * shadow: r = visibility). No checkerboard / half-rate input support (UNVERIFIED need). THREAD RULE: render thread only.
  * Settings (Map keys): maxHistory 32, minAlpha 0.02, fireflyFactor 0 (off), varFallbackLen 4, zTol 0.02, zSlope 2.5, nTol 0.9,
- * roughLenScale 0.25, lagK 4 (shadow only), lagBias 0.1, atrousIterations 4 (shadow 3), feedbackIteration 0, phiZ 1, phiN 64, phiL 16 (shadow 0.25), radiusScale 1.
+ * roughLenScale 0.25, lagK 4 (shadow 3), lagBias 0.1 (relative to the history mean for radiance, absolute for shadow), atrousIterations 4 (shadow 3), feedbackIteration 0, phiZ 1, phiN 64, phiL 16 (shadow 0.25), radiusScale 1.
  */
 public final class SvgfDenoiser implements Denoiser {
     private final DenoiseGpu gpu;

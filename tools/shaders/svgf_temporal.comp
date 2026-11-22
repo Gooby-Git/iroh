@@ -108,9 +108,20 @@ void main() {
         float lenCap = p.maxLen;
         if (p.mode > 0.5 && p.mode < 1.5) lenCap = max(2.0, p.maxLen * mix(p.roughLenScale, 1.0, nr.w));   // specular: smooth surfaces keep short history
         len = min(hm.z, lenCap);
-        if (p.lagK > 0.0 && p.mode > 1.5) {
-            float varH = max(0.0, hm.y - hm.x * hm.x);
+        float varH = max(0.0, hm.y - hm.x * hm.x);
+        if (p.lagK > 0.0 && p.mode > 1.5) {            // shadow: per-pixel visibility change vs the (low-variance) history
             if (abs(lc - hm.x) > p.lagK * sqrt(varH) + p.lagBias) len = min(len, 1.0);
+        } else if (p.lagK > 0.0) {                      // radiance: 5x5 neighbourhood MEAN of the current noisy frame vs the history mean (variance of the mean as tolerance)
+            float s1 = 0.0, s2 = 0.0, sn = 0.0;
+            for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
+                ivec2 q = clamp(px + ivec2(dx, dy), ivec2(0), sz - 1);
+                if (texelFetch(uViewZ, q, 0).r > 5.0e4) continue;
+                float l = lum(demod(q));
+                s1 += l; s2 += l * l; sn += 1.0;
+            }
+            float cm = s1 / sn, cvar = max(0.0, s2 / sn - cm * cm) / sn;
+            float sigma = sqrt(cvar + varH / max(len, 1.0));
+            if (abs(cm - hm.x) > p.lagK * sigma + p.lagBias * max(hm.x, 0.1)) len = min(len, 1.0);
         }
         float a = max(1.0 / (len + 1.0), p.minAlpha);
         col = mix(hc, cur, a);
