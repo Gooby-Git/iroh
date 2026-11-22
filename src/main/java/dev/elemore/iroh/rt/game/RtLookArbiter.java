@@ -26,8 +26,8 @@ public final class RtLookArbiter {
      * @param packLoaded  the pack loader has Navidson ready
      */
     public static Active resolve(boolean lookRt, boolean rtRunning, boolean packLoaded) {
-        if (lookRt) return rtRunning ? Active.RT : Active.RASTER;
-        return packLoaded ? Active.PACK : Active.RASTER;
+        // INT-4: the rule lives in MainPassArbiter (rule 8); this is its RT-side name
+        return Active.valueOf(dev.elemore.iroh.render.MainPassArbiter.resolveLook(lookRt, rtRunning, packLoaded).name());
     }
 
     /** Settings row state: null = selectable, else the greyed reason shown as tooltip. */

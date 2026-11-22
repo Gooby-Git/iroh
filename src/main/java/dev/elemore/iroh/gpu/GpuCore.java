@@ -22,7 +22,7 @@ public final class GpuCore {
     public static final int STORAGE = 1, INDIRECT = 2, INDEX = 4, VERTEX = 8;
     public static final int MAX_BUFFER_BYTES = 1 << 30; // 1 GiB per buffer (v1 chunked heaps use 256 MiB)
     public static final int MAX_GROUPS = 65535;
-    public static final double OWNER_SHARE = Double.parseDouble(System.getProperty("iroh.gpu.ownerShare", "0.40"));
+    public static final double OWNER_SHARE = dev.elemore.iroh.memory.MemoryShares.Owner.API4_EACH.fraction; // INT-4: one share table (MemoryShares)
     /** {@link GpuDevice.External} keys of Iroh's own textures (api 4.1). */
     public static final String BLOCK_ATLAS = "iroh:block_atlas", LIGHTMAP = "iroh:lightmap";
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# INT-3: run every JavaExec suite of an Iroh worktree + the 16 pack replay goldens + apiReplay golden + FULL round trip;
+# INT-3 (+INT-4 RT suites): run every JavaExec suite of an Iroh worktree + the 16 pack replay goldens + apiReplay golden + FULL round trip;
 # one summary line each (rc, last "#" line, golden status). usage: tools/allsuites.sh <worktree> <outdir> [task ...]
 # Run ./build.sh first (bridgeLinkTest). After ./gradlew clean, customEvalTest needs the Navidson packHarness dump: rerun it last.
 WT="$1"; OUT="$2"; shift 2
@@ -15,8 +15,14 @@ if [ $# -gt 0 ]; then
 else
   for t in $(grep -oP "tasks.register\('\K[A-Za-z0-9]+(?=', JavaExec)" build.gradle); do
     case "$SKIP" in *" $t "*) continue;; esac
+    [ "$t" = rtLook ] && continue   # INT-4: run below with -Pout inside the worktree
     runs+=("$t|$t")
   done
+  # INT-4: the RT suites (card/P5-0..P5-3) must be among the discovered ones; fail loudly if a rename drops one
+  for t in rtReplay rtSeamTest rtProbe rtEntities rtLights rtLook memorySharesTest; do
+    grep -q "tasks.register('$t', JavaExec)" build.gradle || echo "MISSING RT/INT-4 task $t" | tee -a "$OUT/summary.txt"
+  done
+  runs+=("rtLook|rtLook -Pout=build/rt-allsuites")
   runs+=("packHarness-self|packHarness -Ppack=src/test/packs")
   runs+=("packHarness-nav|packHarness -Ppack=$NAV")
   runs+=("packGraph-nav|packGraph -Ppack=$NAV")

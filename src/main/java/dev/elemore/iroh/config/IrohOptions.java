@@ -709,7 +709,7 @@ public final class IrohOptions {
             applyLeafCulling(false);
             // P4-1b: the upscaler choice is known before the Vulkan device exists (device features are enabled at creation)
             dev.elemore.iroh.temporal.DeviceCaps.configRequested = dev.elemore.iroh.temporal.UpscaleSettings.wantsDeviceFeatures(config);
-            dev.elemore.iroh.rt.game.RtSwitch.configLook = config.look; // P5-2: RT features are chosen at device creation
+            dev.elemore.iroh.rt.game.RtSwitch.setConfigLook(config.look); // P5-2: RT features are chosen at device creation (INT-4: setter drops the cache)
             return log;
         }
         log.add("no " + FILE + ": first run");

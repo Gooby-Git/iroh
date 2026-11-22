@@ -95,8 +95,25 @@ public final class PackRuntime {
     }
 
     /** IrohDebug / startup: switch the pack path on or off (off frees everything) */
+    /** INT-4: the "Look is ray tracing" refusal is logged once per session */
+    private static boolean lookRefusalLogged;
+
     public static synchronized String setEnabled(boolean on) {
         if (on) {
+            // INT-4 MainPassArbiter rule 8: the configured Look wins; RAY_TRACED keeps the pack path off (one line)
+            String look = dev.elemore.iroh.render.MainPassArbiter.packRefusal(dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced());
+            if (look != null) {
+                active = false;
+                if (!lookRefusalLogged) {
+                    lookRefusalLogged = true;
+                    try {
+                        net.vulkanmod.Initializer.LOGGER.warn("Iroh pack: {}", look);
+                    } catch (Throwable ignored) {
+                        System.out.println("Iroh pack: " + look); // offline
+                    }
+                }
+                return "refused: " + look;
+            }
             try {
                 dev.elemore.iroh.diag.FeatureFailures.inject("pack");
                 if (impl == null)

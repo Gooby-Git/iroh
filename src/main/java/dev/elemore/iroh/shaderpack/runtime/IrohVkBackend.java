@@ -28,7 +28,8 @@ import static org.lwjgl.vulkan.VK10.*;
  *   <li>2D images: {@link VulkanImage} (named {@code pack:<target>}, owner {@code pack}, counted by MemoryManager and
  *       visible to {@code -Diroh.imageTrace=pack:}), freed through {@link VulkanImage#FREE} (deferred, epoch-gated).
  *       3D images (custom image.* volumes): VMA directly, destroyed through a frame op.</li>
- *   <li>Every pack image is NON-essential: {@link MemoryGuard#allowOptional} first; a refusal throws
+ *   <li>Every pack image is NON-essential: the "pack" share (MemoryShares, 35% of Iroh's cap) and
+ *       {@link MemoryGuard#allowOptional} first (INT-4); a refusal throws
  *       {@link Refused}, which the lifecycle turns into "pack path off for the session" (raster continues).</li>
  *   <li>Views, framebuffers, pipelines, samplers: destroyed by {@code MemoryManager.addFrameOp}, i.e. when the current
  *       frame slot comes round again (its fence has passed: no in-flight frame can use them).</li>
@@ -218,11 +219,27 @@ public final class IrohVkBackend extends VkPackBackend {
 
     // ------------------------------------------------------------------------------------------------ images
 
+    /** INT-4: pack images are owner "pack" in the one share table (35% of Iroh's cap + the guard's total check) */
+    static final dev.elemore.iroh.memory.MemoryShares.Account PACK_MEMORY = dev.elemore.iroh.memory.MemoryShares.Account.game(
+            dev.elemore.iroh.memory.MemoryShares.Owner.PACK);
+    private static final java.util.Map<Long, Long> PACK_BYTES = new java.util.concurrent.ConcurrentHashMap<>();
+
     @Override
     protected Object[] allocImage(ImageDesc d, int fmt, int usage, boolean three) {
         long bytes = d.bytes();
-        if (!MemoryGuard.allowOptional(bytes))
-            throw new Refused("MemoryGuard refused " + d.name() + " (" + (bytes >> 20) + " MiB)");
+        if (!PACK_MEMORY.reserve(bytes))
+            throw new Refused("pack image " + d.name() + " refused: " + PACK_MEMORY.lastRefusal());
+        try {
+            Object[] a = allocImageReserved(d, fmt, usage, three);
+            PACK_BYTES.put((Long) a[0], bytes);
+            return a;
+        } catch (RuntimeException | Error e) {
+            PACK_MEMORY.release(bytes);
+            throw e;
+        }
+    }
+
+    private Object[] allocImageReserved(ImageDesc d, int fmt, int usage, boolean three) {
         if (!three) {
             VulkanImage vi = VulkanImage.builder(d.width(), d.height()).setName(d.name()).setOwner("pack").setFormat(fmt)
                     .setUsage(usage).setMipLevels(d.mips()).setLinearFiltering(true).setClamp(true).createVulkanImage();
@@ -252,6 +269,8 @@ public final class IrohVkBackend extends VkPackBackend {
 
     @Override
     protected void releaseImage(long image, Object alloc, long[] views) {
+        Long held = PACK_BYTES.remove(image); // INT-4: back to the "pack" share (the free itself is deferred a frame)
+        if (held != null) PACK_MEMORY.release(held);
         if (alloc instanceof VulkanImage vi) {
             // views are the VulkanImage's own (main view): VulkanImage.doFree destroys them
             for (long v : views)

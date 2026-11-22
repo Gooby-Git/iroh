@@ -24,6 +24,12 @@ public final class RtSwitch {
     /** The settings resolved at launch (null until {@link #requestedAtLaunch} ran). */
     private static volatile RtSettings launch;
 
+    /**
+     * INT-4: what this build does with RT when it runs (the Look row, the log and the self-check say it; the in-game RT
+     * passes are not wired yet: only the adapter: device features, memory owner, BLAS queue, TLAS, lifecycle).
+     */
+    public static final String STAGE = "acceleration structures only in this build";
+
     public static RtSettings settings() {
         RtSettings s = launch;
         if (s == null) {
@@ -32,6 +38,23 @@ public final class RtSwitch {
             launch = s = RtSettings.from(p);
         }
         return s;
+    }
+
+    /**
+     * INT-4: iroh.json's {@code look} (IrohOptions.load, before device creation). Drops the cached launch settings so an
+     * earlier caller (e.g. pack switches applied before the config was read) cannot freeze the decision without it.
+     */
+    public static void setConfigLook(String look) {
+        configLook = look;
+        launch = null;
+    }
+
+    /**
+     * INT-4 (MainPassArbiter rule 8): the configured Look is RAY_TRACED (launch property, else iroh.json), with or
+     * without the dev gate or the hardware. Then the shader pack path stays off: the Look switch picks one.
+     */
+    public static boolean lookRayTraced() {
+        return settings().look() == RtLook.RAY_TRACED;
     }
 
     /** Before device creation: may RT features be requested? (dev gate + look; capabilities are checked by the device hook) */

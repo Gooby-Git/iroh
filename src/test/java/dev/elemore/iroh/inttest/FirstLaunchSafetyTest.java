@@ -184,6 +184,9 @@ public final class FirstLaunchSafetyTest {
         check("deviceCaps failure: upscale features reported off (velocity/FSR unavailable), one reason", !DeviceCaps.requested
                 && !DeviceCaps.velocityCapable() && !DeviceCaps.fsrCapable() && FeatureFailures.reason("deviceCaps") != null);
 
+        // ---- INT-4: ray tracing (card/P5-3 adapter). Requested at launch, seam rt -> one line, RT off, Look -> raster
+        rtCases();
+
         // ---- startup self-check
         FeatureFailures.resetForTest("startupReport");
         String broken = StartupReport.line();
@@ -208,5 +211,57 @@ public final class FirstLaunchSafetyTest {
 
         System.out.println("# firstlaunch " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
+    }
+
+    /** INT-4: RT requested at launch: forced failure, a device without RT, the Look rule against the pack. */
+    static void rtCases() throws Exception {
+        String[] keys = {"iroh.rt", "iroh.rt.look"};
+        System.setProperty("iroh.rt", "true");
+        System.setProperty("iroh.rt.look", "RAY_TRACED");
+        dev.elemore.iroh.rt.game.RtFailures.resetForTest();
+        FeatureFailures.resetForTest("rt");
+        dev.elemore.iroh.rt.game.RtSwitch.resetForTest();
+        dev.elemore.iroh.rt.game.RtDeviceFeatures.resetForTest();
+        long[] r = new long[1];
+        check("rt forced failure at device creation: chain never throws", noThrow(() -> r[0] = dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(null, null, null, 42L)));
+        check("rt failure: chain unchanged, no extensions added, RT off, ONE recorded failure (" + FeatureFailures.snapshot() + ")",
+                r[0] == 42L && !dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled && !dev.elemore.iroh.rt.game.RtSwitch.ON
+                        && dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(java.util.Set.of("a")).equals(java.util.Set.of("a"))
+                        && FeatureFailures.snapshot().keySet().equals(java.util.Set.of("rt")));
+        dev.elemore.iroh.rt.game.RtDeviceFeatures.deviceCreated(); // no-op: nothing was chained
+        String line = StartupReport.line();
+        check("rt failure: self-check says rt=failed and inert=NO through failures{rt} (" + line + ")",
+                line.contains(" rt=failed") && line.contains("inert=NO") && line.contains("rt") && !dev.elemore.iroh.rt.game.RtSwitch.ON);
+        check("rt failure: the Look falls back to RASTER (never the pack)", dev.elemore.iroh.render.MainPassArbiter.resolveLook(
+                dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced(), dev.elemore.iroh.rt.game.RtSwitch.ON, false) == dev.elemore.iroh.render.MainPassArbiter.Look.RASTER);
+        // the configured Look wins over a pack request: refused with one line, not recorded as a failure
+        String[] p = new String[1];
+        check("Look RAY_TRACED + pack requested: pack setEnabled never throws", noThrow(() -> p[0] = PackRuntime.setEnabled(true)));
+        check("Look RAY_TRACED wins: pack path stays off, refusal names the Look, not a failure (" + p[0] + ")",
+                p[0] != null && p[0].startsWith("refused: the Look is ray tracing") && !PackRuntime.active() && FeatureFailures.reason("pack") == null);
+        // a device WITHOUT RT: features dropped, one line, Look falls back (pure decision; chain() logs it and returns tail)
+        dev.elemore.iroh.rt.RtCapabilities none = dev.elemore.iroh.rt.RtCapabilities.NONE,
+                full = new dev.elemore.iroh.rt.RtCapabilities(true, true, true, false, false, 16L << 30),
+                noBda = new dev.elemore.iroh.rt.RtCapabilities(true, true, false, false, false, 16L << 30);
+        String a = dev.elemore.iroh.rt.game.RtDeviceFeatures.unavailableReason(false, none, false),
+                b = dev.elemore.iroh.rt.game.RtDeviceFeatures.unavailableReason(true, noBda, true),
+                c = dev.elemore.iroh.rt.game.RtDeviceFeatures.unavailableReason(true, full, false),
+                d = dev.elemore.iroh.rt.game.RtDeviceFeatures.unavailableReason(true, full, true);
+        check("device without RT: every missing piece named (" + a + " | " + b + " | " + c + "), full device -> available",
+                a != null && a.contains("VK_KHR_ray_query") && b != null && b.equals("bufferDeviceAddress") && c != null && c.contains("SNORM") && d == null);
+        String src = Files.readString(Path.of("src/main/java/dev/elemore/iroh/rt/game/RtDeviceFeatures.java"));
+        String ch = HotPathAudit.bodies(src, "chain").get(0);
+        int iWhy = ch.indexOf("unavailableReason("), iRet = ch.indexOf("return tail", iWhy), iBda = ch.indexOf("enable12.bufferDeviceAddress(true)"),
+                iOn = ch.indexOf("enabled = true"), iLog = ch.indexOf("falls back to raster");
+        check("device without RT: chain decides BEFORE touching the 1.2 struct or the flag, logs ONE line and returns the chain unchanged",
+                iWhy > 0 && iLog > iWhy && iRet > iLog && iRet < iBda && iBda < iOn);
+        check("device without RT: the Look falls back to RASTER", dev.elemore.iroh.render.MainPassArbiter.resolveLook(true, false, true)
+                == dev.elemore.iroh.render.MainPassArbiter.Look.RASTER);
+        for (String k : keys) System.clearProperty(k);
+        dev.elemore.iroh.rt.game.RtSwitch.resetForTest();
+        dev.elemore.iroh.rt.game.RtDeviceFeatures.resetForTest();
+        dev.elemore.iroh.rt.game.RtFailures.resetForTest();
+        FeatureFailures.resetForTest("");
+        check("RT not requested: self-check carries no rt= at all", !StartupReport.line().contains(" rt="));
     }
 }

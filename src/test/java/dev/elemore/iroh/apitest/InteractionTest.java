@@ -1,5 +1,6 @@
 package dev.elemore.iroh.apitest;
 
+import dev.elemore.iroh.rt.game.RtLookArbiter;
 import dev.elemore.iroh.api.IrohCompute;
 import dev.elemore.iroh.api.IrohTargets;
 import dev.elemore.iroh.api.RenderTargetHandle;
@@ -168,7 +169,46 @@ public final class InteractionTest {
         String mp = Files.readString(Path.of("src/main/java/net/vulkanmod/vulkan/pass/DefaultMainPass.java"));
         check("DefaultMainPass.end: a frame ending with W live turns W off (one HOOK read)", mp.contains("SubstitutionHook.frameEnded()"));
 
-        System.out.println("# interaction " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
+        // ---- INT-4: RT as the third look (rules 8-11)
+        MainPassArbiter.Look RT = MainPassArbiter.Look.RT, PACK = MainPassArbiter.Look.PACK, RASTER = MainPassArbiter.Look.RASTER;
+        check("rule 8 table: Look RT + running = RT; Look RT + pack loaded = RT (configured Look wins); Look RT not running = RASTER (even with the pack loaded); "
+                        + "Look NAVIDSON + pack = PACK; NAVIDSON without pack = RASTER; NAVIDSON never yields RT",
+                MainPassArbiter.resolveLook(true, true, false) == RT && MainPassArbiter.resolveLook(true, true, true) == RT
+                        && MainPassArbiter.resolveLook(true, false, true) == RASTER && MainPassArbiter.resolveLook(false, false, true) == PACK
+                        && MainPassArbiter.resolveLook(false, false, false) == RASTER && MainPassArbiter.resolveLook(false, true, false) == RASTER);
+        check("rule 8: Look RAY_TRACED refuses the pack with one reason; NAVIDSON lets it run",
+                MainPassArbiter.packRefusal(true) != null && MainPassArbiter.packRefusal(false) == null);
+        check("rule 8: W refused while RT runs (even without render scale); W alone still allowed",
+                MainPassArbiter.worldPassRefusal(false, true) != null && MainPassArbiter.worldPassRefusal(false, false) == null
+                        && MainPassArbiter.worldPassRefusal(true, false) != null);
+        check("RtLookArbiter is the same rule (delegates)", RtLookArbiter.resolve(true, false, true)
+                == RtLookArbiter.Active.RASTER && RtLookArbiter.resolve(false, false, true)
+                == RtLookArbiter.Active.PACK);
+        String prt = Files.readString(Path.of("src/main/java/dev/elemore/iroh/shaderpack/runtime/PackRuntime.java"));
+        String se = prt.substring(prt.indexOf("public static synchronized String setEnabled("));
+        check("pack enable asks the Look first (before the pack seam / any pack init) and logs the refusal once",
+                se.indexOf("MainPassArbiter.packRefusal(") >= 0 && se.indexOf("MainPassArbiter.packRefusal(") < se.indexOf("FeatureFailures.inject(\"pack\")")
+                        && se.contains("lookRefusalLogged"));
+        String ps = Files.readString(Path.of("src/main/java/dev/elemore/iroh/shaderpack/runtime/PackStartup.java"));
+        check("pack FULL mode (36-byte terrain format) never with the Look RAY_TRACED (RT reads the 16-byte arena)",
+                ps.contains("rt.game.RtSwitch.lookRayTraced()") && ps.contains("&& !"));
+        check("world pass asks the arbiter with RtSwitch.ON (rule 8)", pri.contains("rt.game.RtSwitch.ON);"));
+        // rules 9 + 10: T (the RT frame hook) records only through P at WORLD_START, on the active (render-size) set
+        String fh = Files.readString(Path.of("src/main/java/dev/elemore/iroh/rt/game/RtFrameHooks.java"));
+        check("rule 9/10: RT records only through VulkanImage.endPassRunResume (P) from a WORLD_START hook, sized from the viewport (render size under R)",
+                fh.contains("FrameStage.WORLD_START") && fh.contains("VulkanImage.endPassRunResume(") && fh.contains("c.viewportWidth()")
+                        && !fh.contains("endRenderPass(") && !fh.contains("beginRendering("));
+        check("rule 11: the RT frame hook is registered only from deviceCreated (device with RT features)",
+                fh.contains("static void install()") && Files.readString(Path.of("src/main/java/dev/elemore/iroh/rt/game/RtDeviceFeatures.java"))
+                        .contains("RtFrameHooks.install()"));
+        FakeRenderer tr2 = new FakeRenderer();
+        tr2.worldPhase = true;   // render-scale world set is the main target: T runs as P and resumes on it
+        MainPassArbiter.runOutside(tr2, () -> tr2.record("rt-build"));
+        check("RT + R: T as P ends the world set, records outside every pass, resumes the world set " + tr2.log, !tr2.bad()
+                && tr2.mainTargetBound() && tr2.log.indexOf("rt-build") > tr2.log.indexOf("end main")
+                && tr2.log.indexOf("resume main (world set)") > tr2.log.indexOf("rt-build"));
+
+        System.out.println("# interaction "+ (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
     }
 

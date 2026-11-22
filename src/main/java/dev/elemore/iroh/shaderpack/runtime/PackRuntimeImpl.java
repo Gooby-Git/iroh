@@ -378,9 +378,11 @@ final class PackRuntimeImpl {
             failWorld(world.failure());
         if (!worldWanted())
             return false;
-        // INT-3 interaction matrix rule 1: never together with render scale's world phase (pack wins; defensive)
+        // INT-3 interaction matrix rule 1: never together with render scale's world phase (pack wins; defensive);
+        // INT-4 rule 8: never while ray tracing runs (only reached when the pack path is active)
         String refuse = dev.elemore.iroh.render.MainPassArbiter.worldPassRefusal(
-                net.vulkanmod.vulkan.Renderer.getInstance().getMainPass() instanceof net.vulkanmod.vulkan.pass.DefaultMainPass d && d.inWorldPhase());
+                net.vulkanmod.vulkan.Renderer.getInstance().getMainPass() instanceof net.vulkanmod.vulkan.pass.DefaultMainPass d && d.inWorldPhase(),
+                dev.elemore.iroh.rt.game.RtSwitch.ON);
         if (refuse != null) {
             failWorld(refuse);
             return false;

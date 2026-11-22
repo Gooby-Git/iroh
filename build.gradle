@@ -367,6 +367,18 @@ tasks.register('memoryBudgetTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// INT-4: the one table of who may take how much of Iroh's cap (MemoryShares), headless. ./gradlew memorySharesTest;
+// last line "# memoryshares PASS n/n".
+tasks.register('memorySharesTest', JavaExec) {
+	group = 'verification'
+	description = 'Memory share table: api-4 / pack / iroh-rt / FSR ceilings, Look exclusivity under the WARN line, accounts refuse at ceiling and total'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.MemorySharesTest'
+	jvmArgs '-ea'
+	workingDir = projectDir
+}
+
 // rc10: per-facing bucket predicate never drops a front face. ./gradlew facingMaskTest
 tasks.register('facingMaskTest', JavaExec) {
 	group = 'verification'

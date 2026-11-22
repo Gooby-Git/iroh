@@ -28,6 +28,28 @@ package dev.elemore.iroh.render;
  *   <li>DefaultMainPass.end closes whatever is open (R, then W through endRenderPass) before the swapchain copy; a
  *       frame that ends with W still live (WorldRenderEvents.END skipped) turns W off with one line.</li>
  * </ol>
+ * INT-4: the LOOK is a third axis. {@link Look}: RASTER (Iroh's own picture), PACK (Navidson through the loader: its
+ * post chain and, behind its switches, W), RT (Iroh's ray tracing; actor <b>T</b> = the RT recording at WORLD_START).
+ * <ol start="8">
+ *   <li>PACK + RT: FORBIDDEN, the Look switch decides ({@link #resolveLook}). The configured Look (launch property
+ *       {@code iroh.rt.look}, else iroh.json {@code look}) wins when both are asked for: Look RAY_TRACED + {@code
+ *       iroh.pack.enabled} = the pack path stays off with ONE line ({@link #packRefusal}); Look NAVIDSON = RT is not
+ *       requested at all (no device features, nothing registered). RT selected but not running (no hardware, dev gate
+ *       off, failure) = RASTER, never the pack silently. Hence T + W never meet; the world pass also refuses while RT
+ *       runs ({@link #worldPassRefusal(boolean, boolean)}) in case a runtime switch tries.</li>
+ *   <li>RT + R (render scale, FSR): ALLOWED. RT targets are render-size (the R world set's size), T records through P
+ *       (VulkanImage.endPassRunResume) at WORLD_START and resumes on the ACTIVE set; RT's output (when its passes are
+ *       wired) is composed INSIDE the world phase, before endWorld, i.e. before the upscaler cut, exactly where the
+ *       raster world picture ends today.</li>
+ *   <li>RT + J / O (api-4 mods, Vista): ALLOWED, unchanged. T is a P like any other and cannot be inside J (it runs at
+ *       WORLD_START, before any mod joins). Vista's LODs stay RASTER in v1: Vista draws them UNDER the near terrain in the
+ *       world phase (BLEND_UNDER, depth-tested), after T; the RT compose stage (NOT wired in int-4: this build builds
+ *       acceleration structures only) will sit AFTER Vista's composite and before the upscaler cut, replacing lighting
+ *       only where the RT G-buffer has residency geometry and passing raster/LOD pixels through elsewhere. So far LODs are
+ *       a raster backdrop behind the RT image.</li>
+ *   <li>RT off: none of the above runs; T is not even registered (the frame hook exists only on a device created
+ *       with the RT features).</li>
+ * </ol>
  */
 public final class MainPassArbiter {
     private MainPassArbiter() {}
@@ -64,5 +86,31 @@ public final class MainPassArbiter {
         return renderScaleWorldPhase
                 ? "render scale world phase is open: the pack world pass needs the display set (pack wins over render scale)"
                 : null;
+    }
+
+    /** rules 1 + 8: as above, and never while ray tracing runs (the Look switch keeps them apart) */
+    public static String worldPassRefusal(boolean renderScaleWorldPhase, boolean rtRunning) {
+        if (rtRunning) return "ray tracing is the Look this session: the pack world pass stays off (the Look switch picks one)";
+        return worldPassRefusal(renderScaleWorldPhase);
+    }
+
+    /** INT-4: the three looks */
+    public enum Look { RASTER, PACK, RT }
+
+    /**
+     * rule 8: what actually renders.
+     * @param lookRt     the configured Look is RAY_TRACED (else NAVIDSON)
+     * @param rtRunning  RT runs (device features present, dev gate on, no failure)
+     * @param packLoaded the pack path is active
+     */
+    public static Look resolveLook(boolean lookRt, boolean rtRunning, boolean packLoaded) {
+        if (lookRt) return rtRunning ? Look.RT : Look.RASTER;
+        return packLoaded ? Look.PACK : Look.RASTER;
+    }
+
+    /** rule 8: null = the pack path may turn on, else the ONE line saying why it stays off */
+    public static String packRefusal(boolean lookRt) {
+        return lookRt ? "the Look is ray tracing (iroh.rt.look / iroh.json look = RAY_TRACED): the shader pack path stays off; "
+                + "the Look switch picks one (set Look to Navidson for the pack)" : null;
     }
 }

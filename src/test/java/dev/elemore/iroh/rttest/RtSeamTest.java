@@ -152,7 +152,10 @@ public final class RtSeamTest {
     static final Set<String> HOOK_SITES = Set.of("net/vulkanmod/vulkan/device/DeviceManager", "net/vulkanmod/vulkan/Vulkan",
             "net/vulkanmod/render/chunk/buffer/AreaBuffer", "net/vulkanmod/render/chunk/WorldRenderer",
             "net/vulkanmod/render/chunk/build/frapi/render/AbstractBlockRenderContext", "dev/elemore/iroh/gpu/game/IrohGpuDevice",
-            "dev/elemore/iroh/diag/StartupReport", "dev/elemore/iroh/config/IrohOptions", "net/vulkanmod/config/option/Options");
+            "dev/elemore/iroh/diag/StartupReport", "dev/elemore/iroh/config/IrohOptions", "net/vulkanmod/config/option/Options",
+            // INT-4 MainPassArbiter rule 8 (Look RT vs the pack): reached only when the pack path is requested
+            "dev/elemore/iroh/shaderpack/runtime/PackStartup", "dev/elemore/iroh/shaderpack/runtime/PackRuntime",
+            "dev/elemore/iroh/shaderpack/runtime/PackRuntimeImpl");
 
     /** Main classes outside dev/elemore/iroh/rt/ naming an RT class that is not a hook class, or from a site not pinned. */
     static List<String> outsideReferences() throws IOException {

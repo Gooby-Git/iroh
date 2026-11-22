@@ -11,7 +11,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class PackStartup {
 
-    public static final boolean FULL = isOn(System.getProperty(PackSwitches.ENABLED)) && "full".equals(System.getProperty(PackSwitches.MODE));
+    /**
+     * INT-4 (MainPassArbiter rule 8): not with the Look RAY_TRACED: RT reads the 16-byte terrain arena in place as its
+     * BLAS input, and the pack path stays off then anyway.
+     */
+    public static final boolean FULL = isOn(System.getProperty(PackSwitches.ENABLED)) && "full".equals(System.getProperty(PackSwitches.MODE))
+            && !dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced();
 
     private PackStartup() {}
 

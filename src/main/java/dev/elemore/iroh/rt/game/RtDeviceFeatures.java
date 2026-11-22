@@ -55,10 +55,15 @@ public final class RtDeviceFeatures {
             for (int i = 0; i < mp.memoryHeapCount(); i++)
                 if ((mp.memoryHeaps(i).flags() & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) local = Math.max(local, mp.memoryHeaps(i).size());
             caps = new RtCapabilities(ext && as.accelerationStructure(), ext && rq.rayQuery(), a12.bufferDeviceAddress(), false, false, local);
-            if (!caps.supported()) return tail;
             VkFormatProperties fp = VkFormatProperties.calloc(s);
             vkGetPhysicalDeviceFormatProperties(pd, VK_FORMAT_R16G16B16A16_SNORM, fp);
             snormVertexFormat = (fp.bufferFeatures() & VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR) != 0;
+            String why = unavailableReason(ext, caps, snormVertexFormat);
+            if (why != null) {
+                unavailable = why;
+                log("Iroh: ray tracing unavailable on this GPU (missing: " + why + "); RT features not requested, the Look falls back to raster");
+                return tail; // nothing chained, bufferDeviceAddress untouched: the int-3 device
+            }
             enable12.bufferDeviceAddress(true);
             VkPhysicalDeviceAccelerationStructureFeaturesKHR eas = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default()
                     .accelerationStructure(true).pNext(tail);
@@ -73,6 +78,32 @@ public final class RtDeviceFeatures {
             }
             RtSwitch.fallBack("deviceFeatures", t);
             return tail;
+        }
+    }
+
+    /** INT-4: why the device cannot run Iroh's RT, or null. Pure (tested offline in firstLaunchTest: a device lacking it). */
+    public static String unavailableReason(boolean extensions, RtCapabilities c, boolean snormVertex) {
+        java.util.List<String> m = new java.util.ArrayList<>();
+        if (!extensions) m.add("VK_KHR_acceleration_structure + VK_KHR_ray_query + VK_KHR_deferred_host_operations");
+        else {
+            if (!c.accelerationStructure()) m.add("accelerationStructure");
+            if (!c.rayQuery()) m.add("rayQuery");
+        }
+        if (!c.bufferDeviceAddress()) m.add("bufferDeviceAddress");
+        // the terrain BLAS reads the raster arena in place as R16G16B16A16_SNORM (P5-PLAN R0): without it every build
+        // would be invalid, so RT stays off ("unavailable") until a decode pass exists
+        if (!snormVertex) m.add("R16G16B16A16_SNORM as acceleration-structure vertex format");
+        return m.isEmpty() ? null : String.join(", ", m);
+    }
+
+    /** INT-4: the reason RT stayed off on this device (null = available or not asked) */
+    public static volatile String unavailable;
+
+    static void log(String line) {
+        try {
+            net.vulkanmod.Initializer.LOGGER.warn(line);
+        } catch (Throwable ignored) {
+            System.out.println(line); // offline (no game logger)
         }
     }
 
@@ -100,6 +131,7 @@ public final class RtDeviceFeatures {
         if (!enabled) return;
         RtSwitch.ON = true;
         RtFrameHooks.install();
+        log("Iroh: ray tracing: " + RtSwitch.STAGE); // INT-4: say what this build does with RT, once
     }
 
     /** Appended to the self-check device{..} bits; empty when RT was not requested (the rc14 line stays identical). */
@@ -108,10 +140,11 @@ public final class RtDeviceFeatures {
         RtCapabilities c = caps;
         return " rt=" + (enabled ? "[accelerationStructure rayQuery bufferDeviceAddress snormAsVertex=" + snormVertexFormat + "]"
                 : "unavailable(as=" + c.accelerationStructure() + " rq=" + c.rayQuery() + " bda=" + c.bufferDeviceAddress()
-                + (RtFailures.reason() != null ? " failed" : "") + ")");
+                + " snormAsVertex=" + snormVertexFormat + (RtFailures.reason() != null ? " failed" : "") + ")");
     }
 
     public static void resetForTest() {
+        unavailable = null;
         enabled = false;
         caps = RtCapabilities.NONE;
         snormVertexFormat = false;

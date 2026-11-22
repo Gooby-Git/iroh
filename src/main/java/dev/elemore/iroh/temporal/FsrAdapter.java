@@ -45,7 +45,9 @@ public final class FsrAdapter implements UpscalerAdapter {
             return FsrUpscaler.create(d.getPhysicalDevice().getInstance().address(), d.getPhysicalDevice().address(), d.address(), 0L,
                     flags, shim, rw, rh, dw, dh);
         }
-        @Override public boolean allow(long bytes) { return MemoryGuard.allowOptional(bytes); }
+        @Override public boolean allow(long bytes) { // INT-4: per-context ceiling of the share table + the guard's total
+            return bytes <= dev.elemore.iroh.memory.MemoryShares.Owner.FSR.ceiling(MemoryGuard.BUDGET.cap()) && MemoryGuard.allowOptional(bytes);
+        }
         @Override public void account(long bytes) { MemoryGuard.addExternal(bytes); }
         @Override public void destroyLater(Runnable r) { MemoryManager.getInstance().addFrameOp(r); }
         @Override public void log(String msg) { Initializer.LOGGER.warn("Iroh upscale: {}", msg); }

@@ -344,6 +344,10 @@ public final class RtLookSheets {
         Files.createDirectories(SHEETS);
         File f = SHEETS.resolve(name).toFile();
         ImageIO.write(img, "png", f);
+        if (System.getProperty("rt.out") != null) { // INT-4: a run with -Pout (allsuites) leaves the owner's preview folder alone
+            System.out.println("  sheet " + f.getAbsolutePath());
+            return;
+        }
         Files.createDirectories(PICTURES);
         Files.copy(f.toPath(), PICTURES.resolve(name), StandardCopyOption.REPLACE_EXISTING);
         System.out.println("  sheet " + f.getAbsolutePath() + "  (copy: " + PICTURES.resolve(name) + ")");

@@ -82,6 +82,7 @@ public final class RtAdapterTest {
         System.setProperty("iroh.rt.look", "RAY_TRACED");
         System.setProperty(RtFailures.PROPERTY, "rt");
         RtSwitch.resetForTest();
+        RtFailures.resetForTest(); // INT-4: the seam is FeatureFailures' parsed set: re-read it
         List<String> lines = new ArrayList<>();
         RtFailures.sink = (step, t) -> { String l = "rt failed at " + step + ": " + t.getMessage() + "; " + RtFailures.FALLBACK; lines.add(l); return l; };
         long r = RtDeviceFeatures.chain(null, null, null, tail);
