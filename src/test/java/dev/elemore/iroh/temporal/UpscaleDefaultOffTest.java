@@ -108,7 +108,7 @@ public final class UpscaleDefaultOffTest {
                 "net/vulkanmod/vulkan/pass/DefaultMainPass.java", "dev/elemore/iroh/apiimpl/WorldStages.java",
                 "net/vulkanmod/vulkan/device/DeviceManager.java", "net/vulkanmod/vulkan/Vulkan.java",
                 "net/vulkanmod/mixin/render/upscale/IrohRenderScaleGameM.java", "net/vulkanmod/mixin/render/upscale/IrohRenderScaleLevelM.java",
-                "dev/elemore/iroh/api/IrohDebug.java"));
+                "dev/elemore/iroh/api/IrohDebug.java", "net/vulkanmod/vulkan/framebuffer/SceneTarget.java"));
         Set<String> found = new TreeSet<>();
         Path root = Path.of("src/main/java");
         for (Path p : Files.walk(root).filter(p -> p.toString().endsWith(".java") && !p.toString().contains("dev/elemore/iroh/temporal/")).toList())

@@ -120,7 +120,13 @@ public class SceneTarget extends Framebuffer {
     // VkFramebuffers. The display set is restored before the GUI and before anything outside the frame (resize,
     // cleanup) touches this object. Mode off: none of this is ever allocated (UpscaleDefaultOffTest).
 
-    static final int WORLD_COLOR_USAGE = COLOR_USAGE | VK_IMAGE_USAGE_STORAGE_BIT;
+    /**
+     * STORAGE only when the upscale device features were enabled (debug views write the world colour from compute):
+     * storage usage can turn off colour compression (DCC on AMD), a cost the plain render-scale path should not pay.
+     */
+    static int worldColorUsage() {
+        return dev.elemore.iroh.temporal.DeviceCaps.velocityCapable() ? COLOR_USAGE | VK_IMAGE_USAGE_STORAGE_BIT : COLOR_USAGE;
+    }
 
     private VulkanImage worldColor, worldDepth;
     private int worldWidth, worldHeight;
@@ -149,7 +155,7 @@ public class SceneTarget extends Framebuffer {
         this.worldColor = VulkanImage.builder(w, h)
                 .setName("Iroh world colour (render scale)")
                 .setFormat(this.format)
-                .setUsage(WORLD_COLOR_USAGE)
+                .setUsage(worldColorUsage())
                 .setLinearFiltering(true)
                 .setClamp(true)
                 .createVulkanImage();

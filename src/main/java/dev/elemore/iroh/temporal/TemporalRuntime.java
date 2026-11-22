@@ -202,7 +202,7 @@ public final class TemporalRuntime {
         TemporalFrame.endWorld();
         UpscalerAdapter a = adapter != null ? adapter : UpscalerAdapter.Bilinear.INSTANCE;
         int rw = worldColor.width, rh = worldColor.height;
-        boolean debugColour = TemporalFrame.debugMode != 0;
+        boolean debugColour = TemporalFrame.debugMode != 0 && (worldColor.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
         if (TemporalFrame.velocityOn || (debugColour && DeviceCaps.velocityCapable())) {
             ensureVelocity(rw, rh);
             // depth: attachment -> sampled by compute
