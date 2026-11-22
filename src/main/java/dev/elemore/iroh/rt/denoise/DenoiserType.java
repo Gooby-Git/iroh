@@ -19,7 +19,11 @@ public enum DenoiserType {
     RELAX_DIFFUSE_SPECULAR(14, EnumSet.of(IN_DIFF_RADIANCE_HITDIST, IN_SPEC_RADIANCE_HITDIST), EnumSet.of(OUT_DIFF_RADIANCE_HITDIST, OUT_SPEC_RADIANCE_HITDIST)),
     SIGMA_SHADOW(16, EnumSet.of(IN_PENUMBRA), EnumSet.of(OUT_SHADOW_TRANSLUCENCY)),
     /** Iroh's own minimal temporal accumulation (no NRD): diffuse radiance only. */
-    TEMPORAL_ACCUMULATION(-1, EnumSet.of(IN_DIFF_RADIANCE_HITDIST), EnumSet.of(OUT_DIFF_RADIANCE_HITDIST));
+    TEMPORAL_ACCUMULATION(-1, EnumSet.of(IN_DIFF_RADIANCE_HITDIST), EnumSet.of(OUT_DIFF_RADIANCE_HITDIST)),
+    /** Iroh's own SVGF-family denoiser ({@code SvgfDenoiser}): outputs are always RGBA16F (rgb = signal, a = history length). */
+    IROH_DIFFUSE(-1, EnumSet.of(IN_DIFF_RADIANCE_HITDIST), EnumSet.of(OUT_DIFF_RADIANCE_HITDIST)),
+    IROH_SPECULAR(-1, EnumSet.of(IN_SPEC_RADIANCE_HITDIST), EnumSet.of(OUT_SPEC_RADIANCE_HITDIST)),
+    IROH_SHADOW(-1, EnumSet.of(IN_PENUMBRA), EnumSet.of(OUT_SHADOW_TRANSLUCENCY));
 
     public final int nrdValue;
     private final Set<Slot> inputs, outputs;

@@ -21,7 +21,7 @@ public final class DenoiseTest {
             boolean in = s.name().startsWith("IN_"), out = s.name().startsWith("OUT_");
             check(s.isInput() == in && s.isOutput() == out, "slot direction " + s);
         }
-        check(Slot.IN_MV.ordinal() == 0 && Slot.OUT_VALIDATION.ordinal() == 29 && Slot.PERMANENT_POOL.ordinal() == 31, "slot ordinals follow nrd::ResourceType");
+        check(Slot.IN_MV.ordinal() == 0 && Slot.OUT_VALIDATION.ordinal() == 29 && Slot.PERMANENT_POOL.ordinal() == 31 && Slot.IN_ALBEDO.ordinal() == 32, "slot ordinals follow nrd::ResourceType");
         for (DenoiserType t : DenoiserType.values()) {
             check(!t.noisyInputs().isEmpty() && !t.outputs().isEmpty(), "type has inputs and outputs " + t);
             check(t.noisyInputs().stream().allMatch(Slot::isInput) && t.outputs().stream().allMatch(Slot::isOutput), "type slots in the right direction " + t);

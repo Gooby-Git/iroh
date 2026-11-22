@@ -3,6 +3,5 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../../src/main/resources/dev/elemore/iroh/rt/denoise"
-glslangValidator -V --target-env vulkan1.2 -Os -S comp "$HERE/temporal_accum.comp" -o "$OUT/temporal_accum.spv"
-spirv-val --target-env vulkan1.2 "$OUT/temporal_accum.spv"
+for s in temporal_accum svgf_temporal svgf_atrous; do glslangValidator -V --target-env vulkan1.2 -Os -S comp "$HERE/$s.comp" -o "$OUT/$s.spv"; spirv-val --target-env vulkan1.2 "$OUT/$s.spv"; done
 echo "built $OUT/temporal_accum.spv"

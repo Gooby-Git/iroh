@@ -1,0 +1,142 @@
+#version 450
+// Iroh's own spatiotemporal denoiser, pass 1: temporal reprojection + moments + variance (+ firefly clamp).
+// Written from the published papers only (no NVIDIA/NRD code, structure or constants): Schied et al., "Spatiotemporal
+// Variance-Guided Filtering" (HPG 2017) for the history/moments/variance scheme and the short-history spatial variance
+// fallback; Schied et al., "Gradient Estimation for Real-Time Adaptive Temporal Filtering" (HPG 2018, A-SVGF) motivates the
+// history-length control (the temporal-gradient pass itself is NOT implemented). Rejection tests and constants are Iroh's own
+// choices, tuned on the offline scenes (knowledge/nrd.md).
+// Modes (push constant): 0 diffuse (demodulated radiance), 1 specular (roughness/hit-distance limited history), 2 shadow (visibility).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D uNoisy;      // rgb signal, a = hit distance (diffuse/specular) or penumbra radius (shadow)
+layout(set = 0, binding = 1) uniform sampler2D uViewZ;
+layout(set = 0, binding = 2) uniform sampler2D uNormal;     // packed normal + roughness (R10G10B10A2 oct, NRD-compatible layout, documented)
+layout(set = 0, binding = 3) uniform sampler2D uMv;         // previous minus current, UV units
+layout(set = 0, binding = 4) uniform sampler2D uPrevZ;
+layout(set = 0, binding = 5) uniform sampler2D uPrevN;      // decoded normal xyz + roughness of the previous frame
+layout(set = 0, binding = 6) uniform sampler2D uHistColor; // filtered colour history (iteration `feedback` of the last frame), a = aux (hit dist / penumbra)
+layout(set = 0, binding = 7) uniform sampler2D uHistMoments; // m1, m2, length, unused
+layout(set = 0, binding = 8) uniform sampler2D uAlbedo;     // optional: when flags&1 the input is MODULATED and is divided here
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D uFiltOut;    // rgb temporal result, a = variance
+layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D uMomentsOut;
+layout(set = 0, binding = 11, r32f) uniform writeonly image2D uZOut;
+layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D uNOut;
+layout(push_constant) uniform P {
+    vec2 size;
+    float mode, flags;            // flags bit0 albedo demodulation, bit1 reset
+    float maxLen, minAlpha, fireflyFactor, varFallbackLen;
+    float zTol, zSlope, nTol, roughLenScale;
+    float lagK, lagBias;          // history lag guard: |current - history mean| > lagK * sigma + lagBias -> history length cut (A-SVGF motivated, cheaper)
+} p;
+
+vec4 decodeNormal(vec4 q) {
+    float t = q.b * 2.0 - 1.0;
+    float x = q.r - q.g, y = q.r + q.g - 1.0;
+    float z = (t < 0.0 ? -1.0 : 1.0) * (1.0 - abs(x) - abs(y));
+    return vec4(normalize(vec3(x, y, z)), abs(t));
+}
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec4 sig(ivec2 q) {                              // mode 2: IN_PENUMBRA (penumbra radius, >= 60000 = unoccluded) -> visibility sample + penumbra size
+    vec4 r = texelFetch(uNoisy, q, 0);
+    if (p.mode > 1.5) { bool lit = r.r >= 60000.0; return vec4(vec3(lit ? 1.0 : 0.0), lit ? 0.0 : r.r); }
+    return r;
+}
+vec3 demod(ivec2 q) {
+    vec3 c = sig(q).rgb;
+    if ((int(p.flags) & 1) != 0) c /= max(texelFetch(uAlbedo, q, 0).rgb, vec3(0.02));
+    return c;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = ivec2(p.size);
+    if (px.x >= sz.x || px.y >= sz.y) return;
+    vec2 uv = (vec2(px) + 0.5) / p.size;
+    float z = texelFetch(uViewZ, px, 0).r;
+    vec4 nr = decodeNormal(texelFetch(uNormal, px, 0));
+    vec4 raw = sig(px);
+    imageStore(uZOut, px, vec4(z));
+    imageStore(uNOut, px, nr);
+    if (z > 5.0e4) {                              // sky / beyond the denoising range: pass through, no history
+        imageStore(uFiltOut, px, vec4(raw.rgb, 0.0));
+        imageStore(uMomentsOut, px, vec4(0.0));
+        return;
+    }
+    vec3 cur = demod(px);
+    float aux = raw.a;
+    // ---- firefly clamp against the 3x3 neighbourhood mean (luminance), neighbours exclude the centre
+    float lc = lum(cur);
+    float ls = 0.0; int ln = 0;
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+        if (dx == 0 && dy == 0) continue;
+        ivec2 q = clamp(px + ivec2(dx, dy), ivec2(0), sz - 1);
+        if (texelFetch(uViewZ, q, 0).r > 5.0e4) continue;
+        ls += lum(demod(q)); ln++;
+    }
+    if (ln > 0 && p.fireflyFactor > 0.0) {
+        float cap = (ls / float(ln)) * p.fireflyFactor + 0.05;
+        if (lc > cap) cur *= cap / lc;
+    }
+    lc = lum(cur);
+    // ---- reprojection: 4 bilinear taps of the previous frame, accepted per tap
+    vec2 prevUv = uv + texelFetch(uMv, px, 0).rg;
+    vec3 hc = vec3(0.0); vec3 hm = vec3(0.0); float haux = 0.0, wsum = 0.0;
+    float dzdx = abs(texelFetch(uViewZ, clamp(px + ivec2(1, 0), ivec2(0), sz - 1), 0).r - texelFetch(uViewZ, clamp(px - ivec2(1, 0), ivec2(0), sz - 1), 0).r) * 0.5;
+    float dzdy = abs(texelFetch(uViewZ, clamp(px + ivec2(0, 1), ivec2(0), sz - 1), 0).r - texelFetch(uViewZ, clamp(px - ivec2(0, 1), ivec2(0), sz - 1), 0).r) * 0.5;
+    float zt = p.zTol * z + p.zSlope * (dzdx + dzdy);
+    bool inside = all(greaterThanEqual(prevUv, vec2(0.0))) && all(lessThan(prevUv, vec2(1.0)));
+    if (p.flags < 1.5 && inside) {
+        vec2 fp = prevUv * p.size - 0.5;
+        ivec2 b = ivec2(floor(fp));
+        vec2 f = fp - vec2(b);
+        for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) {
+            ivec2 q = clamp(b + ivec2(dx, dy), ivec2(0), sz - 1);
+            float pz = texelFetch(uPrevZ, q, 0).r;
+            vec4 pn = texelFetch(uPrevN, q, 0);
+            float w = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y);
+            bool ok = abs(pz - z) <= zt && dot(pn.xyz, nr.xyz) >= p.nTol;
+            vec4 hcq = texelFetch(uHistColor, q, 0);
+            if (p.mode > 0.5 && p.mode < 1.5 && raw.a > 0.0 && hcq.a > 0.0)                      // specular: hit distance must stay consistent
+                ok = ok && abs(hcq.a - raw.a) <= 0.5 * max(raw.a, hcq.a);
+            if (ok) { hc += w * hcq.rgb; hm += w * texelFetch(uHistMoments, q, 0).rgb; haux += w * hcq.a; wsum += w; }
+        }
+    }
+    float len = 0.0;
+    vec3 col = cur;
+    float m1 = lc, m2 = lc * lc;
+    if (wsum > 0.01) {
+        hc /= wsum; hm /= wsum; haux /= wsum;
+        float lenCap = p.maxLen;
+        if (p.mode > 0.5 && p.mode < 1.5) lenCap = max(2.0, p.maxLen * mix(p.roughLenScale, 1.0, nr.w));   // specular: smooth surfaces keep short history
+        len = min(hm.z, lenCap);
+        if (p.lagK > 0.0 && p.mode > 1.5) {
+            float varH = max(0.0, hm.y - hm.x * hm.x);
+            if (abs(lc - hm.x) > p.lagK * sqrt(varH) + p.lagBias) len = min(len, 1.0);
+        }
+        float a = max(1.0 / (len + 1.0), p.minAlpha);
+        col = mix(hc, cur, a);
+        m1 = mix(hm.x, lc, a);
+        m2 = mix(hm.y, lc * lc, a);
+        len = len + 1.0;
+        aux = mix(haux, raw.a, a);
+    } else {
+        len = 1.0;
+    }
+    float var = max(0.0, m2 - m1 * m1);
+    if (len < p.varFallbackLen) {                 // SVGF: short history -> spatial moments estimate (5x5, depth/normal weighted)
+        float sm1 = 0.0, sm2 = 0.0, sw = 0.0;
+        for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
+            ivec2 q = clamp(px + ivec2(dx, dy), ivec2(0), sz - 1);
+            float qz = texelFetch(uViewZ, q, 0).r;
+            if (qz > 5.0e4) continue;
+            vec4 qn = decodeNormal(texelFetch(uNormal, q, 0));
+            float w = (abs(qz - z) <= zt * 2.0 && dot(qn.xyz, nr.xyz) > 0.8) ? 1.0 : 0.0;
+            float l = lum(demod(q));
+            sm1 += w * l; sm2 += w * l * l; sw += w;
+        }
+        if (sw > 1.5) { sm1 /= sw; sm2 /= sw; var = max(0.0, sm2 - sm1 * sm1) * 1.0; }
+    }
+    imageStore(uFiltOut, px, vec4(col, var));
+    imageStore(uMomentsOut, px, vec4(m1, m2, len, 0.0));
+    // history colour is written by the feedback iteration of the filter (rgb) with the aux value; park the aux in the moments' w
+    imageStore(uMomentsOut, px, vec4(m1, m2, len, aux));
+}

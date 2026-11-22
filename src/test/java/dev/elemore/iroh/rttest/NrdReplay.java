@@ -26,6 +26,8 @@ public final class NrdReplay {
     static int fails;
     static LvpDevice dev;
     static String dump = "build/nrdreplay";
+    static double lastMeanLen = -1, lastShortFrac = -1;
+    static double sumLen; static int cntLen, shortLen;
     static boolean tuned = Boolean.parseBoolean(System.getProperty("nrd.tuned", "false"));
 
     record Imgs(DenoiseGpu.Img mv, DenoiseGpu.Img viewZ, DenoiseGpu.Img nrm, DenoiseGpu.Img noisy, DenoiseGpu.Img out, DenoiseGpu.Img pen, DenoiseGpu.Img shadow, DenoiseGpu.Img spec) {}
@@ -65,12 +67,14 @@ public final class NrdReplay {
                 mk(VK_FORMAT_R16_SFLOAT), mk(VK_FORMAT_R8_UNORM), mk(VK_FORMAT_R16G16B16A16_SFLOAT));
         LvpDevice.Buf bMv = dev.hostBuffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT), bZ = dev.hostBuffer(W * H * 4, 3), bN = dev.hostBuffer(W * H * 4, 3),
                 bNoisy = dev.hostBuffer(W * H * 8, 3), bOut = dev.hostBuffer(W * H * 8, 3), bPen = dev.hostBuffer(W * H * 2, 3), bSh = dev.hostBuffer(W * H, 3);
-        Denoiser den = fallback ? new TemporalAccumulationDenoiser(dev, W, H) : new NrdDenoiser(dev, new DenoiserType[]{type}, W, H);
+        boolean own = type.name().startsWith("IROH_");
+        Denoiser den = fallback ? new TemporalAccumulationDenoiser(dev, W, H) : own ? new SvgfDenoiser(dev, new DenoiserType[]{type}, W, H) : new NrdDenoiser(dev, new DenoiserType[]{type}, W, H);
         try {
             System.out.println("-- " + name + ": " + den.name() + "; library pools estimate 320x180 " + den.estimateMemoryBytes(W, H) + " B, allocated {perm, trans} " + java.util.Arrays.toString(den.memoryUsageBytes()));
             memOut[0] = den.memoryUsageBytes()[0] + den.memoryUsageBytes()[1];
             if (!fallback && tuned && type == DenoiserType.REBLUR_DIFFUSE) den.configure(0, Map.of("maxBlurRadius", 8f, "diffusePrepassBlurRadius", 8f, "minBlurRadius", 1f));
             if (!fallback && tuned && type == DenoiserType.RELAX_DIFFUSE) den.configure(0, Map.of("atrousIterations", 3f, "diffusePrepassBlurRadius", 8f));
+            if (own && System.getProperty("own.cfg") != null) { Map<String, Float> mm = new java.util.HashMap<>(); for (String kv : System.getProperty("own.cfg").split(",")) { String[] a = kv.split("="); mm.put(a[0], Float.parseFloat(a[1])); } den.configure(0, mm); }
             if (type == DenoiserType.SIGMA_SHADOW) den.configure(0, Map.of("lightDirX", NrdScene.SUN[0], "lightDirY", NrdScene.SUN[1], "lightDirZ", NrdScene.SUN[2]));
             float[] last = null;
             boolean first = true;
@@ -107,7 +111,7 @@ public final class NrdReplay {
                 df.images.put(IN_DIFF_RADIANCE_HITDIST, ref(im.noisy(), VK_FORMAT_R16G16B16A16_SFLOAT));
                 df.images.put(OUT_DIFF_RADIANCE_HITDIST, ref(im.out(), VK_FORMAT_R16G16B16A16_SFLOAT));
                 df.images.put(IN_PENUMBRA, ref(im.pen(), VK_FORMAT_R16_SFLOAT));
-                df.images.put(OUT_SHADOW_TRANSLUCENCY, ref(im.shadow(), VK_FORMAT_R8_UNORM));
+                df.images.put(OUT_SHADOW_TRANSLUCENCY, own ? ref(im.out(), VK_FORMAT_R16G16B16A16_SFLOAT) : ref(im.shadow(), VK_FORMAT_R8_UNORM));
                 FrameSettings fs = df.settings;
                 fs.viewToClip = fs.viewToClipPrev = NrdScene.viewToClip();
                 fs.worldToView = NrdScene.worldToView(f);
@@ -118,20 +122,24 @@ public final class NrdReplay {
                 fs.denoisingRange = 1000f;
                 fs.reset = f == 0;
                 den.denoise(df);
+                boolean scalarOut = type == DenoiserType.SIGMA_SHADOW || type == DenoiserType.IROH_SHADOW;
                 if (type == DenoiserType.SIGMA_SHADOW) dev.download(im.shadow().image(), W, H, bSh);
                 else dev.download(im.out().image(), W, H, bOut);
                 dev.submitWait();
                 ByteBuffer ob = LvpDevice.bytes(type == DenoiserType.SIGMA_SHADOW ? bSh : bOut);
-                float[] o = new float[type == DenoiserType.SIGMA_SHADOW ? W * H : W * H * 3];
+                float[] o = new float[scalarOut ? W * H : W * H * 3];
                 boolean finite = true;
                 for (int p = 0; p < W * H; p++) {
                     if (type == DenoiserType.SIGMA_SHADOW) {
                         float v = (ob.get(p) & 255) / 255f;
                         o[p] = v * v;                                   // SIGMA_BackEnd_UnpackShadow: shadow = value^2
+                    } else if (type == DenoiserType.IROH_SHADOW) {
+                        o[p] = Float.float16ToFloat(ob.getShort(p * 8));
                     } else {
                         float c0 = Float.float16ToFloat(ob.getShort(p * 8)), c1 = Float.float16ToFloat(ob.getShort(p * 8 + 2)), c2 = Float.float16ToFloat(ob.getShort(p * 8 + 4));
                         float[] rgb = type == DenoiserType.REBLUR_DIFFUSE ? NrdScene.fromYcocg(c0, c1, c2) : new float[]{c0, c1, c2};
                         o[p * 3] = rgb[0]; o[p * 3 + 1] = rgb[1]; o[p * 3 + 2] = rgb[2];
+                        if (own && f == NF - 1) { float len = Float.float16ToFloat(ob.getShort(p * 8 + 6)); if (frames[f].id[p] != 0) { lastMeanLen += (lastMeanLen < 0 ? 1 : 0); sumLen += len; cntLen++; if (len < 4) shortLen++; } }
                         finite &= !(Float.isNaN(c0) || Float.isInfinite(c0) || Float.isNaN(c1) || Float.isInfinite(c1) || Float.isNaN(c2) || Float.isInfinite(c2));
                     }
                 }
@@ -202,7 +210,7 @@ public final class NrdReplay {
         // names must match the Java slot / type ordinals
         int bad = 0, order = 0;
         java.util.List<String> libNames = new java.util.ArrayList<>(), javaNames = new java.util.ArrayList<>();
-        for (Slot s : Slot.values()) { libNames.add(NrdNative.resourceTypeName(s.ordinal()).replace("_", "").toLowerCase()); javaNames.add(s.name().replace("_", "").toLowerCase()); if (!libNames.get(libNames.size() - 1).equals(javaNames.get(javaNames.size() - 1))) order++; }
+        for (Slot s : Slot.values()) { if (s == Slot.IN_ALBEDO) continue; libNames.add(NrdNative.resourceTypeName(s.ordinal()).replace("_", "").toLowerCase()); javaNames.add(s.name().replace("_", "").toLowerCase()); if (!libNames.get(libNames.size() - 1).equals(javaNames.get(javaNames.size() - 1))) order++; }
         java.util.Collections.sort(libNames); java.util.Collections.sort(javaNames);
         if (!libNames.equals(javaNames)) bad++;
         for (DenoiserType t : DenoiserType.values()) if (t.nrdValue >= 0 && !NrdNative.denoiserName(t.nrdValue).replace("_", "").equalsIgnoreCase(t.name().replace("_", ""))) { bad++; System.out.println("type mismatch " + t + " vs " + NrdNative.denoiserName(t.nrdValue)); }
@@ -262,6 +270,18 @@ public final class NrdReplay {
         System.out.printf("fallback temporal accumulation: RMSE (tonemapped) %.4f, edge %.4f, disoccluded %.4f (noisy %.4f / %.4f / %.4f)%n", fbE, fbEdge, fbDis, eNoisyT, eNoisyEdge, eNoisyDis);
         ck(fbE < eNoisyT * 0.7, "fallback reduces the error versus the noisy input (> 30%)");
         png(fb, 3, "fallback_temporal.png");
+        // ---- Iroh's own SVGF-family denoiser
+        fin[0] = true;
+        float[] ow = run("IROH_DIFFUSE", DenoiserType.IROH_DIFFUSE, false, frames, fin, mem);
+        ck(fin[0], "own: no NaN/Inf in any frame");
+        double oE = rmse(ow, gt, 3, surf, true), oEdge = rmse(ow, gt, 3, edge, true), oDis = rmse(ow, gt, 3, dis, true), oLin = rmse(ow, gt, 3, surf, false);
+        double oC = boundaryContrast(ow, fl), gC = boundaryContrast(gt, fl);
+        System.out.printf("   own history length at the last frame: mean %.1f, %.1f%% of surface pixels below 4 frames%n", sumLen / Math.max(1, cntLen), 100.0 * shortLen / Math.max(1, cntLen));
+        System.out.printf("IROH_DIFFUSE (own): RMSE tonemapped %.4f (noisy %.4f, fallback %.4f), linear %.4f, edge %.4f, disoccluded %.4f; MSE ratio %.1fx; silhouette contrast %.0f%%%n", oE, eNoisyT, fbE, oLin, oEdge, oDis, (eNoisyT * eNoisyT) / (oE * oE), 100 * oC / gC);
+        ck(oE * oE < 0.2 * eNoisyT * eNoisyT, "own: variance reduced at least 5x versus the noisy input");
+        ck(oC > 0.7 * gC, "own: silhouettes keep at least 70% of the reference contrast");
+        ck(oE < fbE, "own: better than the plain temporal fallback");
+        png(ow, 3, "iroh_diffuse.png");
         // ---- NRD
         for (DenoiserType t : new DenoiserType[]{DenoiserType.RELAX_DIFFUSE, DenoiserType.REBLUR_DIFFUSE}) {
             fin[0] = true;
@@ -294,6 +314,15 @@ public final class NrdReplay {
             png(o, 3, t.name().toLowerCase() + ".png");
             if (t == DenoiserType.RELAX_DIFFUSE) goldenCheck(o, golden);
         }
+        // ---- own shadow denoiser
+        fin[0] = true;
+        float[] osh = run("IROH_SHADOW", DenoiserType.IROH_SHADOW, false, frames, fin, mem);
+        { float[] nv = new float[W * H]; for (int p = 0; p < W * H; p++) nv[p] = fl.penumbra[p] >= NrdScene.FP16_MAX ? 1f : 0f;
+          Mask pen = p -> fl.id[p] != 0 && gtVis[p] > 0.02f && gtVis[p] < 0.98f;
+          double enp = rmse(nv, gtVis, 1, pen, false), edp = rmse(osh, gtVis, 1, pen, false);
+          System.out.printf("IROH_SHADOW (own): penumbra RMSE %.4f vs noisy %.4f; whole surface %.4f%n", edp, enp, rmse(osh, gtVis, 1, surf, false));
+          ck(fin[0] && edp < enp, "own shadow: penumbra closer to the reference than the 1-sample input");
+          float[] sv = new float[W * H * 3]; for (int p = 0; p < W * H; p++) sv[p * 3] = sv[p * 3 + 1] = sv[p * 3 + 2] = osh[p]; png(sv, 3, "iroh_shadow.png"); }
         // ---- SIGMA
         fin[0] = true;
         try {
