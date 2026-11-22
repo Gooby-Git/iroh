@@ -42,16 +42,19 @@ public final class IntegrationInertTest {
     static final Map<String, String> PINNED = new TreeMap<>();
     static {
         // INT-2 minimal list: every entry is a plain static read (static final, or one volatile/plain static field)
-        PINNED.put("Renderer.bindGraphicsPipeline", "");
+        PINNED.put("Renderer.bindGraphicsPipeline", "Substitution.HOOK x1 (volatile int; INT-3: P3-10 observe / P3-11 world pass, SubstitutionHook only when non-zero)");
+        PINNED.put("Renderer.uploadAndBindUBOs", "Substitution.HOOK x1 per draw (volatile int; INT-3: P3-11)");
+        PINNED.put("Renderer.endRenderPass", "Substitution.HOOK x1 (volatile int, bit WORLD: close the world pass first; INT-3: P3-11)");
+        PINNED.put("VulkanImage.endPassRunResume", "Substitution.HOOK x1 (volatile int, bit WORLD; INT-3: P3-11)");
         PINNED.put("Renderer.preInitFrame", "SlowFrames.ON x2 (static final)");
         PINNED.put("Renderer.beginFrame0", "SlowFrames.ON x4 (static final), GpuLifecycle.frameStart x1 (one volatile null test: api 4 is lazy)");
         PINNED.put("Renderer.endFrame", "SlowFrames.ON x5 (static final), FrameHooks.dispatch x1 (AFTER_PRESENT: FrameProfiler.ON + empty-array test)");
         PINNED.put("Renderer.beginRenderPass", "(audited since INT-3) FrameProfiler.ON x1 (static final), FrameHooks.beginFrame x1 (context fields, no guard needed), FrameHooks.dispatch x2 (BEFORE_MAIN_PASS, FRAME_BEGIN: empty-array tests), GpuCore.orNull x1 (INT-3, api 4.1 settle: one volatile null test, api 4 is lazy)");
-        PINNED.put("Renderer.beginRendering", "");
+        PINNED.put("Renderer.beginRendering", "Substitution.HOOK x1 (volatile int, bit WORLD; INT-3: P3-11)");
         PINNED.put("Framebuffer.beginRenderPass", "");
         PINNED.put("DefaultMainPass.begin", "");
         PINNED.put("DefaultMainPass.rebindMainTarget", "");
-        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog)");
+        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog), PackRuntime.onTranslucentTerrain x1 (only inside the pack-terrain branch; first statement !active; INT-3: P3-11)");
         PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1 (plain static)");
         PINNED.put("Pipeline.needsUpdate", "TemporalFrame.MIP_ON x1 per image descriptor (plain static; IN_WORLD only read when MIP_ON)");
         PINNED.put("GlState.viewport", "TemporalFrame.IN_WORLD x1 (plain static)");
@@ -63,7 +66,7 @@ public final class IntegrationInertTest {
         PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
         PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
-        PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
+        PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onAfterSky (INT-3: P3-11)/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
     }
 
     public static void main(String[] args) throws Exception {
@@ -143,12 +146,12 @@ public final class IntegrationInertTest {
             System.out.println("  " + e.getKey() + ": " + (e.getValue().isEmpty() ? "nothing" : e.getValue()));
         System.out.println("---- raw audit ----");
         audit.forEach((k, v) -> System.out.println("  " + k + " " + summarize(v)));
-        check("bindGraphicsPipeline untouched by every merged feature (P3-10 will add Substitution.OBSERVE)", audit.get("Renderer.bindGraphicsPipeline").isEmpty());
-        check("render-pass begin / main pass begin untouched", audit.get("Renderer.beginRendering").isEmpty()
+        check("bindGraphicsPipeline: only the ONE Substitution.HOOK read (INT-3)", audit.get("Renderer.bindGraphicsPipeline").equals(List.of("Substitution.HOOK")));
+        check("render-pass begin: only the ONE Substitution.HOOK read; main pass begin untouched", audit.get("Renderer.beginRendering").equals(List.of("Substitution.HOOK"))
                 && audit.get("Framebuffer.beginRenderPass").isEmpty() && audit.get("DefaultMainPass.begin").isEmpty()
                 && audit.get("DefaultMainPass.rebindMainTarget").isEmpty());
         Map<String, String> expect = new TreeMap<>();
-        expect.put("WorldRenderer.renderSectionLayer", "{Sections.captureFog=1, SlowFrames.ON=2, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, WorldRenderer.packTerrainActive=1}");
+        expect.put("WorldRenderer.renderSectionLayer", "{PackRuntime.onTranslucentTerrain=1, Sections.captureFog=1, SlowFrames.ON=2, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, WorldRenderer.packTerrainActive=1}");
         expect.put("VRenderSystem.applyProjectionMatrix", "{TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}");
         expect.put("Renderer.beginFrame0", "{GpuLifecycle.frameStart=1, SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");
         expect.put("Renderer.endFrame", "{FrameHooks.dispatch=1, SlowFrames.ON=5, SlowFrames.enter=3, SlowFrames.exit=3}");
@@ -159,13 +162,15 @@ public final class IntegrationInertTest {
         expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
         expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
         // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
-        expect.put("Renderer.bindGraphicsPipeline", "{}");
+        expect.put("Renderer.bindGraphicsPipeline", "{Substitution.HOOK=1}"); // INT-3: P3-10/P3-11
+        expect.put("Renderer.uploadAndBindUBOs", "{Substitution.HOOK=1}"); // INT-3: P3-11, per draw
+        expect.put("VulkanImage.endPassRunResume", "{Substitution.HOOK=1}"); // INT-3: P3-11
         expect.put("Renderer.preInitFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
         expect.put("Renderer.preInitFrame0", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
         expect.put("Renderer.beginFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
         expect.put("Renderer.beginRenderPass", "{FrameHooks.beginFrame=1, FrameHooks.dispatch=2, FrameProfiler.ON=1, FrameProfiler.frameStart=1, GpuCore.orNull=1}"); // INT-3 (api 4.1 settle)
-        expect.put("Renderer.beginRendering", "{}");
-        expect.put("Renderer.endRenderPass", "{}");
+        expect.put("Renderer.beginRendering", "{Substitution.HOOK=1}"); // INT-3: P3-11
+        expect.put("Renderer.endRenderPass", "{Substitution.HOOK=1}"); // INT-3: P3-11
         expect.put("Framebuffer.beginRenderPass", "{}");
         expect.put("SceneTarget.getFramebufferId", "{}");
         expect.put("DefaultMainPass.begin", "{}");
@@ -176,7 +181,7 @@ public final class IntegrationInertTest {
         expect.put("GlState.viewport", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
         expect.put("GlState.applyScissor", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
         expect.put("UniformSlots.jittered", "{TemporalFrame.IN_WORLD=1, TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}");
-        expect.put("WorldStages.register", "{FrameHooks.dispatch=7, FrameHooks.setInWorld=2, FrameHooks.setWorld=1, PackRuntime.onBeforeEntities=1, PackRuntime.onWorldEnd=1, PackRuntime.onWorldStart=1, TemporalFrame.IN_WORLD=2, TemporalRuntime.onAfterEntities=1, TemporalRuntime.onWorldStart=1}");
+        expect.put("WorldStages.register", "{FrameHooks.dispatch=7, FrameHooks.setInWorld=2, FrameHooks.setWorld=1, PackRuntime.onAfterSky=1, PackRuntime.onBeforeEntities=1, PackRuntime.onWorldEnd=1, PackRuntime.onWorldStart=1, TemporalFrame.IN_WORLD=2, TemporalRuntime.onAfterEntities=1, TemporalRuntime.onWorldStart=1}");
         expect.put("IrohRenderScaleGameM.*", "{TemporalRuntime.chainHeight=1, TemporalRuntime.chainWidth=1, TemporalRuntime.onBeforeGui=1, TemporalRuntime.onBeforeHandClear=1, TemporalRuntime.onHand=1, TemporalRuntime.onRenderHead=1, TemporalRuntime.onRenderLevelHead=1, TemporalRuntime.onRenderTail=1}");
         expect.put("IrohRenderScaleLevelM.*", "{TemporalRuntime.chainHeight=1, TemporalRuntime.chainWidth=1}");
         expect.put("SlowFramesGameRendererM.*", "{SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");

@@ -19,7 +19,8 @@ public final class HotPathAudit {
     /** file -> method names (all overloads / lambdas inside the body are included) */
     public static final Map<String, String[]> HOT = new LinkedHashMap<>();
     static {
-        HOT.put("net/vulkanmod/vulkan/Renderer.java", new String[]{"bindGraphicsPipeline", "preInitFrame", "preInitFrame0", "beginFrame", "beginFrame0", "endFrame", "beginRendering", "endRenderPass", "beginRenderPass"});
+        HOT.put("net/vulkanmod/vulkan/Renderer.java", new String[]{"bindGraphicsPipeline", "preInitFrame", "preInitFrame0", "beginFrame", "beginFrame0", "endFrame", "beginRendering", "endRenderPass", "beginRenderPass", "uploadAndBindUBOs"});
+        HOT.put("net/vulkanmod/vulkan/texture/VulkanImage.java", new String[]{"endPassRunResume"}); // INT-3: P3-11 close hook
         HOT.put("net/vulkanmod/vulkan/framebuffer/Framebuffer.java", new String[]{"beginRenderPass"});
         HOT.put("net/vulkanmod/vulkan/framebuffer/SceneTarget.java", new String[]{"getFramebufferId"});
         HOT.put("net/vulkanmod/vulkan/pass/DefaultMainPass.java", new String[]{"begin", "end", "rebindMainTarget"});
@@ -74,6 +75,8 @@ public final class HotPathAudit {
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onWorldEnd", "!active");
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onBeforeEntities", "!active");
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onWorldStart", "impl");
+        CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onAfterSky", "!active"); // INT-3: P3-11
+        CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onTranslucentTerrain", "!active"); // INT-3: P3-11
         CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/FrameHooks.java#dispatch", "FrameProfiler.ON");
     }
 

@@ -10,4 +10,5 @@ json pack.json idMaps.block.ids.10001[2] = minecraft:oak_log:axis=y
 json pack.json idMaps.block.ids.10003 = null
 jsonhas pack.json idMaps.block.conflicts stone in 10001 and 10004
 json pack.json idMaps.entity.ids.50[1] = minecraft:entity_shadow
-jsonhas programs/_root/composite.json reflection.uniformBlock.members "name":"rainFactor","type":"float","offset":64,"size":4,"class":"custom:uniform"
+jsonhas programs/_root/composite.json reflection.uniformBlock.members "name":"iroh_VertexDecode","type":"vec4","offset":64,"size":16,"class":"compat:RENDERER"
+jsonhas programs/_root/composite.json reflection.uniformBlock.members "name":"rainFactor","type":"float","offset":80,"size":4,"class":"custom:uniform"

@@ -115,6 +115,10 @@ final class PackRuntimeImpl {
     private boolean fullRanThisFrame;
 
     void worldEnd() {
+        if (worldFrame) { // P3-11: the world pass's last segment
+            worldEndFrame();
+            return;
+        }
         if (fullRanThisFrame) { // the full frame already presented before entities
             fullRanThisFrame = false;
             return;
@@ -152,17 +156,29 @@ final class PackRuntimeImpl {
     private VulkanImage importedAtlas;
     private int hAtlas = -1;
 
+    private SceneTarget st;
+    private String folder;
+    private long cpu0;
+
     /** @return true when a frame was recorded */
     private boolean frame(boolean full) {
+        String f0 = setup(full, false);
+        if (f0 == null)
+            return false;
+        return rest(full, f0);
+    }
+
+    /** shared setup of every pack frame (imports, folder, copies/clears, inputs.update); null = no frame */
+    private String setup(boolean full, boolean world) {
         if (failed)
-            return false;
+            return null;
         if (!ensureLoaded())
-            return false;
+            return null;
         Renderer r = Renderer.getInstance();
-        SceneTarget st = r.getMainPass().getSceneTarget();
+        st = r.getMainPass().getSceneTarget();
         if (st == null) {
             fail("no scene target (main pass without one)");
-            return false;
+            return null;
         }
         if (gpu == null) {
             gpu = new IrohVkBackend();
@@ -171,6 +187,7 @@ final class PackRuntimeImpl {
             lc = new PackLifecycle(gpu, (name, bytes) -> true); // MemoryGuard is asked per image inside IrohVkBackend
             lc.enable(loaded.data(), loaded.plan());
             lc.tracing = DebugSwitches.on(PackSwitches.LOG);
+            lc.expectGeometry = PackStartup.FULL; // P3-11: terrain pipelines even when a frame starts before its batches
         }
         VulkanImage colour = st.getColorAttachment(), depth = st.getDepthAttachment();
         if (colour != importedColour) {
@@ -191,7 +208,7 @@ final class PackRuntimeImpl {
             folder = lc.folderFor(mc.level != null ? mc.level.dimension().location().toString() : "minecraft:overworld");
         if (!loaded.plan().frames.containsKey(folder)) {
             fail("no program folder " + folder);
-            return false;
+            return null;
         }
         if (!folder.equals(lastFolder)) {
             log("folder " + folder);
@@ -203,7 +220,7 @@ final class PackRuntimeImpl {
         if (full) {
             // FULL: geometry + shadow + chain; the raster sky (already in the scene colour, terrain skipped) is the
             // background in colortex0; depthtex0 goes back into the scene depth for the raster draws after this
-            if (DebugSwitches.on(PackSwitches.FULL_RASTER_SKY))
+            if (DebugSwitches.on(PackSwitches.FULL_RASTER_SKY) && !world) // world pass: the sky is drawn later in the frame
                 copies.put("colortex0", hColour);
             inputs.depthTo = DebugSwitches.on(PackSwitches.FULL_DEPTH_BACK) ? hDepth : -1;
             VulkanImage atlas = blockAtlas();
@@ -240,9 +257,15 @@ final class PackRuntimeImpl {
         var dir = loaded.plan().frames.get(folder).directives;
         inputs.shadowDistance = SyntheticFullScene.parse(dir.get("shadowDistance"), 96);
         inputs.shadowInterval = SyntheticFullScene.parse(dir.get("shadowIntervalSize"), 2);
-        long cpu0 = System.nanoTime();
+        cpu0 = System.nanoTime();
         inputs.update(FrameHooks.context(), st.getWidth(), st.getHeight(), copies, clears, sunPath);
-        if (full) {
+        this.folder = folder;
+        return folder;
+    }
+
+    /** P3-6 FULL terrain collection (+ shadow reuse planning) into inputs.geometry */
+    private void collectTerrain() {
+        {
             inputs.geometry.clear();
             inputs.geometryVersion++; // the list object is reused: tell the executor its content changed
             var c = FrameHooks.context().cameraPos();
@@ -277,6 +300,9 @@ final class PackRuntimeImpl {
             stats.shadowDraws = shadow ? wr.packShadowDraws : 0;
             stats.batches = inputs.geometry.size();
         }
+    }
+
+    private void fillSkip(boolean full, String folder) {
         skip.clear();
         for (String s : DebugSwitches.getOr(PackSwitches.SKIP, "").split(","))
             if (!s.isBlank())
@@ -287,6 +313,12 @@ final class PackRuntimeImpl {
                     skip.add(p0.id);
         if (full && !DebugSwitches.on(PackSwitches.FULL_TRANSLUCENT))
             skip.add("gbuffers_water:translucent");
+    }
+
+    private boolean rest(boolean full, String folder) {
+        if (full)
+            collectTerrain();
+        fillSkip(full, folder);
         int present = DebugSwitches.on(PackSwitches.PRESENT) ? hColour : -1;
         String f = folder;
         Path cap = captureDir;
@@ -321,6 +353,154 @@ final class PackRuntimeImpl {
             return false;
         }
         return ok[0];
+    }
+
+    // ------------------------------------------------------------------------------------------------ P3-11 world pass
+
+    private WorldPass world;
+    private WorldPassGame worldGame;
+    private boolean worldFrame;
+    private String worldFailed;
+    private boolean worldSubst;
+    private static final float[] TRANSPARENT = {0, 0, 0, 0};
+    private long worldLogNs;
+
+    /** the world pass is wanted this frame: full mode ready, iroh.pack.world.split on, not failed, not Fabulous */
+    private boolean worldWanted() {
+        return worldFailed == null && DebugSwitches.on(PackSwitches.WORLD_SPLIT) && fullReady()
+                && !Minecraft.useShaderTransparency(); // UNVERIFIED: check in G3b (Fabulous' own targets are not composed with the world pass)
+    }
+
+    /** WorldRenderEvents.START: segment 0 (clears + inputs) and the hooks go live; false = not a world-pass frame */
+    boolean worldBegin() {
+        worldFrame = false;
+        if (!worldWanted())
+            return false;
+        String f = setup(true, true);
+        if (f == null)
+            return false;
+        inputs.geometry.clear();
+        inputs.geometryVersion++;
+        inputs.depthTo = DebugSwitches.on(PackSwitches.FULL_DEPTH_BACK) ? hDepth : -1;
+        fillSkip(true, f);
+        FrameExecutor ex = lc.begin(inputs, f, DebugSwitches.on(PackSwitches.PRESENT) ? hColour : -1, skip);
+        if (ex == null) {
+            if (lc.state() == PackLifecycle.State.FAILED)
+                fail(lc.failure);
+            return false;
+        }
+        boolean subst = DebugSwitches.on(PackSwitches.WORLD_SUBSTITUTE);
+        if (world == null || world.executor() != ex || subst != worldSubst) {
+            if (worldGame == null)
+                worldGame = new WorldPassGame(gpu);
+            world = new WorldPass(ex, gpu, worldGame, worldGame, SubstitutionHook.rasterMods(), subst);
+            worldSubst = subst;
+        }
+        ex.rasterOver = hColour;
+        WorldPass w = world;
+        boolean[] ok = {false};
+        VulkanImage.endPassRunResume(() -> ok[0] = lc.segment(() -> w.begin(inputs)));
+        if (!ok[0]) {
+            failWorld(lc.failure != null ? lc.failure : "begin failed");
+            return false;
+        }
+        if (w.substitutedBinds == 0 && w.executor().substitutedPipelines() == 0 && subst) { // first frame of this executor
+            long t0 = System.nanoTime();
+            int n = w.warm();
+            log("world pass: " + n + " pipeline permutations warmed in " + (System.nanoTime() - t0) / 1_000_000 + " ms");
+        }
+        worldFrame = true;
+        SubstitutionHook.active = w;
+        Substitution.setBit(Substitution.WORLD, true);
+        return true;
+    }
+
+    /** AFTER_SETUP: the sky is drawn; a raster sky (not substituted) goes into colortex0, then the scene colour is cleared transparent */
+    void worldAfterSky() {
+        if (!worldFrame)
+            return;
+        WorldPass w = world;
+        boolean skySubst = w.perClass.containsKey("sky_basic") && w.perClass.get("sky_basic")[0] > 0;
+        VulkanImage.endPassRunResume(() -> lc.segment(() -> {
+            w.afterSky();
+            if (!skySubst && DebugSwitches.on(PackSwitches.FULL_RASTER_SKY))
+                w.executor().blitIn(hColour, "colortex0");
+            w.executor().clearExternal(hColour, TRANSPARENT); // raster draws of the world pass land over transparent black
+        }));
+    }
+
+    /** BEFORE_ENTITIES: terrain lists, then shadow .. gbuffers-solid (captures held), depthtex0 back to the scene depth */
+    void worldOpaque() {
+        if (!worldFrame)
+            return;
+        collectTerrain(); // also decides shadow-map reuse for this frame (executor.reuseShadow)
+        WorldPass w = world;
+        boolean back = DebugSwitches.on(PackSwitches.FULL_DEPTH_BACK);
+        VulkanImage.endPassRunResume(() -> lc.segment(() -> {
+            w.opaque(inputs);
+            if (back)
+                w.executor().blitOut("depthtex0", hDepth); // raster remainder draws occlude against terrain
+        }));
+        checkLc();
+    }
+
+    /** the first translucent terrain layer: held captures, deferred, gbuffers-translucent; later draws use translucent programs */
+    void worldTranslucent() {
+        if (!worldFrame || world.phase() != WorldPass.Phase.OPAQUE)
+            return;
+        WorldPass w = world;
+        VulkanImage.endPassRunResume(() -> lc.segment(() -> w.translucent(inputs)));
+        checkLc();
+    }
+
+    /** END: composite, final, raster-over, present; hooks off */
+    void worldEndFrame() {
+        if (!worldFrame)
+            return;
+        WorldPass w = world;
+        VulkanImage.endPassRunResume(() -> lc.segment(() -> w.end(inputs)));
+        worldFrame = false;
+        SubstitutionHook.active = null;
+        Substitution.setBit(Substitution.WORLD, false);
+        DrawIds.weather = false;
+        DrawIds.reset();
+        stats.cpuNs += System.nanoTime() - cpu0;
+        stats.frames++;
+        stats.maybeLog(true);
+        long now = System.nanoTime();
+        if (now - worldLogNs > 2_000_000_000L) {
+            worldLogNs = now;
+            DebugSwitches.publish(PackSwitches.WORLD_REPORT, w.report());
+        }
+        checkLc();
+        if (w.failure() != null)
+            failWorld(w.failure());
+    }
+
+    boolean worldFrameActive() {
+        return worldFrame;
+    }
+
+    private void checkLc() {
+        if (lc != null && lc.state() == PackLifecycle.State.FAILED) {
+            worldFrame = false;
+            SubstitutionHook.active = null;
+            Substitution.setBit(Substitution.WORLD, false);
+            fail(lc.failure);
+        }
+    }
+
+    /** degraded mode: the world pass is off for the session, full mode continues terrain-only (P3-6 order); ONE log line */
+    private void failWorld(String why) {
+        if (worldFailed != null)
+            return;
+        worldFailed = why;
+        if (world != null)
+            world.abort();
+        worldFrame = false;
+        SubstitutionHook.active = null;
+        Substitution.setBit(Substitution.WORLD, false);
+        log("world pass OFF for this session, terrain-only full mode continues: " + why);
     }
 
     // reused per frame (P3-6: no per-frame maps in the hook)
@@ -362,6 +542,9 @@ final class PackRuntimeImpl {
 
     private void fail(String why) {
         failed = true;
+        worldFrame = false;
+        SubstitutionHook.active = null;
+        Substitution.setBit(Substitution.WORLD, false);
         PackRuntime.deactivate();
         log("pack path OFF for this session: " + why);
         if (lc != null)
@@ -369,6 +552,14 @@ final class PackRuntimeImpl {
     }
 
     void unload() {
+        if (world != null) {
+            world.abort();
+            world.forgetTextures();
+        }
+        world = null;
+        worldFrame = false;
+        SubstitutionHook.active = null;
+        Substitution.setBit(Substitution.WORLD, false);
         if (lc != null)
             lc.unload();
         if (gpu != null) {

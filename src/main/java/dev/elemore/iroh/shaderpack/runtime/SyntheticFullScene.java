@@ -171,6 +171,7 @@ public final class SyntheticFullScene implements PackFrameInputs {
         }
         if (classes.contains("weather")) {
             uniforms.put("rainStrength", new double[]{1});
+            uniforms.put("rainFactor", new double[]{1}); // Navidson smooths rainStrength into rainFactor over seconds
             uniforms.put("wetness", new double[]{1});
             VBatch w = new VBatch("weather", POSITION_TEX_COLOR_LIGHTMAP);
             for (int i = -3; i <= 3; i++) {

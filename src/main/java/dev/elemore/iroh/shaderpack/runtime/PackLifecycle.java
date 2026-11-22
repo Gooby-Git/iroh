@@ -87,6 +87,50 @@ public final class PackLifecycle {
         if (state != State.ACTIVE)
             return false;
         try {
+            if (!ready(in, folder, presentTo, skip))
+                return false;
+            ex.frame(in);
+            return true;
+        } catch (RuntimeException e) {
+            fail(e.toString());
+            return false;
+        }
+    }
+
+    /** P3-11 world pass: terrain-class pipelines and depth clears even before this frame's batches exist (set before a rebuild) */
+    public boolean expectGeometry;
+
+    /**
+     * P3-11: the executor for a SEGMENTED frame (world pass), rebuilt like {@link #frame} when the folder or size
+     * changed, with presentTo/skip set; the caller then runs frameBegin / runStages / frameEnd through {@link #segment}.
+     * null when off or failed.
+     */
+    public FrameExecutor begin(PackFrameInputs in, String folder, int presentTo, Set<String> skip) {
+        if (state != State.ACTIVE)
+            return null;
+        try {
+            return ready(in, folder, presentTo, skip) ? ex : null;
+        } catch (RuntimeException e) {
+            fail(e.toString());
+            return null;
+        }
+    }
+
+    /** P3-11: runs one recorded segment of a world-pass frame; any exception fails the path (one log line) */
+    public boolean segment(Runnable r) {
+        if (state != State.ACTIVE || ex == null)
+            return false;
+        try {
+            r.run();
+            return true;
+        } catch (RuntimeException e) {
+            fail(e.toString());
+            return false;
+        }
+    }
+
+    private boolean ready(PackFrameInputs in, String folder, int presentTo, Set<String> skip) {
+        {
             if (ex == null || !folder.equals(this.folder) || in.width() != width || in.height() != height) {
                 if (ex != null)
                     log.add("rebuild: " + this.folder + " " + width + "x" + height + " -> " + folder + " " + in.width() + "x" + in.height());
@@ -96,6 +140,7 @@ public final class PackLifecycle {
                 height = in.height();
                 ex = new FrameExecutor(data, plan, folder, gpu, gate);
                 ex.tracing = tracing;
+                ex.expectGeometry = expectGeometry;
                 ex.prepare(in);
                 rebuilds++;
                 for (String p : ex.problems)
@@ -106,11 +151,8 @@ public final class PackLifecycle {
             }
             ex.presentTo = presentTo;
             ex.skip = skip;
-            ex.frame(in);
+            ex.expectGeometry = expectGeometry;
             return true;
-        } catch (RuntimeException e) {
-            fail(e.toString());
-            return false;
         }
     }
 

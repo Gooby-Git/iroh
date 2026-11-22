@@ -15,6 +15,7 @@ import java.util.Map;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
+import static org.lwjgl.vulkan.VK11.VK_ERROR_OUT_OF_POOL_MEMORY;
 
 /**
  * The Vulkan half of a {@link GpuBackend} shared by the offline replay device ({@link HeadlessVkBackend}, lavapipe) and
@@ -100,6 +101,11 @@ public abstract class VkPackBackend implements GpuBackend {
     protected abstract void freeHostBufferAfterFrame(HostBuf b);
 
     protected abstract long descriptorPool();
+
+    /** P3-11: the current pool is full: switch {@link #descriptorPool} to a fresh one for this frame; false = cannot */
+    protected boolean descriptorPoolExhausted() {
+        return false;
+    }
 
     protected void initQuad() {
         quad = hostBuffer(4L * QUAD_STRIDE, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -534,16 +540,22 @@ public abstract class VkPackBackend implements GpuBackend {
         try (MemoryStack s = stackPush()) {
             VkImageSubresourceRange r = VkImageSubresourceRange.calloc(s).aspectMask(im.aspect).baseMipLevel(0)
                     .levelCount(im.d.mips()).baseArrayLayer(0).layerCount(1);
+            // P3-11: an imported image (the scene colour, cleared transparent for the world pass) is cleared in TRANSFER_DST
+            int was = enterTransfer(im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            int lay = im.imported != null ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+            if (im.imported != null)
+                r.levelCount(1);
             if (im.aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
-                vkCmdClearDepthStencilImage(cmd(), im.image, VK_IMAGE_LAYOUT_GENERAL, VkClearDepthStencilValue.calloc(s).depth(rgba[0]), r);
+                vkCmdClearDepthStencilImage(cmd(), im.image, lay, VkClearDepthStencilValue.calloc(s).depth(rgba[0]), r);
             } else {
                 VkClearColorValue cv = VkClearColorValue.calloc(s);
                 if (im.d.vkFormat().endsWith("UINT") || im.d.vkFormat().endsWith("SINT"))
                     cv.uint32(0, Math.round(rgba[0])).uint32(1, Math.round(rgba[1])).uint32(2, Math.round(rgba[2])).uint32(3, Math.round(rgba[3]));
                 else
                     cv.float32(0, rgba[0]).float32(1, rgba[1]).float32(2, rgba[2]).float32(3, rgba[3]);
-                vkCmdClearColorImage(cmd(), im.image, VK_IMAGE_LAYOUT_GENERAL, cv, r);
+                vkCmdClearColorImage(cmd(), im.image, lay, cv, r);
             }
+            leaveTransfer(im, was, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         }
     }
 
@@ -717,8 +729,13 @@ public abstract class VkPackBackend implements GpuBackend {
     private long[] sets(Pipe p, Map<Integer, Bind> set0, Map<Integer, Bind> set1, byte[] ubo) {
         try (MemoryStack s = stackPush()) {
             LongBuffer lb = s.mallocLong(2);
-            check(vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
-                    .pSetLayouts(s.longs(p.set0(), p.set1())), lb), "descriptor sets");
+            int r = vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
+                    .pSetLayouts(s.longs(p.set0(), p.set1())), lb);
+            if ((r == VK_ERROR_OUT_OF_POOL_MEMORY || r == VK_ERROR_FRAGMENTED_POOL) && descriptorPoolExhausted())
+                // P3-11: substituted draws take two sets each; a busy world pass outgrows one pool per frame
+                r = vkAllocateDescriptorSets(device(), VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(descriptorPool())
+                        .pSetLayouts(s.longs(p.set0(), p.set1())), lb);
+            check(r, "descriptor sets");
             long s0 = lb.get(0), s1 = lb.get(1);
             long[] at = uboAlloc(Math.max(16, ubo.length));
             HostBuf u = uboChunks.get(uboSlot).get((int) at[0]);
@@ -929,6 +946,71 @@ public abstract class VkPackBackend implements GpuBackend {
             }
             vkCmdEndRenderPass(cmd());
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------ P3-11 external draws
+
+    private boolean attachmentsOpen;
+
+    /** P3-11: one render pass instance over a pack pass's attachments for draws Iroh's renderer issues (substituted draws) */
+    @Override
+    public void beginAttachments(String pass, int[] colour, int depth, int[] viewport) {
+        if (attachmentsOpen)
+            throw new IllegalStateException("beginAttachments " + pass + " while attachments are open");
+        try (MemoryStack s = stackPush()) {
+            int n = colour.length;
+            int[] formats = new int[n];
+            int aw = Integer.MAX_VALUE, ah = Integer.MAX_VALUE;
+            for (int i = 0; i < n; i++) {
+                Img im = img(colour[i]);
+                formats[i] = im.format;
+                aw = Math.min(aw, im.d.width());
+                ah = Math.min(ah, im.d.height());
+            }
+            int depthFmt = 0;
+            if (depth >= 0) {
+                Img dm = img(depth);
+                depthFmt = dm.format;
+                aw = Math.min(aw, dm.d.width());
+                ah = Math.min(ah, dm.d.height());
+            }
+            long rp = renderPass(formats, depthFmt);
+            long fb = framebuffer(rp, colour, depth, aw, ah);
+            VkRenderPassBeginInfo bi = VkRenderPassBeginInfo.calloc(s).sType$Default().renderPass(rp).framebuffer(fb);
+            bi.renderArea().extent().width(aw).height(ah);
+            vkCmdBeginRenderPass(cmd(), bi, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdSetViewport(cmd(), 0, VkViewport.calloc(1, s).x(viewport[0]).y(viewport[1]).width(viewport[2]).height(viewport[3]).minDepth(0).maxDepth(1));
+            VkRect2D.Buffer sc = VkRect2D.calloc(1, s);
+            sc.get(0).offset().set(viewport[0], viewport[1]);
+            sc.get(0).extent().set(Math.min(viewport[2], aw), Math.min(viewport[3], ah));
+            vkCmdSetScissor(cmd(), 0, sc);
+            attachmentsOpen = true;
+        }
+    }
+
+    @Override
+    public void bindExternalDraw(String pass, int pipeline, Map<Integer, Bind> set0, Map<Integer, Bind> set1, byte[] uniforms) {
+        if (!attachmentsOpen)
+            throw new IllegalStateException("bindExternalDraw " + pass + " outside beginAttachments");
+        Pipe p = pipes.get(pipeline);
+        long[] ds = sets(p, set0, set1, uniforms);
+        try (MemoryStack s = stackPush()) {
+            vkCmdBindPipeline(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline());
+            vkCmdBindDescriptorSets(cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout(), 0, s.longs(ds[0], ds[1]), null);
+            if (zeroVertex == null) {
+                zeroVertex = hostBuffer(64, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                zeroVertex.mapped().put(0, new byte[64]);
+            }
+            vkCmdBindVertexBuffers(cmd(), 1, s.longs(zeroVertex.buffer()), s.longs(0)); // inputs the vanilla format lacks
+        }
+    }
+
+    @Override
+    public void endAttachments() {
+        if (!attachmentsOpen)
+            throw new IllegalStateException("endAttachments without beginAttachments");
+        vkCmdEndRenderPass(cmd());
+        attachmentsOpen = false;
     }
 
     @Override

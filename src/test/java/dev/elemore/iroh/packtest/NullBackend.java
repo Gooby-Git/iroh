@@ -27,6 +27,11 @@ final class NullBackend implements GpuBackend {
     public void draw(Draw d) { draws++; }
     public void dispatch(Dispatch d) { draws++; }
     public void endFrame() {}
+    // P3-11 world pass (external draws): no-ops, no allocation
+    @Override public void beginAttachments(String pass, int[] colour, int depth, int[] viewport) { draws++; }
+    @Override public void bindExternalDraw(String pass, int pipeline, java.util.Map<Integer, Bind> set0, java.util.Map<Integer, Bind> set1, byte[] uniforms) { draws++; }
+    @Override public void endAttachments() {}
+    @Override public int importImage(Object external, String name) { descs.add(new ImageDesc(name, "R8G8B8A8_UNORM", 1, 1, 1, 1, java.util.Set.of("SAMPLED"))); return descs.size() - 1; }
     public float[] readback(int image) { return null; }
     public void blit(int src, int dst) {}
     public void freePipeline(int pipeline) {}

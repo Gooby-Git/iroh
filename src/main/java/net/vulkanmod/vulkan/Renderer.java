@@ -580,6 +580,8 @@ public class Renderer {
     }
 
     public void endRenderPass(VkCommandBuffer commandBuffer) {
+        if ((dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK & 2) != 0) // P3-11: the world pass's attachments close first
+            dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.closeForForeign();
         if (skipRendering || !recordingCmds || this.boundFramebuffer == null)
             return;
 
@@ -597,6 +599,8 @@ public class Renderer {
     public boolean beginRendering(RenderPass renderPass, Framebuffer framebuffer) {
         if (skipRendering || !recordingCmds)
             return false;
+        if ((dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK & 2) != 0) // P3-11: never begin a pass inside the world pass's attachments
+            dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.closeForForeign();
         // perf/uploads: queued in-frame uploads go before an off-screen pass that may render into or sample them
         if (this.boundFramebuffer != framebuffer && net.vulkanmod.vulkan.texture.VulkanImage.anyInFramePending())
             net.vulkanmod.vulkan.texture.VulkanImage.flushInFrame();
@@ -754,6 +758,11 @@ public class Renderer {
     }
 
     public void bindGraphicsPipeline(GraphicsPipeline pipeline) {
+        // Iroh P3-10/P3-11: pack program substitution (observe, or the world pass binding the pack pipeline for this draw's
+        // class instead); default off: one static volatile read
+        if (dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK != 0
+                && dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.bind(pipeline))
+            return;
         VkCommandBuffer commandBuffer = recordingCommandBuffer("bindGraphicsPipeline");
         if (commandBuffer == null) return;
 
@@ -771,6 +780,10 @@ public class Renderer {
     }
 
     public void uploadAndBindUBOs(Pipeline pipeline) {
+        // Iroh P3-11: a substituted draw binds the pack program's descriptor sets instead (one static volatile read when off)
+        if (dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK != 0
+                && dev.elemore.iroh.shaderpack.runtime.SubstitutionHook.beforeDraw(pipeline))
+            return;
         VkCommandBuffer commandBuffer = recordingCommandBuffer("uploadAndBindUBOs");
         if (commandBuffer == null) return;
         pipeline.bindDescriptorSets(commandBuffer, currentFrame);

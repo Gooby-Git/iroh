@@ -13,6 +13,9 @@
     "render.IrohLeavesM",
     "render.upscale.IrohRenderScaleGameM",
     "render.upscale.IrohRenderScaleLevelM",
+    "render.IrohDrawIdsM",
+    "render.IrohBlockEntityIdsM",
+    "render.IrohWeatherContextM",
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",

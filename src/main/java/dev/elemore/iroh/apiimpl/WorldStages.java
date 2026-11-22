@@ -25,7 +25,10 @@ public final class WorldStages {
             dev.elemore.iroh.shaderpack.runtime.PackRuntime.onWorldStart(); // P3-6 full mode: raster terrain skip flag
             FrameHooks.dispatch(FrameStage.WORLD_START);
         });
-        WorldRenderEvents.AFTER_SETUP.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_SKY));
+        WorldRenderEvents.AFTER_SETUP.register(ctx -> {
+            dev.elemore.iroh.shaderpack.runtime.PackRuntime.onAfterSky(); // P3-11 world pass (default off: one volatile read)
+            FrameHooks.dispatch(FrameStage.AFTER_SKY);
+        });
         WorldRenderEvents.BEFORE_ENTITIES.register(ctx -> {
             dev.elemore.iroh.shaderpack.runtime.PackRuntime.onBeforeEntities(); // P3-6 full mode (default off)
             FrameHooks.dispatch(FrameStage.AFTER_OPAQUE_TERRAIN);

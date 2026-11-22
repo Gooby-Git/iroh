@@ -33,6 +33,8 @@ public final class IrohDebug {
         dev.elemore.iroh.shaderpack.runtime.PackSwitches.registerAll();
         dev.elemore.iroh.perf.PerfSwitches.registerAll();
         dev.elemore.iroh.temporal.UpscaleSwitches.registerAll();
+        if (dev.elemore.iroh.shaderpack.runtime.PackSwitches.SUBST_REPORT.equals(key))
+            DebugSwitches.publish(key, dev.elemore.iroh.shaderpack.runtime.Substitution.report());
         return DebugSwitches.get(key);
     }
 

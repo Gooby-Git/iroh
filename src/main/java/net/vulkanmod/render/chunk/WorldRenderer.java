@@ -540,8 +540,12 @@ public class WorldRenderer {
             return;
         // Iroh P3-6: the FULL pack path drew the terrain this frame (raster sections skipped; the pack output and
         // depth were copied into the scene target before entities)
-        if (packTerrainActive && TerrainRenderType.get(renderType) != null)
+        if (packTerrainActive && TerrainRenderType.get(renderType) != null) {
+            // Iroh P3-11: the world pass runs deferred + translucent terrain at vanilla's translucent layer (Iris' beginTranslucents)
+            if (renderType == RenderType.translucent())
+                dev.elemore.iroh.shaderpack.runtime.PackRuntime.onTranslucentTerrain();
             return;
+        }
         if (dev.elemore.iroh.diag.SlowFrames.ON) { // perf/frame-attrib
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.LAYERS, 1);
             dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.TERRAIN_DRAW);

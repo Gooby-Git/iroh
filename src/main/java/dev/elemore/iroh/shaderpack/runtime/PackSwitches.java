@@ -20,6 +20,13 @@ public final class PackSwitches {
     public static final String LOG = "iroh.pack.log";
     public static final String GPU_TIMES = "iroh.pack.gpuTimes";
     public static final String CPU = "iroh.pack.cpu";
+    public static final String SUBST_OBSERVE = "iroh.pack.substitution.observe";
+    public static final String SUBST_REPORT = "iroh.pack.substitution";
+    public static final String RASTER_MODS = "iroh.pack.raster.mods";
+    // P3-11 world pass (each default off; substitute needs split)
+    public static final String WORLD_SPLIT = "iroh.pack.world.split";
+    public static final String WORLD_SUBSTITUTE = "iroh.pack.world.substitute";
+    public static final String WORLD_REPORT = "iroh.pack.world";
     // P3-6 FULL-mode sub-steps (bisecting; all runtime-safe)
     public static final String FULL_TERRAIN = "iroh.pack.full.terrain";
     public static final String FULL_SHADOW = "iroh.pack.full.shadow";
@@ -71,6 +78,23 @@ public final class PackSwitches {
                     DebugSwitches.BOOL, v -> "ok"));
             DebugSwitches.register(new Switch(FULL_SHADOW_REUSE, "3", "full mode: reuse the shadow maps up to N frames while the shadow camera barely moves (0 = render every frame)",
                     v -> v.trim().matches("\\d+") ? null : "a frame count", v -> "ok"));
+            DebugSwitches.register(new Switch(SUBST_OBSERVE, "off", "P3-10: count every pipeline bind by what program substitution would do (no rendering change); report in iroh.pack.substitution",
+                    DebugSwitches.BOOL, v -> {
+                        Substitution.setBit(Substitution.OBS, DebugSwitches.on(SUBST_OBSERVE));
+                        if (!Substitution.OBSERVE)
+                            Substitution.reset();
+                        return "ok";
+                    }));
+            DebugSwitches.register(new Switch(SUBST_REPORT, "", "READ-ONLY: shader -> class [layout] x binds since observe was switched on (refreshed on get)",
+                    v -> "read-only", null));
+            DebugSwitches.register(new Switch(RASTER_MODS, "", "comma-separated mod namespaces whose draws stay raster (bisecting substitution)",
+                    null, v -> "ok"));
+            DebugSwitches.register(new Switch(WORLD_SPLIT, "off", "P3-11 step 1 (full mode): the frame is recorded around vanilla's world draws (sky, terrain at BEFORE_ENTITIES, deferred at the translucent layer, composite/final at END); raster world draws are composited over the pack output",
+                    DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(WORLD_SUBSTITUTE, "off", "P3-11 step 2 (needs " + WORLD_SPLIT + "): world draws whose class the pack serves are drawn by the pack's gbuffers program into its targets instead of the vanilla shader",
+                    DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(WORLD_REPORT, "no samples yet", "READ-ONLY: world pass per frame: binds substituted / raster, draws, attachment switches, pipelines, draws per class",
+                    v -> "read-only (published by the renderer)", null));
             registered = true;
         }
     }
