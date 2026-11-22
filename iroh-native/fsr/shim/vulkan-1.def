@@ -1,0 +1,12 @@
+; import library for the few Vulkan entry points the FidelityFX VK backend and our shim call directly (mingw cross build only).
+LIBRARY vulkan-1.dll
+EXPORTS
+vkCreateBuffer
+vkEnumerateDeviceExtensionProperties
+vkGetDeviceProcAddr
+vkGetInstanceProcAddr
+vkGetPhysicalDeviceFeatures
+vkGetPhysicalDeviceFeatures2
+vkGetPhysicalDeviceMemoryProperties
+vkGetPhysicalDeviceProperties
+vkGetPhysicalDeviceProperties2
