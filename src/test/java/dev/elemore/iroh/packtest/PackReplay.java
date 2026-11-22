@@ -232,6 +232,8 @@ public final class PackReplay {
                 ex2.close();
             }
             long ms = (System.nanoTime() - t0) / 1_000_000;
+            if (!gpu.passTimes.isEmpty())
+                report.append("# relative pass cost on lavapipe (share of summed pass time; a CPU rasteriser: ranking only)\n").append(gpu.passTimeTable());
             Map<String, Map<String, Object>> stats = ex.inspect();
             for (Map.Entry<String, Map<String, Object>> e : stats.entrySet()) {
                 Map<String, Object> s = e.getValue();

@@ -276,11 +276,91 @@ public final class HeadlessVkBackend extends VkPackBackend {
         vkResetDescriptorPool(device, descPool, 0);
         resetUboRing(0);
         cmd();
+        // P3-8: per-pass GPU timestamps (lavapipe: RELATIVE costs only, a CPU rasteriser says nothing about a GPU)
+        if (queryPool == 0)
+            initQueries();
+        if (queryPool != 0) {
+            vkCmdResetQueryPool(cmd, queryPool, 0, MAXQ);
+            qNames.clear();
+        }
     }
 
     @Override
     public void endFrame() {
         submitWait();
+        readQueries();
+    }
+
+    // ---- timestamps (P3-8)
+    private static final int MAXQ = 256;
+    private long queryPool;
+    private double periodNs;
+    private boolean noQueries;
+    private final List<String> qNames = new ArrayList<>();
+    /** pass -> {sum ms, samples} over all frames (relative costs) */
+    public final java.util.Map<String, double[]> passTimes = new java.util.LinkedHashMap<>();
+
+    private void initQueries() {
+        if (noQueries)
+            return;
+        try (MemoryStack s = stackPush()) {
+            VkPhysicalDeviceProperties pp = VkPhysicalDeviceProperties.calloc(s);
+            vkGetPhysicalDeviceProperties(phys, pp);
+            periodNs = pp.limits().timestampPeriod();
+            java.nio.LongBuffer lb = s.mallocLong(1);
+            if (periodNs <= 0 || !pp.limits().timestampComputeAndGraphics()
+                    || vkCreateQueryPool(device, VkQueryPoolCreateInfo.calloc(s).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(MAXQ), null, lb) != VK_SUCCESS) {
+                noQueries = true;
+                return;
+            }
+            queryPool = lb.get(0);
+        }
+    }
+
+    @Override
+    public void timeBegin(String pass) {
+        if (queryPool == 0 || qNames.size() * 2 + 2 > MAXQ)
+            return;
+        vkCmdWriteTimestamp(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, qNames.size() * 2);
+        qNames.add(pass);
+    }
+
+    @Override
+    public void timeEnd(String pass) {
+        if (queryPool == 0 || qNames.isEmpty() || !qNames.get(qNames.size() - 1).equals(pass))
+            return;
+        vkCmdWriteTimestamp(cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, qNames.size() * 2 - 1);
+    }
+
+    private void readQueries() {
+        if (queryPool == 0 || qNames.isEmpty())
+            return;
+        int n = qNames.size() * 2;
+        try (MemoryStack s = stackPush()) {
+            java.nio.LongBuffer res = s.mallocLong(n);
+            if (vkGetQueryPoolResults(device, queryPool, 0, n, res, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS)
+                for (int i = 0; i < qNames.size(); i++) {
+                    long a = res.get(2 * i), b = res.get(2 * i + 1);
+                    if (b >= a) {
+                        double[] acc = passTimes.computeIfAbsent(qNames.get(i), k -> new double[2]);
+                        acc[0] += (b - a) * periodNs / 1e6;
+                        acc[1]++;
+                    }
+                }
+        }
+        qNames.clear();
+    }
+
+    /** "pass share%" table, most expensive first (relative to the summed pass time) */
+    public String passTimeTable() {
+        double total = 0;
+        for (double[] v : passTimes.values())
+            total += v[0] / Math.max(1, v[1]);
+        StringBuilder sb = new StringBuilder();
+        double t = total;
+        passTimes.entrySet().stream().sorted((x, y) -> Double.compare(y.getValue()[0] / y.getValue()[1], x.getValue()[0] / x.getValue()[1]))
+                .forEach(e -> sb.append(String.format("  %-34s %5.1f%%%n", e.getKey(), 100 * e.getValue()[0] / e.getValue()[1] / t)));
+        return sb.toString();
     }
 
     @Override
@@ -309,6 +389,9 @@ public final class HeadlessVkBackend extends VkPackBackend {
     @Override
     public void close() {
         submitWait();
+        if (queryPool != 0)
+            vkDestroyQueryPool(device, queryPool, null);
+        queryPool = 0;
         destroyShared();
         submitWait();
         for (Runnable r : later)

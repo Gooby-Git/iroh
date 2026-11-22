@@ -120,6 +120,36 @@ public final class FrameExecutor {
     public Upscale upscale;
     /** P3-7 C: keep last frame's shadow maps: shadow + shadowcomp stages and their clears are skipped this frame */
     public boolean reuseShadow;
+    /**
+     * P3-8 dead-pass removal: a fullscreen pass whose every colour output has no reader anywhere in the frame plan
+     * (any pass, any frame: the graph's readers include history reads) and is not the output is skipped. Navidson world0
+     * with the shipped options: composite (colortex7, the reflection temporal: nothing reads it). The replay goldens
+     * prove the picture is unchanged.
+     */
+    public boolean pruneDead = true;
+    private Set<String> deadPasses;
+
+    /** the passes {@link #pruneDead} removes from this frame plan */
+    public Set<String> deadPasses() {
+        if (deadPasses == null) {
+            deadPasses = new java.util.TreeSet<>();
+            for (PassGraph.Pass p : frame.passes) {
+                if (!p.kind.equals("fullscreen") || p.writes.isEmpty())
+                    continue;
+                boolean anyRead = false;
+                for (Map<String, Object> w : p.writes) {
+                    String t = (String) w.get("target");
+                    PassGraph.Target tg = frame.targets.get(t);
+                    if ("output".equals(t) || tg == null || !tg.readers.isEmpty() || (tg.endOfFrameCopy && tg.pairNeeded()))
+                        anyRead = true;
+                }
+                if (!anyRead)
+                    deadPasses.add(p.id);
+            }
+        }
+        return deadPasses;
+    }
+
     /** keep the trace across frames (offline tools only) */
     public boolean keepTrace;
     /** record the trace at all (P3-8: the game turns it off; strings are not even built then) */
@@ -514,6 +544,10 @@ public final class FrameExecutor {
             }
             if (skip.contains(p.id)) {
                 if (tracing) trace.add("skip " + p.id + " (iroh.pack.skip)");
+                continue;
+            }
+            if (pruneDead && deadPasses().contains(p.id)) {
+                if (tracing) trace.add("skip " + p.id + " (dead: no reader of its outputs)");
                 continue;
             }
             if (reuseShadow && (p.stage.equals("shadow") || p.stage.equals("shadowcomp"))) {

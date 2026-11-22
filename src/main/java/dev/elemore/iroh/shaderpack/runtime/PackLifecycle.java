@@ -36,6 +36,8 @@ public final class PackLifecycle {
     public String failure;
     public final List<String> log = new ArrayList<>();
     public int rebuilds;
+    /** executor trace on/off (P3-8: off in game unless iroh.pack.log; strings are then never built) */
+    public boolean tracing = true;
 
     public PackLifecycle(GpuBackend gpu, FrameExecutor.MemoryGate gate) {
         this.gpu = gpu;
@@ -93,6 +95,7 @@ public final class PackLifecycle {
                 width = in.width();
                 height = in.height();
                 ex = new FrameExecutor(data, plan, folder, gpu, gate);
+                ex.tracing = tracing;
                 ex.prepare(in);
                 rebuilds++;
                 for (String p : ex.problems)

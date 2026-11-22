@@ -170,6 +170,7 @@ final class PackRuntimeImpl {
             dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = () -> g.times.last() + " | " + stats.last;
             lc = new PackLifecycle(gpu, (name, bytes) -> true); // MemoryGuard is asked per image inside IrohVkBackend
             lc.enable(loaded.data(), loaded.plan());
+            lc.tracing = DebugSwitches.on(PackSwitches.LOG);
         }
         VulkanImage colour = st.getColorAttachment(), depth = st.getDepthAttachment();
         if (colour != importedColour) {
