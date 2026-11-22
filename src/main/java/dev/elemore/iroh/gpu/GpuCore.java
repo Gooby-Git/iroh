@@ -926,7 +926,9 @@ public final class GpuCore {
         passReads.clear();
         for (GpuBuffer r : reads) {
             Buf b = buf(r);
-            if (b.writeStages != 0)
+            // an upload is fine: uploads land before the frame's GPU work (game: Iroh's upload submit; offline: emulated)
+            boolean uploadOnly = b.writeStages == VK_PIPELINE_STAGE_TRANSFER_BIT && b.writeAccess == VK_ACCESS_TRANSFER_WRITE_BIT;
+            if (b.writeStages != 0 && !uploadOnly)
                 throw new IllegalStateException(b.name + " was written after the last settle: write it in BEFORE_MAIN_PASS or runOutsideMainPass");
             b.readStages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
             passReads.add(b);
