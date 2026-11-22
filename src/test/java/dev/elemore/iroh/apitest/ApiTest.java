@@ -53,6 +53,7 @@ public final class ApiTest {
         shadeHookContract();
 
         ApiV3Checks.run(ApiTest::check);
+        ApiV4Checks.run(ApiTest::check);
 
         System.out.println("# api " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         if (fail != 0)

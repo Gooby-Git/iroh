@@ -47,6 +47,11 @@ public abstract class Pipeline {
 
     private static final VkDevice DEVICE = Vulkan.getVkDevice();
     protected static final long PIPELINE_CACHE = createPipelineCache();
+
+    /** api 4 (card V-M1): mod compute / indirect pipelines share Iroh's pipeline cache. */
+    public static long pipelineCacheHandle() {
+        return PIPELINE_CACHE;
+    }
     protected static final List<Pipeline> PIPELINES = new LinkedList<>();
 
     private static final int PIPELINE_CACHE_HEADER_SIZE = 16 + VK_UUID_SIZE;

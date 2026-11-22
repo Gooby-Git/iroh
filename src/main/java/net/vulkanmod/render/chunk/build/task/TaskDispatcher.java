@@ -316,6 +316,8 @@ public class TaskDispatcher {
             }
 
             compileResult.updateSection();
+            if (dev.elemore.iroh.apiimpl.Sections.any()) // api 4: section listeners (LOD hand-off)
+                dev.elemore.iroh.apiimpl.Sections.built(section.xOffset >> 4, section.yOffset >> 4, section.zOffset >> 4, section.isCompletelyEmpty());
         }
         else {
             UploadBuffer uploadBuffer = compileResult.renderedLayers.get(TerrainRenderType.TRANSLUCENT);

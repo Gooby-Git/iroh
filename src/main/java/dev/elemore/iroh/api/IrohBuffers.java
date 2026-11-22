@@ -1,15 +1,47 @@
 package dev.elemore.iroh.api;
 
+import dev.elemore.iroh.gpu.GpuCore;
+
+import java.nio.ByteBuffer;
+
 /**
- * Placeholder (api 3): GPU buffers (storage, indirect, sparse, device address, async upload). Capabilities GPU_BUFFERS, SPARSE_BUFFERS, DEVICE_ADDRESS.
- * Not implemented before Phase 2 / 9 (Vista's renderer): every call throws {@link UnsupportedOperationException}; check
- * {@link IrohApi#capabilities()} first. The contract is written in knowledge/api.md so designs can start now.
+ * api 4 (card V-M1): device-local GPU buffers owned by a mod. Capability {@link Capability#GPU_BUFFERS}.
+ * <ul>
+ *   <li>{@link #create}: owner = your mod id; bytes a multiple of 4, at most 1 GiB; returns NULL when the owner's share
+ *       of Iroh's memory cap ({@code iroh.gpu.ownerShare}, default 40 %) would be exceeded ({@link #lastRefusal} says
+ *       why). Never an out-of-memory crash.</li>
+ *   <li>{@link #upload}: render thread; copied through Iroh's staging ring, visible to work recorded later in the frame
+ *       (in game: before this frame's commands run). Sizes and offsets in 4-byte units.</li>
+ *   <li>{@link GpuBuffer#close}: freed once no frame in flight uses it (the rc12 epoch rule). Iroh closes what an owner
+ *       still holds at world unload, when its frame hook is removed after repeated failures, and at shutdown.</li>
+ * </ul>
+ * Sparse buffers / device addresses are not in v1 (capabilities SPARSE_BUFFERS / DEVICE_ADDRESS stay absent).
  */
 public final class IrohBuffers {
+    public static final int STORAGE = GpuCore.STORAGE, INDIRECT = GpuCore.INDIRECT, INDEX = GpuCore.INDEX, VERTEX = GpuCore.VERTEX;
+
     private IrohBuffers() {
     }
 
-    public static Object create(Object... args) {
-        throw new UnsupportedOperationException("IrohBuffers: not available yet (Phase 2/9); see knowledge/api.md");
+    public static GpuBuffer create(String owner, String name, long bytes, int usage) {
+        return GpuCore.get().createBuffer(owner, name, bytes, usage);
+    }
+
+    public static void upload(GpuBuffer buffer, long offset, ByteBuffer data) {
+        GpuCore.get().upload(buffer, offset, data);
+    }
+
+    /** Why the last create returned null. */
+    public static String lastRefusal() {
+        return GpuCore.get().lastRefusal();
+    }
+
+    /** Bytes {@code owner} may hold in buffers and targets together. */
+    public static long ownerShareBytes() {
+        return GpuCore.get().ownerShareBytes();
+    }
+
+    public static long ownerBytes(String owner) {
+        return GpuCore.get().ownerBytes(owner);
     }
 }

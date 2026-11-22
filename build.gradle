@@ -184,6 +184,59 @@ tasks.register('slowFramesTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// Lavapipe (CPU Vulkan; never the GPU) for offline Vulkan tests: a system lavapipe ICD if installed (vulkan-swrast),
+// else the libvulkan_lvp.so of an installed flatpak GL runtime (system or user installation), used in place through an
+// ICD file under build/lvp (nothing is installed). Shared by velocityGoldenTest, fsrReplay and upscaleGoldenTest.
+def useLavapipe = { JavaExec t ->
+	def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
+	def icd = null
+	def ld = null
+	if (sys != null) {
+		icd = sys
+	} else {
+		def lvp = null
+		['/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64',
+		 System.getProperty('user.home') + '/.local/share/flatpak/runtime/org.freedesktop.Platform.GL.default/x86_64'].each { root ->
+			def r = new File(root)
+			if (lvp == null && r.isDirectory()) r.eachDirRecurse { d ->
+				def f = new File(d, 'libvulkan_lvp.so')
+				if (lvp == null && f.exists() && d.listFiles().any { it.name.startsWith('libLLVM.so') }) lvp = f
+			}
+		}
+		if (lvp == null) throw new GradleException('no lavapipe found: install the vulkan-swrast package (owner) or a flatpak GL runtime')
+		def dir = file("${buildDir}/lvp/lib")
+		dir.mkdirs()
+		lvp.parentFile.listFiles().findAll { it.name.startsWith('libLLVM.so') || it.name == 'libvulkan_lvp.so' }.each { src ->
+			def link = new File(dir, src.name)
+			link.delete()
+			java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
+		}
+		def json = file("${buildDir}/lvp/lvp_icd.json")
+		json.text = '{"file_format_version":"1.0.1","ICD":{"library_path":"' + new File(dir, 'libvulkan_lvp.so').absolutePath + '","api_version":"1.3.0"}}'
+		icd = json.absolutePath
+		ld = dir.absolutePath
+	}
+	t.environment 'VK_DRIVER_FILES', icd
+	t.environment 'VK_ICD_FILENAMES', icd
+	t.environment 'VK_LOADER_LAYERS_DISABLE', '~implicit~'
+	if (ld != null) t.environment 'LD_LIBRARY_PATH', ld
+	t.logger.lifecycle("${t.name}: lavapipe ICD ${icd}")
+}
+
+// api 4 (card V-M1): GPU api exerciser on lavapipe (CPU Vulkan only, 1 GiB cap). ./gradlew apiReplay [-Pgolden=sha]
+// lavapipe from the system ICD or, until vulkan-swrast is installed, the flatpak GL runtime through an ICD file under
+// build/lvp (same approach as the pack replay in iroh-wt-p3; nothing is installed).
+tasks.register('apiReplay', JavaExec) {
+	group = 'verification'
+	description = 'api 4 buffers/compute/targets/multiDrawIndirectCount on lavapipe against a CPU reference'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.apitest.ApiReplay'
+	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	if (project.hasProperty('golden')) jvmArgs "-Dgolden=${project.property('golden')}"
+	doFirst { useLavapipe(it) }
+}
+
 // rc14 (td-f57b86): camera states x fog option -> expected vanilla fog. ./gradlew fogDecisionTest
 tasks.register('fogDecisionTest', JavaExec) {
 	group = 'verification'

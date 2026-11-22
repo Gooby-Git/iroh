@@ -26,11 +26,14 @@ public final class IrohApi {
      * Version of this API. Inlined into callers at compile time, so use {@link #apiVersion()} to ask the running Iroh.
      * 1 = P1-6b (2026-11-20). 2 = P1-10: {@link #registerShadeHook}. 3 = P1-13a: {@link IrohFrame}, {@link IrohSky},
      * {@link IrohDraw}, {@link IrohShaders}, {@link IrohTextures}, {@link #limits()}, {@link #heldLightSource}.
+     * 4 = card V-M1: {@link IrohBuffers}, {@link IrohCompute}, {@link IrohTargets}, {@link IrohDraw#multiDrawIndirectCount},
+     * {@link FrameStage#BEFORE_MAIN_PASS}, {@link #fogState()}, {@link #isSectionBuilt}, {@link #addSectionListener},
+     * {@link IrohTextures#blockAtlas()} / {@link IrohTextures#lightmap()}.
      */
-    public static final int API_VERSION = 3;
+    public static final int API_VERSION = 4;
 
     /** Minor version within {@link #API_VERSION} (additions only). 3.1 = P1-13a follow-up: FrameStage.OVERLAY, FrameContext.guiGraphics(). */
-    public static final int API_MINOR = 1;
+    public static final int API_MINOR = 0;
 
     private static final Set<Capability> CAPABILITIES = Collections.unmodifiableSet(
             EnumSet.of(Capability.SECTION_VISIBILITY, Capability.FACE_CULL_VETO, Capability.LEAF_CULLING,
@@ -65,7 +68,33 @@ public final class IrohApi {
 
     /** What this build actually does (unmodifiable). Any thread, no allocation. */
     public static Set<Capability> capabilities() {
-        return CAPABILITIES;
+        if (!dev.elemore.iroh.gpu.game.GpuLifecycle.available()) return CAPABILITIES;
+        EnumSet<Capability> s = EnumSet.copyOf(CAPABILITIES); // api 4: once Iroh's device is up
+        s.add(Capability.GPU_BUFFERS);
+        s.add(Capability.COMPUTE);
+        s.add(Capability.RENDER_TARGETS);
+        s.add(Capability.MULTI_DRAW_INDIRECT_COUNT);
+        return Collections.unmodifiableSet(s);
+    }
+
+    // ------------------------------------------------------------------------------------------------- api 4
+
+    /**
+     * The fog the terrain was drawn with this frame (after vanilla, mod fog and Iroh's distance-fog option): give LODs
+     * and far geometry exactly this fog. Render thread; the previous frame's values before terrain is drawn.
+     */
+    public static FogState fogState() {
+        return dev.elemore.iroh.apiimpl.Sections.fog();
+    }
+
+    /** Whether Iroh's chunk renderer has a built mesh for this 16^3 section (section coordinates). Render thread. */
+    public static boolean isSectionBuilt(int sectionX, int sectionY, int sectionZ) {
+        return dev.elemore.iroh.apiimpl.Sections.isBuilt(sectionX, sectionY, sectionZ);
+    }
+
+    /** Built / reset events per section (the hand-off from real chunks to LODs). close() removes it. */
+    public static IrohFrame.Registration addSectionListener(SectionListener listener) {
+        return dev.elemore.iroh.apiimpl.Sections.add(listener);
     }
 
     /** The render path drawing the world. RASTER until Phase 3 adds PACK and Phase 5 adds RT. Any thread. */

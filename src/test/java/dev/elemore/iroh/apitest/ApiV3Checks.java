@@ -31,19 +31,22 @@ final class ApiV3Checks {
     }
 
     static void run(BiConsumer<String, Boolean> check) {
-        check.accept("api version 3.1", IrohApi.API_VERSION == 3 && IrohApi.apiVersion() == 3 && IrohApi.apiMinor() == 1);
+        check.accept("api version 4.0", IrohApi.API_VERSION == 4 && IrohApi.apiVersion() == 4 && IrohApi.apiMinor() == 0);
         FrameStage[] all = FrameStage.values();
-        check.accept("FrameStage constants append-only: AFTER_PRESENT then OVERLAY last",
-                all[all.length - 2] == FrameStage.AFTER_PRESENT && all[all.length - 1] == FrameStage.OVERLAY);
+        check.accept("FrameStage constants append-only: AFTER_PRESENT, OVERLAY, then BEFORE_MAIN_PASS (api 4) last",
+                all[all.length - 3] == FrameStage.AFTER_PRESENT && all[all.length - 2] == FrameStage.OVERLAY
+                        && all[all.length - 1] == FrameStage.BEFORE_MAIN_PASS);
         check.accept("capabilities: frame hooks, sky hooks, draw, shaders, dynamic textures present",
                 IrohApi.capabilities().containsAll(EnumSet.of(Capability.FRAME_HOOKS, Capability.SKY_HOOKS,
                         Capability.IMMEDIATE_DRAW, Capability.OWNER_SHADERS, Capability.DYNAMIC_TEXTURES)));
-        check.accept("capabilities: targets, buffers, compute, MDI count absent",
+        check.accept("capabilities: targets, buffers, compute, MDI count absent while no device is up (offline)",
                 !IrohApi.capabilities().contains(Capability.RENDER_TARGETS) && !IrohApi.capabilities().contains(Capability.GPU_BUFFERS)
                         && !IrohApi.capabilities().contains(Capability.COMPUTE)
                         && !IrohApi.capabilities().contains(Capability.MULTI_DRAW_INDIRECT_COUNT));
-        check.accept("stubs throw UnsupportedOperationException", throwsUoe(IrohTargets::create) && throwsUoe(IrohBuffers::create)
-                && throwsUoe(IrohCompute::create) && throwsUoe(() -> IrohDraw.multiDrawIndirectCount(null, null, 0, null, 0, 1, 20)));
+        check.accept("api 4 calls throw UnsupportedOperationException while no device is up",
+                throwsUoe(() -> IrohTargets.create("m", "t", IrohTargets.Format.RGBA8, 4, 4)) && throwsUoe(() -> IrohBuffers.create("m", "b", 16, IrohBuffers.STORAGE))
+                && throwsUoe(() -> IrohCompute.pipeline("m", "c", "", 0, 0))
+                && throwsUoe(() -> IrohDraw.multiDrawIndirectCount(null, null, null, null, null, false, null, 0, null, 0, 1, 20)));
 
         // ---- frame hooks: order
         List<String> order = new ArrayList<>();

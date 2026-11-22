@@ -171,6 +171,13 @@ public abstract class DeviceManager {
             deviceVulkan11Features.sType$Default();
             deviceVulkan11Features.shaderDrawParameters(device.isDrawIndirectSupported());
 
+            // api 4 (card V-M1): drawIndirectCount when the device has it (Vulkan 1.2 core; Iroh's instance is 1.2)
+            VkPhysicalDeviceVulkan12Features deviceVulkan12Features = VkPhysicalDeviceVulkan12Features.calloc(stack);
+            deviceVulkan12Features.sType$Default();
+            drawIndirectCountEnabled = device.availableFeatures12.drawIndirectCount();
+            deviceVulkan12Features.drawIndirectCount(drawIndirectCountEnabled);
+            deviceVulkan11Features.pNext(deviceVulkan12Features.address());
+
             VkPhysicalDeviceFeatures2 deviceFeatures = VkPhysicalDeviceFeatures2.calloc(stack);
             deviceFeatures.sType$Default();
             deviceFeatures.features().samplerAnisotropy(device.availableFeatures.features().samplerAnisotropy());
@@ -196,7 +203,7 @@ public abstract class DeviceManager {
                 dynamicRenderingFeaturesKHR.sType$Default();
                 dynamicRenderingFeaturesKHR.dynamicRendering(true);
 
-                deviceVulkan11Features.pNext(dynamicRenderingFeaturesKHR.address());
+                deviceVulkan12Features.pNext(dynamicRenderingFeaturesKHR.address());
 
 //                //Vulkan 1.3 dynamic rendering
 //                VkPhysicalDeviceVulkan13Features deviceVulkan13Features = VkPhysicalDeviceVulkan13Features.calloc(stack);
@@ -347,6 +354,9 @@ public abstract class DeviceManager {
 
         return stringBuilder.toString();
     }
+
+    /** api 4: vkCmdDrawIndexedIndirectCount enabled on the logical device. */
+    public static boolean drawIndirectCountEnabled;
 
     public static void destroy() {
         graphicsQueue.cleanUp();

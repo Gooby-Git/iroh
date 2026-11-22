@@ -46,12 +46,40 @@ public final class IrohDraw {
         DrawImpl.flush();
     }
 
+    // ---- api 4 (card V-M1): GPU-driven draws into mod targets
+
     /**
-     * GPU-driven indirect draws with a GPU count (Vista, Phase 9). Not available yet: capability
-     * {@link Capability#MULTI_DRAW_INDIRECT_COUNT} is absent and this throws {@link UnsupportedOperationException}.
+     * A vertex-pulling pipeline for {@link #multiDrawIndirectCount}: GLSL 450, no vertex inputs, {@code set = 0} storage
+     * buffers at bindings 0..n-1 then sampled textures (combined image samplers, nearest) at n.., one push-constant
+     * block (vertex + fragment) of up to 128 bytes; drawn into targets of the given formats. {@code depthCompare} is a
+     * VkCompareOp (Vista: GREATER for its reversed-Z target).
      */
-    public static void multiDrawIndirectCount(PipelineHandle pipeline, Object commandBuffer, long commandOffset,
-                                              Object countBuffer, long countOffset, int maxDraws, int stride) {
-        throw new UnsupportedOperationException("IrohDraw.multiDrawIndirectCount: Phase 2/9 (capability MULTI_DRAW_INDIRECT_COUNT)");
+    public static IndirectPipelineHandle indirectPipeline(String owner, String name, String vertexGlsl450, String fragmentGlsl450, int storageBuffers,
+                                                          int sampledTextures, int pushBytes, IrohTargets.Format color, IrohTargets.Format depth,
+                                                          int depthCompare, boolean depthWrite, boolean blend) {
+        return dev.elemore.iroh.gpu.GpuCore.get().indirectPipeline(owner, name, vertexGlsl450, fragmentGlsl450, storageBuffers, sampledTextures,
+                pushBytes, color, depth, depthCompare, depthWrite, blend);
+    }
+
+    /**
+     * Before {@link IrohTargets#beginRendering}, once per indirect-count draw of the coming pass (same arguments). Where
+     * the device lacks drawIndirectCount, Iroh's own compute zeroes instanceCount of the commands at or after the GPU
+     * count, so the draw is the same without a CPU readback.
+     */
+    public static void prepareIndirectCount(GpuBuffer commands, long commandOffset, GpuBuffer count, long countOffset, int maxDraws, int stride) {
+        dev.elemore.iroh.gpu.GpuCore.get().prepareIndirectCount(commands, commandOffset, count, countOffset, maxDraws, stride);
+    }
+
+    /**
+     * vkCmdDrawIndexedIndirectCount inside a {@link IrohTargets#beginRendering} pass: {@code commands} holds
+     * VkDrawIndexedIndirectCommand records ({@code stride} >= 20), {@code count} the number to draw (uint at
+     * {@code countOffset}), capped at {@code maxDraws}. Every buffer read must have been declared at beginRendering.
+     * Capability {@link Capability#MULTI_DRAW_INDIRECT_COUNT} (with a fallback, see {@link #prepareIndirectCount}).
+     */
+    public static void multiDrawIndirectCount(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, RenderTargetHandle[] textures,
+                                              java.nio.ByteBuffer push, GpuBuffer index, boolean index32, GpuBuffer commands, long commandOffset,
+                                              GpuBuffer count, long countOffset, int maxDraws, int stride) {
+        dev.elemore.iroh.gpu.GpuCore.get().multiDrawIndirectCount(pipeline, storage, textures, push, index, index32, commands, commandOffset,
+                count, countOffset, maxDraws, stride);
     }
 }

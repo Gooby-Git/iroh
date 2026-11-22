@@ -340,9 +340,31 @@ public class MemoryManager {
     private final ObjectArrayList<VulkanImage> epochImages = new ObjectArrayList<>();
     private final it.unimi.dsi.fastutil.longs.LongArrayList epochImageTags = new it.unimi.dsi.fastutil.longs.LongArrayList();
 
+    // api 4 (card V-M1): raw Vulkan objects a mod's GPU resources own (pipelines, framebuffers), freed under the same rule
+    private final ObjectArrayList<Runnable> epochOps = new ObjectArrayList<>();
+    private final it.unimi.dsi.fastutil.longs.LongArrayList epochOpTags = new it.unimi.dsi.fastutil.longs.LongArrayList();
+
+    /** Runs {@code r} once every frame and upload recorded while the current epoch is open has finished. */
+    public synchronized void addEpochOp(Runnable r) {
+        var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
+        if (ring == null) {
+            frameOps[currentFrame].add(r);
+            return;
+        }
+        epochOps.add(r);
+        epochOpTags.add(ring.epoch());
+    }
+
     private void freeEpochGated() {
         var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
         long done = ring == null ? Long.MAX_VALUE : ring.completedEpoch();
+        int wo = 0;
+        for (int i = 0; i < epochOps.size(); i++) {
+            if (epochOpTags.getLong(i) <= done) epochOps.get(i).run();
+            else { epochOps.set(wo, epochOps.get(i)); epochOpTags.set(wo, epochOpTags.getLong(i)); wo++; }
+        }
+        epochOps.size(wo);
+        epochOpTags.size(wo);
         int w = 0;
         for (int i = 0; i < epochBuffers.size(); i++) {
             if (epochBufferTags.getLong(i) <= done) freeBuffer(epochBuffers.get(i));

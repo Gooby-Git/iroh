@@ -175,6 +175,7 @@ public class Vulkan {
 
         Pipeline.destroyPipelineCache();
 
+        dev.elemore.iroh.gpu.game.GpuLifecycle.shutdown(); // api 4: mods' GPU objects before Iroh's teardown
         Renderer.getInstance().cleanUpResources();
 
         // rc15 (td-05108a): objects the owners never closed, before the frame ops and leftovers below run
