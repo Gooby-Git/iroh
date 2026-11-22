@@ -28,6 +28,8 @@ public final class WorldStages {
         WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_TRANSLUCENT));
         WorldRenderEvents.LAST.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_WEATHER));
         WorldRenderEvents.END.register(ctx -> {
+            // P3-4: the Navidson pack path (default off: one volatile read)
+            dev.elemore.iroh.shaderpack.runtime.PackRuntime.onWorldEnd();
             FrameHooks.dispatch(FrameStage.WORLD_END);
             FrameHooks.setInWorld(false);
         });

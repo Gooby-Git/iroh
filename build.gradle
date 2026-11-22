@@ -429,6 +429,7 @@ tasks.register('packReplay', JavaExec) {
 		if (project.hasProperty(k)) a << "--${k}=${project.property(k)}"
 	}
 	if (project.hasProperty('dump')) a << "--dump"
+	if (project.hasProperty('post')) a << "--post"
 	args a
 	doFirst {
 		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }
@@ -470,4 +471,27 @@ tasks.register('wideVertexTest', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.packtest.WideVertexTest'
+}
+
+// P3-4 pack lifecycle state machine on the recording backend: enable, resize x3, dimension change, unload, memory
+// refusal, disable; no leak, no use after free. ./gradlew packLifecycleTest ; last line "# lifecycle PASS n/n"
+tasks.register('packLifecycleTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack lifecycle (enable / resize / dimension / unload / refusal / disable) on the recording backend'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackLifecycleTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
+
+// P3-4 default off: the pack entry points are inert without iroh.pack.enabled. ./gradlew packDefaultOffTest
+tasks.register('packDefaultOffTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack path entry points inert without the switch'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackDefaultOffTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
 }

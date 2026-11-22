@@ -86,6 +86,44 @@ public final class PackReplay {
         try (HeadlessVkBackend gpu = new HeadlessVkBackend(Boolean.getBoolean("iroh.replay.allowGpu"), 1L << 30)) {
             System.out.println("# device " + gpu.deviceName + " (" + gpu.name() + ")");
             FrameExecutor ex = new FrameExecutor(data, plan, folder, gpu, FrameExecutor.cap(1L << 30));
+            if (opt.containsKey("post")) {
+                // POST mode as the game runs it: a raster "scene" colour + depth come in by blit, flat clears, the output is
+                // blitted back into the scene colour (the in-game path's copies, exercised on lavapipe)
+                PackFrameInputs syn = in;
+                int sc = gpu.createImage(new GpuBackend.ImageDesc("scene colour", "R8G8B8A8_UNORM", w, h, 1, 1,
+                        java.util.Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
+                int sd = gpu.createImage(new GpuBackend.ImageDesc("scene depth", "D32_SFLOAT", w, h, 1, 1,
+                        java.util.Set.of("SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
+                float[] c0 = syn.image("colortex0");
+                float[] srgb = new float[c0.length];
+                for (int i = 0; i < c0.length; i++)
+                    srgb[i] = (i & 3) == 3 ? 1f : (float) Math.pow(Math.min(1, c0[i]), 1 / 2.2);
+                gpu.upload(sc, srgb);
+                gpu.upload(sd, syn.image("depthtex0"));
+                ex.presentTo = sc;
+                Map<String, Integer> copies = new LinkedHashMap<>();
+                copies.put("colortex0", sc);
+                copies.put("depthtex0", sd);
+                copies.put("depthtex1", sd);
+                copies.put("depthtex2", sd);
+                Map<String, float[]> clears = new LinkedHashMap<>();
+                clears.put("colortex6", new float[]{0, 0, 1, 0});
+                clears.put("colortex4", new float[]{0, 1, 0, 0});
+                clears.put("shadowtex0", new float[]{1, 1, 1, 1});
+                clears.put("shadowtex1", new float[]{1, 1, 1, 1});
+                in = new PackFrameInputs() {
+                    public int width() { return syn.width(); }
+                    public int height() { return syn.height(); }
+                    public Map<String, double[]> uniforms() { return syn.uniforms(); }
+                    public java.util.Set<String> suppliedImages() { return java.util.Set.of(); }
+                    public float[] image(String n) { return null; }
+                    public int[] extent(String n) { return null; }
+                    public String startStage() { return "deferred"; }
+                    public double frameSeconds() { return syn.frameSeconds(); }
+                    public Map<String, Integer> copySources() { return copies; }
+                    public Map<String, float[]> clearValues() { return clears; }
+                };
+            }
             ex.prepare(in);
             boolean dumpPasses = opt.containsKey("dump");
             if (dumpPasses)
