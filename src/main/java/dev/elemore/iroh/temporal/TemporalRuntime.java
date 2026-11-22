@@ -2,7 +2,15 @@ package dev.elemore.iroh.temporal;
 
 import com.mojang.blaze3d.platform.Window;
 import dev.elemore.iroh.debug.DebugSwitches;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Vulkan;
@@ -37,6 +45,12 @@ import static org.lwjgl.vulkan.VK10.*;
  * that set a display-size viewport in the world phase are mapped onto the render target ({@link TemporalFrame#fixRect},
  * switch iroh.upscale.viewportFix); sub-rects given in display pixels that fit inside the render target are NOT
  * recognisable and stay wrong (documented trap).
+ *
+ * <h2>P4-1b additions</h2>
+ * FSR 3.1 through {@link FsrAdapter}; per-object motion (rendered entities that moved, {@link ObjectMotion}, gathered at
+ * the world start); the hand's own reprojection (view bob, captured at renderHandsWithItems); opaque colour + depth copy
+ * at WorldRenderEvents.AFTER_ENTITIES for the reactive / T&C masks; merged depth (hand included) for the upscaler.
+ * All of it only when the velocity pass runs (a temporal upscaler or a debug view, and the device features).
  */
 public final class TemporalRuntime {
     private TemporalRuntime() {}
@@ -45,14 +59,16 @@ public final class TemporalRuntime {
     private static boolean wasActive;
     private static UpscalerAdapter adapter;
     private static VelocityPass velocityPass;
-    private static VulkanImage velocityImage;
-    /** depth copied at vanilla's pre-hand depth clear this frame */
-    private static VulkanImage sceneDepth;
-    private static boolean haveSceneDepth;
+    /** render-size inputs; all null while off */
+    private static VulkanImage velocityImage, sceneDepth, mergedDepth, reactive, transparency, opaqueColour, opaqueDepth;
+    private static boolean haveSceneDepth, haveOpaque;
     private static boolean warnedNoVelocity;
     private static long lastFrameNanos;
-    private static float frameTimeMs = 16.7f;
+    private static float frameTimeMs = 16.7f, partialTick;
     private static Object lastLevel;
+    private static int lastW, lastH;
+    private static ScaleMode lastMode = ScaleMode.OFF;
+    private static final double OBJECT_RANGE = 128.0;
 
     /** GameRenderer.render HEAD */
     public static void onRenderHead() {
@@ -61,10 +77,17 @@ public final class TemporalRuntime {
         UpscaleSwitches.registerAll();
         inGameRender = true;
         SwapChain sc = Renderer.getInstance().getSwapChain();
+        ScaleMode m = UpscaleSwitches.mode();
+        if (m != lastMode || sc.getWidth() != lastW || sc.getHeight() != lastH) {
+            FsrAdapter.INSTANCE.retry(); // a mode or size change allows a new FSR attempt after a failure
+            lastMode = m;
+            lastW = sc.getWidth();
+            lastH = sc.getHeight();
+        }
         UpscalerAdapter a = UpscalerAdapter.select(DebugSwitches.getOr(UpscaleSwitches.UPSCALER, "auto"));
         if (adapter != a) {
             if (adapter != null)
-                adapter.destroy(); // TODO(P4-2b): FSR contexts need the GPU idle: destroy through a deferred frame op
+                adapter.destroy(); // FSR: deferred frame op (FsrSession.closeLater)
             adapter = a;
             TemporalFrame.invalidateHistory();
         }
@@ -76,8 +99,7 @@ public final class TemporalRuntime {
                 warnedNoVelocity = true;
             }
             TemporalFrame.velocityOn = false;
-            if (TemporalFrame.debugMode != 4)
-                TemporalFrame.debugMode = 0;
+            TemporalFrame.debugMode = 0;
         }
         long now = System.nanoTime();
         if (lastFrameNanos != 0)
@@ -105,12 +127,29 @@ public final class TemporalRuntime {
     }
 
     /** GameRenderer.renderLevel HEAD, only inside GameRenderer.render (panorama / other renderLevel callers are left alone) */
-    public static void onRenderLevelHead() {
+    public static void onRenderLevelHead(float entityPartialTick) {
         if (!TemporalFrame.ACTIVE || !inGameRender || TemporalFrame.IN_WORLD)
             return;
+        partialTick = entityPartialTick;
+        haveSceneDepth = haveOpaque = false;
         MainPass mp = Renderer.getInstance().getMainPass();
         if (mp instanceof DefaultMainPass dmp && dmp.beginWorld(TemporalFrame.renderW, TemporalFrame.renderH))
             TemporalFrame.IN_WORLD = true;
+    }
+
+    /** the velocity pass will run this frame (it needs the device features) */
+    private static boolean velocityFrame() {
+        return TemporalFrame.IN_WORLD && TemporalFrame.velocityOn && DeviceCaps.velocityCapable();
+    }
+
+    /** WorldRenderEvents.AFTER_ENTITIES (via WorldStages): opaque colour + depth for the reactive / T&C masks */
+    public static void onAfterEntities() {
+        if (!velocityFrame() || !(Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp))
+            return;
+        int w = TemporalFrame.renderW, h = TemporalFrame.renderH;
+        opaqueColour = ensure(opaqueColour, w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "opaque colour");
+        opaqueDepth = ensure(opaqueDepth, w, h, Vulkan.getDefaultDepthFormat(), VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "opaque depth");
+        haveOpaque = dmp.copyWorld(opaqueColour, opaqueDepth);
     }
 
     /** GameRenderer.renderLevel: the INVOKE of RenderSystem.clear right before renderItemInHand (depth-only clear) */
@@ -120,19 +159,17 @@ public final class TemporalRuntime {
         UpscalerAdapter a = adapter != null ? adapter : UpscalerAdapter.Bilinear.INSTANCE;
         if (!(TemporalFrame.velocityOn || a.temporal()) || !(Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp))
             return;
-        int w = TemporalFrame.renderW, h = TemporalFrame.renderH;
-        if (sceneDepth == null || sceneDepth.width != w || sceneDepth.height != h) {
-            if (sceneDepth != null)
-                sceneDepth.free();
-            sceneDepth = VulkanImage.builder(w, h)
-                    .setName("Iroh scene depth before hand (render scale)")
-                    .setFormat(Vulkan.getDefaultDepthFormat())
-                    .setUsage(VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)
-                    .setLinearFiltering(false)
-                    .setClamp(true)
-                    .createVulkanImage();
-        }
-        haveSceneDepth = dmp.copyWorldDepth(sceneDepth);
+        sceneDepth = ensure(sceneDepth, TemporalFrame.renderW, TemporalFrame.renderH, Vulkan.getDefaultDepthFormat(),
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "scene depth before hand");
+        haveSceneDepth = dmp.copyWorld(null, sceneDepth);
+    }
+
+    /** ItemInHandRenderer.renderHandsWithItems in renderItemInHand: the hand's projection and bob model-view */
+    public static void onHand(PoseStack poseStack) {
+        if (!velocityFrame())
+            return;
+        Matrix4f mv = new Matrix4f(RenderSystem.getModelViewMatrix()).mul(poseStack.last().pose());
+        TemporalFrame.onHand(RenderSystem.getProjectionMatrix(), mv);
     }
 
     /** the main-target bindWrite(true) in GameRenderer.render, right before the GUI */
@@ -149,16 +186,37 @@ public final class TemporalRuntime {
         TemporalFrame.IN_WORLD = false;
     }
 
-    /** Fabric WorldRenderEvents.START (via WorldStages) */
+    /** Fabric WorldRenderEvents.START (via WorldStages): camera history + the objects that may move */
     public static void onWorldStart(double x, double y, double z, org.joml.Matrix4fc rotation, org.joml.Matrix4fc projection) {
         if (!TemporalFrame.IN_WORLD)
             return;
-        Object level = Minecraft.getInstance().level;
+        Minecraft mc = Minecraft.getInstance();
+        Object level = mc.level;
         if (level != lastLevel) {
             TemporalFrame.invalidateHistory();
             lastLevel = level;
         }
         TemporalFrame.onWorldCamera(x, y, z, rotation, projection);
+        if (velocityFrame() && mc.level != null)
+            gatherObjects(mc, x, y, z);
+    }
+
+    private static void gatherObjects(Minecraft mc, double cx, double cy, double cz) {
+        Entity cam = mc.getCameraEntity();
+        boolean firstPerson = mc.options.getCameraType().isFirstPerson();
+        double r2 = OBJECT_RANGE * OBJECT_RANGE;
+        for (Entity e : mc.level.entitiesForRendering()) {
+            if (e == cam && firstPerson)
+                continue;
+            Vec3 p = e.getPosition(partialTick);
+            double dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
+            if (dx * dx + dy * dy + dz * dz > r2)
+                continue;
+            double yaw = e instanceof LivingEntity le ? Mth.rotLerp(partialTick, le.yBodyRotO, le.yBodyRot) : e.getViewYRot(partialTick);
+            AABB b = e.getBoundingBox().move(p.x - e.getX(), p.y - e.getY(), p.z - e.getZ());
+            TemporalFrame.objects.submit((long) e.getId() << 8, p.x, p.y, p.z, yaw,
+                    new double[]{b.minX, b.minY, b.minZ}, new double[]{b.maxX, b.maxY, b.maxZ});
+        }
     }
 
     /** LevelRenderer / GameRenderer.postEffect PostChain sizes: render size while active */
@@ -178,85 +236,111 @@ public final class TemporalRuntime {
         mc.gameRenderer.resize(w.getWidth(), w.getHeight());
     }
 
+    private static VulkanImage ensure(VulkanImage img, int w, int h, int format, int usage, String what) {
+        if (img != null && img.width == w && img.height == h)
+            return img;
+        if (img != null)
+            img.free();
+        return VulkanImage.builder(w, h)
+                .setName("Iroh " + what + " (render scale)")
+                .setFormat(format)
+                .setUsage(usage)
+                .setLinearFiltering(false)
+                .setClamp(true)
+                .createVulkanImage();
+    }
+
     private static void deactivate() {
         if (Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp)
             dmp.releaseWorld();
-        if (velocityImage != null) {
-            velocityImage.free();
-            velocityImage = null;
+        for (VulkanImage i : new VulkanImage[]{velocityImage, sceneDepth, mergedDepth, reactive, transparency, opaqueColour, opaqueDepth})
+            if (i != null)
+                i.free();
+        velocityImage = sceneDepth = mergedDepth = reactive = transparency = opaqueColour = opaqueDepth = null;
+        haveSceneDepth = haveOpaque = false;
+        if (adapter != null) {
+            adapter.destroy();
+            adapter = null;
         }
-        if (sceneDepth != null) {
-            sceneDepth.free();
-            sceneDepth = null;
-        }
-        haveSceneDepth = false;
-        // the compute pipeline is small (two pipelines + a pool): kept until shutdown
-        Initializer.LOGGER.info("Iroh upscale: off, world images released");
+        // the compute pipelines are small (two pipelines + a pool + 7 KB per frame): kept until shutdown
+        Initializer.LOGGER.info("Iroh upscale: off, world images and upscaler context released");
     }
 
     /**
-     * Records the world-end work into the frame command buffer (no render pass open): velocity + debug view, then the
-     * upscale into the display colour.
+     * Records the world-end work into the frame command buffer (no render pass open): velocity pass (motion, merged
+     * depth, masks, debug view), then the upscale into the display colour.
      */
     public static void recordWorldEnd(VkCommandBuffer cmd, MemoryStack stack, VulkanImage worldColor, VulkanImage worldDepth, VulkanImage displayColor) {
         TemporalFrame.endWorld();
         UpscalerAdapter a = adapter != null ? adapter : UpscalerAdapter.Bilinear.INSTANCE;
         int rw = worldColor.width, rh = worldColor.height;
-        boolean debugColour = TemporalFrame.debugMode != 0 && (worldColor.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
-        if (TemporalFrame.velocityOn || (debugColour && DeviceCaps.velocityCapable())) {
-            ensureVelocity(rw, rh);
-            // depth: attachment -> sampled by compute
+        boolean ran = false;
+        if (TemporalFrame.velocityOn && DeviceCaps.velocityCapable() && (worldColor.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0) {
+            int st = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            velocityImage = ensure(velocityImage, rw, rh, VK_FORMAT_R16G16_SFLOAT, st, "velocity RG16F");
+            mergedDepth = ensure(mergedDepth, rw, rh, VK_FORMAT_R32_SFLOAT, st, "merged depth R32F");
+            reactive = ensure(reactive, rw, rh, VK_FORMAT_R8_UNORM, st, "reactive mask R8");
+            transparency = ensure(transparency, rw, rh, VK_FORMAT_R8_UNORM, st, "transparency+composition mask R8");
+            if (velocityPass == null)
+                velocityPass = new VelocityPass(Vulkan.getVkDevice(), Renderer.getFramesNum());
+
+            int cs = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             VulkanImage.transitionLayout(stack, cmd, worldDepth, worldDepth.getCurrentLayout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-            // velocity: previous frame's readers (compute/fragment/upscaler) -> compute write
-            VulkanImage.transitionLayout(stack, cmd, velocityImage, velocityImage.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-            if (debugColour)
-                VulkanImage.transitionLayout(stack, cmd, worldColor, worldColor.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT);
+            VulkanImage.transitionLayout(stack, cmd, worldColor, worldColor.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+            for (VulkanImage out : new VulkanImage[]{velocityImage, mergedDepth, reactive, transparency})
+                VulkanImage.transitionLayout(stack, cmd, out, out.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, cs, VK_ACCESS_SHADER_WRITE_BIT);
 
-            velocityPass.record(cmd, Renderer.getCurrentFrame(), worldDepth.getImageView(), haveSceneDepth ? sceneDepth.getImageView() : 0L,
-                    velocityImage.getImageView(), debugColour ? worldColor.getImageView() : 0L, rw, rh, TemporalFrame.reproject,
-                    TemporalFrame.jitterNdcX, TemporalFrame.jitterNdcY, TemporalFrame.jitterPxX, TemporalFrame.jitterPxY,
-                    TemporalFrame.debugMode);
+            VelocityPass.Frame f = TemporalFrame.params;
+            f.endDepthView = worldDepth.getImageView();
+            f.sceneDepthView = haveSceneDepth ? sceneDepth.getImageView() : 0L;
+            f.velocityView = velocityImage.getImageView();
+            f.colourView = worldColor.getImageView();
+            f.mergedDepthView = mergedDepth.getImageView();
+            f.reactiveView = reactive.getImageView();
+            f.tcView = transparency.getImageView();
+            f.opaqueColourView = haveOpaque ? opaqueColour.getImageView() : 0L;
+            f.opaqueDepthView = haveOpaque ? opaqueDepth.getImageView() : 0L;
+            f.width = rw;
+            f.height = rh;
+            f.mode = TemporalFrame.debugMode;
+            f.reproject = TemporalFrame.reproject;
+            f.invCurPR = TemporalFrame.invCurPR;
+            f.handReproject = TemporalFrame.handValid ? TemporalFrame.handReproject : null;
+            f.jitterNdcX = TemporalFrame.jitterNdcX;
+            f.jitterNdcY = TemporalFrame.jitterNdcY;
+            f.jitterPxX = TemporalFrame.jitterPxX;
+            f.jitterPxY = TemporalFrame.jitterPxY;
+            velocityPass.record(cmd, Renderer.getCurrentFrame(), f);
 
-            VulkanImage.transitionLayout(stack, cmd, velocityImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-            if (debugColour)
-                VulkanImage.transitionLayout(stack, cmd, worldColor, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            int rd = cs | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            for (VulkanImage out : new VulkanImage[]{velocityImage, mergedDepth, reactive, transparency})
+                VulkanImage.transitionLayout(stack, cmd, out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        cs, VK_ACCESS_SHADER_WRITE_BIT, rd, VK_ACCESS_SHADER_READ_BIT);
+            VulkanImage.transitionLayout(stack, cmd, worldColor, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    cs, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | cs, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT);
+            ran = true;
         }
 
-        // depth for the upscaler: the scene depth from before the hand clear (the hand itself is missing from it:
-        // a merged depth is card P4-1b), else the end depth
-        a.dispatch(cmd, stack, new UpscalerAdapter.Inputs(worldColor, haveSceneDepth ? sceneDepth : worldDepth,
-                TemporalFrame.velocityOn ? velocityImage : null, displayColor,
+        float sharp;
+        try {
+            String sv = DebugSwitches.getOr(UpscaleSwitches.SHARPNESS, "off");
+            sharp = sv.equals("off") ? 0f : Float.parseFloat(sv);
+        } catch (NumberFormatException e) {
+            sharp = 0f;
+        }
+        // a temporal upscaler without the velocity pass has no usable motion vectors: bilinear for this frame
+        UpscalerAdapter use = a.temporal() && !ran ? UpscalerAdapter.Bilinear.INSTANCE : a;
+        use.dispatch(cmd, stack, new UpscalerAdapter.Inputs(worldColor, ran ? mergedDepth : (haveSceneDepth ? sceneDepth : worldDepth),
+                ran ? velocityImage : null, displayColor,
                 rw, rh, displayColor.width, displayColor.height,
                 TemporalFrame.jitterPxX, TemporalFrame.jitterPxY, rw, rh,
-                frameTimeMs, TemporalFrame.cameraNear, Float.MAX_VALUE, TemporalFrame.fovY, TemporalFrame.reset));
+                frameTimeMs, TemporalFrame.cameraNear, Float.MAX_VALUE, TemporalFrame.fovY, TemporalFrame.reset,
+                ran && haveOpaque ? reactive : null, ran ? transparency : null, sharp));
         TemporalFrame.frameDone();
-        haveSceneDepth = false;
-    }
-
-    private static void ensureVelocity(int w, int h) {
-        if (velocityPass == null)
-            velocityPass = new VelocityPass(Vulkan.getVkDevice(), Renderer.getFramesNum());
-        if (velocityImage != null && velocityImage.width == w && velocityImage.height == h)
-            return;
-        if (velocityImage != null)
-            velocityImage.free();
-        velocityImage = VulkanImage.builder(w, h)
-                .setName("Iroh velocity RG16F (render scale)")
-                .setFormat(VK_FORMAT_R16G16_SFLOAT)
-                .setUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)
-                .setLinearFiltering(false)
-                .setClamp(true)
-                .createVulkanImage();
+        haveSceneDepth = haveOpaque = false;
     }
 
     /** The bilinear null upscaler: src (render size) -> dst (display size), both GL row order, so no flip. */
@@ -281,9 +365,7 @@ public final class TemporalRuntime {
             velocityPass.destroy();
             velocityPass = null;
         }
-        if (adapter != null) {
-            adapter.destroy();
-            adapter = null;
-        }
+        FsrAdapter.INSTANCE.destroyNow();
+        adapter = null;
     }
 }

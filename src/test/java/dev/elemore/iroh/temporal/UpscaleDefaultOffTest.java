@@ -38,7 +38,10 @@ public final class UpscaleDefaultOffTest {
         try {
             for (int i = 0; i < 1000; i++) {
                 TemporalRuntime.onRenderHead();
-                TemporalRuntime.onRenderLevelHead();
+                TemporalRuntime.onRenderLevelHead(0.5f);
+                TemporalRuntime.onAfterEntities();
+                TemporalRuntime.onBeforeHandClear();
+                TemporalRuntime.onHand(null);
                 TemporalRuntime.onWorldStart(1, 2, 3, new Matrix4f(), persp);
                 TemporalRuntime.onBeforeGui();
                 TemporalRuntime.onRenderTail();

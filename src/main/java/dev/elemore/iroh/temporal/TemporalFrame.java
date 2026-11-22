@@ -46,6 +46,18 @@ public final class TemporalFrame {
     public static float cameraNear = 0.05f, fovY;
     /** reprojection matrix for this frame's velocity pass (identity when there is no history) */
     public static final Matrix4d reproject = new Matrix4d();
+    /** inverse of this frame's PR (camera-relative unprojection for object boxes) */
+    public static final Matrix4d invCurPR = new Matrix4d();
+    /** P4-1b moving objects; fed by TemporalRuntime, packed into {@link #params} at world end */
+    public static final ObjectMotion objects = new ObjectMotion();
+    /** P4-1b velocity pass parameters of this frame (objects, hand) */
+    public static final VelocityPass.Frame params = new VelocityPass.Frame();
+    // hand: P_hand * W (view bob / hurt bob) of this and the previous frame
+    private static final Matrix4d handCur = new Matrix4d(), handPrev = new Matrix4d();
+    private static boolean haveHandCur, haveHandPrev;
+    /** hand reprojection of this frame, valid when {@link #handValid} */
+    public static final Matrix4d handReproject = new Matrix4d();
+    public static boolean handValid;
 
     /** teleport threshold (blocks per frame) beyond which history is dropped */
     public static final double TELEPORT = 64.0;
@@ -95,6 +107,7 @@ public final class TemporalFrame {
         lastMode = m;
         ACTIVE = true;
         frameIndex++;
+        objects.beginFrame(frameIndex);
 
         String j = DebugSwitches.getOr(UpscaleSwitches.JITTER, "auto");
         boolean jitter = j.equals("on") || (j.equals("auto") && temporalUpscaler);
@@ -174,6 +187,14 @@ public final class TemporalFrame {
             fovY = (float) (2.0 * Math.atan(1.0 / projection.m11()));
     }
 
+    /** The hand's projection and model-view (bob) at renderHandsWithItems; unjittered. */
+    public static void onHand(Matrix4fc projection, Matrix4fc modelView) {
+        if (!ACTIVE)
+            return;
+        handCur.set(projection).mul(new Matrix4d().set(modelView));
+        haveHandCur = true;
+    }
+
     /** Drops the history (dimension change, respawn, world change). */
     public static void invalidateHistory() {
         havePrev = false;
@@ -184,6 +205,7 @@ public final class TemporalFrame {
     public static void endWorld() {
         if (!ACTIVE)
             return;
+        boolean history = false;
         if (haveCur && havePrev) {
             double dx = curX - prevX, dy = curY - prevY, dz = curZ - prevZ;
             if (dx * dx + dy * dy + dz * dz > TELEPORT * TELEPORT) {
@@ -191,10 +213,23 @@ public final class TemporalFrame {
                 reset = true;
             } else {
                 TemporalMath.reprojection(prevPR, curPR, dx, dy, dz, reproject);
+                history = true;
             }
         } else {
             reproject.identity();
         }
+        if (haveCur)
+            invCurPR.set(curPR).invert();
+        objects.build(new double[]{curX, curY, curZ}, new double[]{prevX, prevY, prevZ}, history ? prevPR : null, params);
+        handValid = haveHandCur && haveHandPrev && history;
+        if (handValid)
+            handReproject.set(handPrev).mul(new Matrix4d(handCur).invert());
+        else
+            handReproject.identity();
+        if (haveHandCur)
+            handPrev.set(handCur);
+        haveHandPrev = haveHandCur;
+        haveHandCur = false;
         if (haveCur) {
             prevPR.set(curPR);
             prevX = curX;
@@ -231,11 +266,12 @@ public final class TemporalFrame {
     }
 
     /** For tests: back to the state of a fresh JVM. */
-    static void resetForTest() {
+    public static void resetForTest() {
         ACTIVE = IN_WORLD = JITTER_ON = MIP_ON = false;
         mode = lastMode = ScaleMode.OFF;
         frameIndex = 0;
         haveCur = havePrev = false;
+        haveHandCur = haveHandPrev = handValid = false;
         reset = true;
         lastRenderW = lastRenderH = 0;
         reproject.identity();

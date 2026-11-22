@@ -10,8 +10,8 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  * {@code MipBias}). Nothing else in the renderer names an upscaler. When the two branches merge, add one adapter class
  * here that wraps {@code dev.elemore.iroh.upscale.Upscaler} and maps {@link Inputs} onto {@code UpscaleInputs}
  * (field for field: fsr.md A.3 step 6 / A.8), and let {@link #select} return it for {@code iroh.upscale.upscaler=auto};
- * jitter and mip bias then come from P4-2's JitterSequence/MipBias, which compute the same values as
- * {@link TemporalMath} (both are the SDK formulas; temporalMathTest pins the numbers).
+ * P4-1b: merged; FsrAdapter wraps dev.elemore.iroh.upscale.fsr.FsrUpscaler; TemporalMath delegates the SDK formulas
+ * to JitterSequence/MipBias/QualityMode.
  */
 public interface UpscalerAdapter {
     String name();
@@ -34,18 +34,27 @@ public interface UpscalerAdapter {
 
     /**
      * Everything an upscaler gets per frame (FSR 3.1 dispatch description minus the shared internal images, which are
-     * the FSR adapter's own). Depth: standard Z [0..1], near {@link #cameraNear} 0.05, INFINITE far (FSR flags:
-     * DEPTH_INFINITE, not inverted; cameraFar = Float.MAX_VALUE; FSR warns below near 0.075, accepted: vanilla's near).
+     * the FSR context's own). Depth: standard Z [0..1], near {@link #cameraNear} 0.05, INFINITE far (FSR flags:
+     * DEPTH_INFINITE, not inverted; cameraFar = Float.MAX_VALUE; FSR warns below near 0.075, accepted: vanilla's near);
+     * P4-1b: the MERGED depth (hand where the hand is) when the velocity pass ran.
      * Motion vectors: prevUv - curUv in Iroh's texel axes, unjittered, motionVectorScale = (renderW, renderH).
-     * Jitter: render pixels, FSR's sign (TemporalMath class doc). frameTimeMs: milliseconds.
+     * Jitter: render pixels, FSR's sign (TemporalMath class doc). frameTimeMs: milliseconds. Masks R8 or null.
+     * Layout on entry: colour COLOR_ATTACHMENT or TRANSFER_SRC (tracked), depth/velocity/masks SHADER_READ_ONLY or
+     * GENERAL as produced (the adapter transitions what it needs, see FsrAdapter).
      */
     record Inputs(VulkanImage colour, VulkanImage depth, VulkanImage velocity, VulkanImage output,
                   int renderW, int renderH, int displayW, int displayH,
                   float jitterX, float jitterY, float mvScaleX, float mvScaleY,
-                  float frameTimeMs, float cameraNear, float cameraFar, float fovY, boolean reset) {}
+                  float frameTimeMs, float cameraNear, float cameraFar, float fovY, boolean reset,
+                  VulkanImage reactive, VulkanImage transparency, float sharpness) {}
 
-    /** {@code iroh.upscale.upscaler}: auto | bilinear. Until P4-2 merges, both are bilinear. */
+    /**
+     * {@code iroh.upscale.upscaler}: auto | bilinear | fsr. auto and fsr pick FSR 3.1 when it is available (native
+     * library loaded, device features enabled at launch, no earlier failure for this mode/size), else bilinear.
+     */
     static UpscalerAdapter select(String key) {
+        if (!key.equals("bilinear") && FsrAdapter.INSTANCE.usable())
+            return FsrAdapter.INSTANCE;
         return Bilinear.INSTANCE;
     }
 

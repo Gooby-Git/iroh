@@ -828,7 +828,7 @@ public class VulkanImage {
                      VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT -> 4;
                 case VK_FORMAT_R8_UNORM -> 1;
-                case VK_FORMAT_R16G16_SFLOAT -> 4; // Iroh P4-1a: motion vectors
+                case VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32_SFLOAT -> 4; // Iroh P4-1a/b: motion vectors, merged depth
 
                 default -> throw new IllegalArgumentException(String.format("Unxepcted format: %s", format));
 //                default -> 0;

@@ -15,8 +15,10 @@ public final class UpscaleSwitches {
     public static final String MODE = "iroh.upscale.mode";
     /** display/render ratio for mode=custom, 1..4 */
     public static final String SCALE = "iroh.upscale.scale";
-    /** auto | bilinear (auto = the best attached upscaler; until P4-2 lands that is bilinear) */
+    /** auto | fsr | bilinear (auto = FSR 3.1 when available, else bilinear) */
     public static final String UPSCALER = "iroh.upscale.upscaler";
+    /** off | 0..1: FSR sharpening (RCAS) */
+    public static final String SHARPNESS = "iroh.upscale.sharpness";
     /** auto | on | off: projection jitter (auto = only when the upscaler is temporal; the bilinear path never jitters) */
     public static final String JITTER = "iroh.upscale.jitter";
     /** auto | off | float: texture LOD bias in the world phase (auto = FSR's log2(render/display) - 1 when jittering, else 0) */
@@ -51,8 +53,19 @@ public final class UpscaleSwitches {
                             return "expected a number 1..4";
                         }
                     }, v -> "ok"));
-            DebugSwitches.register(new Switch(UPSCALER, "auto", "auto | bilinear (FSR 3.1 joins with card P4-2)",
-                    DebugSwitches.oneOf("auto", "bilinear"), v -> "ok"));
+            DebugSwitches.register(new Switch(UPSCALER, "auto", "auto | fsr | bilinear (auto = FSR 3.1 when available, else bilinear)",
+                    DebugSwitches.oneOf("auto", "fsr", "bilinear"), v -> "ok"));
+            DebugSwitches.register(new Switch(SHARPNESS, "off", "FSR RCAS sharpening: off | 0..1",
+                    v -> {
+                        if (v.equals("off"))
+                            return null;
+                        try {
+                            float f = Float.parseFloat(v);
+                            return f >= 0f && f <= 1f ? null : "expected off or 0..1";
+                        } catch (NumberFormatException e) {
+                            return "expected off or 0..1";
+                        }
+                    }, v -> "ok"));
             DebugSwitches.register(new Switch(JITTER, "auto", "projection jitter: auto (temporal upscaler only) | on | off",
                     DebugSwitches.oneOf("auto", "on", "off"), v -> "ok"));
             DebugSwitches.register(new Switch(MIP_BIAS, "auto", "world texture LOD bias: auto | off | <float>",

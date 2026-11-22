@@ -275,35 +275,43 @@ public class DefaultMainPass implements MainPass {
     }
 
     /**
-     * Copies the world depth into {@code dst} (same format and size) and resumes the main pass (LOAD). Called right
-     * before vanilla's pre-hand depth clear in renderLevel, so motion vectors and the upscaler get the SCENE depth (the
-     * depth buffer at world end only holds the hand). One pass break + one depth copy, only when the velocity pass or
-     * a temporal upscaler is on.
+     * Copies the world colour and/or depth (same formats and size; null = skip) and resumes the main pass (LOAD).
+     * Called right before vanilla's pre-hand depth clear in renderLevel (depth: motion vectors and the upscaler need
+     * the SCENE depth; the depth buffer at world end only holds the hand) and at WorldRenderEvents.AFTER_ENTITIES
+     * (opaque colour + depth for the reactive / T&C masks). One pass break + the copies, only when the velocity pass
+     * or a temporal upscaler is on.
      */
-    public boolean copyWorldDepth(VulkanImage dst) {
-        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("copyWorldDepth");
+    public boolean copyWorld(VulkanImage colourDst, VulkanImage depthDst) {
+        VkCommandBuffer commandBuffer = Renderer.recordingCommandBuffer("copyWorld");
         if (commandBuffer == null || !this.sceneTarget.isWorldActive() || !isMainTargetBound())
             return false;
         Renderer.getInstance().endRenderPass(commandBuffer);
-        VulkanImage src = this.sceneTarget.getDepthAttachment();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            src.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            dst.setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
-            dst.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
-            region.srcSubresource().set(VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1);
-            region.dstSubresource().set(VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1);
-            region.extent().set(Math.min(src.width, dst.width), Math.min(src.height, dst.height), 1);
-            vkCmdCopyImage(commandBuffer, src.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
-            VulkanImage.transitionLayout(stack, commandBuffer, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+            if (colourDst != null)
+                copyForCompute(stack, commandBuffer, this.sceneTarget.getColorAttachment(), colourDst, VK_IMAGE_ASPECT_COLOR_BIT);
+            if (depthDst != null)
+                copyForCompute(stack, commandBuffer, this.sceneTarget.getDepthAttachment(), depthDst, VK_IMAGE_ASPECT_DEPTH_BIT);
             this.sceneTarget.beginRenderPass(commandBuffer, this.auxRenderPass, stack);
             vkCmdSetViewport(commandBuffer, 0, this.sceneTarget.viewport(stack));
             vkCmdSetScissor(commandBuffer, 0, this.sceneTarget.scissor(stack));
         }
         dev.elemore.iroh.glshim.GlState.reapplyViewportAndScissor();
         return true;
+    }
+
+    /** src -> dst (same format), dst left in SHADER_READ_ONLY for a compute reader. */
+    private static void copyForCompute(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage src, VulkanImage dst, int aspect) {
+        src.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        dst.setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+        dst.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
+        region.srcSubresource().set(aspect, 0, 0, 1);
+        region.dstSubresource().set(aspect, 0, 0, 1);
+        region.extent().set(Math.min(src.width, dst.width), Math.min(src.height, dst.height), 1);
+        vkCmdCopyImage(commandBuffer, src.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+        VulkanImage.transitionLayout(stack, commandBuffer, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
 
     /** Frees the world images when the mode goes off (deferred frees; display set must be active). */

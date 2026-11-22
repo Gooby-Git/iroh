@@ -81,7 +81,7 @@ public class SceneTarget extends Framebuffer {
         this.colorAttachment = VulkanImage.builder(this.width, this.height)
                 .setName("Iroh scene colour")
                 .setFormat(this.format)
-                .setUsage(COLOR_USAGE)
+                .setUsage(displayColorUsage())
                 .setLinearFiltering(true)
                 .setClamp(true)
                 .createVulkanImage();
@@ -124,6 +124,11 @@ public class SceneTarget extends Framebuffer {
      * STORAGE only when the upscale device features were enabled (debug views write the world colour from compute):
      * storage usage can turn off colour compression (DCC on AMD), a cost the plain render-scale path should not pay.
      */
+    /** P4-1b: FSR writes the upscaled picture into the display colour by storage: STORAGE only when FSR can run. */
+    static int displayColorUsage() {
+        return dev.elemore.iroh.temporal.DeviceCaps.fsrCapable() ? COLOR_USAGE | VK_IMAGE_USAGE_STORAGE_BIT : COLOR_USAGE;
+    }
+
     static int worldColorUsage() {
         return dev.elemore.iroh.temporal.DeviceCaps.velocityCapable() ? COLOR_USAGE | VK_IMAGE_USAGE_STORAGE_BIT : COLOR_USAGE;
     }
