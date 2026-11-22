@@ -26,6 +26,7 @@ public final class PackSwitches {
     public static final String FULL_TRANSLUCENT = "iroh.pack.full.translucent";
     public static final String FULL_RASTER_SKY = "iroh.pack.full.rasterSky";
     public static final String FULL_DEPTH_BACK = "iroh.pack.full.depthBack";
+    public static final String FULL_SHADOW_REUSE = "iroh.pack.full.shadowReuse";
 
     private static volatile boolean registered;
 
@@ -68,6 +69,8 @@ public final class PackSwitches {
                     DebugSwitches.BOOL, v -> "ok"));
             DebugSwitches.register(new Switch(FULL_DEPTH_BACK, "on", "full mode: depthtex0 is copied into the scene depth so raster entities/particles/hand occlude correctly",
                     DebugSwitches.BOOL, v -> "ok"));
+            DebugSwitches.register(new Switch(FULL_SHADOW_REUSE, "3", "full mode: reuse the shadow maps up to N frames while the shadow camera barely moves (0 = render every frame)",
+                    v -> v.trim().matches("\\d+") ? null : "a frame count", v -> "ok"));
             registered = true;
         }
     }

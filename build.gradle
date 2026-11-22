@@ -550,3 +550,14 @@ tasks.register('sectionFormatTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.packtest.SectionFormatTest'
 	workingDir = projectDir
 }
+
+// P3-7 C: shadow reuse / light-facing buckets, derived upload budget, bounded trace, executor allocation per frame. ./gradlew packPerfTest
+tasks.register('packPerfTest', JavaExec) {
+	group = 'verification'
+	description = 'Pack path performance logic'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.packtest.PackPerfTest'
+	jvmArgs '-Xmx4g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+}

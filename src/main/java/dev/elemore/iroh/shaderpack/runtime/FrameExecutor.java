@@ -97,6 +97,10 @@ public final class FrameExecutor {
     public record Upscale(String after, String input, Set<String> replaces, int displayW, int displayH, PackUpscaler upscaler) {}
 
     public Upscale upscale;
+    /** P3-7 C: keep last frame's shadow maps: shadow + shadowcomp stages and their clears are skipped this frame */
+    public boolean reuseShadow;
+    /** keep the trace across frames (offline tools only) */
+    public boolean keepTrace;
     private boolean postCut;
     private int displayW, displayH;
     private final Set<String> displayKeys = new java.util.TreeSet<>();
@@ -331,6 +335,9 @@ public final class FrameExecutor {
     public void frame(PackFrameInputs in) {
         if (!prepared)
             prepare(in);
+        // P3-7: the trace holds the LAST frame only (it grew without bound in game: one list entry per pass per frame)
+        if (!keepTrace)
+            trace.clear();
         gpu.beginFrame();
         lastAccess.clear();
         postCut = false;
@@ -351,6 +358,8 @@ public final class FrameExecutor {
         for (Map.Entry<String, PassGraph.Target> e : frame.targets.entrySet()) {
             PassGraph.Target t = e.getValue();
             if (!t.clear || in.suppliedImages().contains(t.name) || (t.writers.isEmpty() && t.readers.isEmpty()))
+                continue;
+            if (reuseShadow && t.name.startsWith("shadowcolor"))
                 continue;
             float[] cc = clearColour(t, targets, in);
             for (String key : keysOf(t.name)) {
@@ -403,7 +412,7 @@ public final class FrameExecutor {
                 trace.add("clear " + key + " (input value)");
             }
         if (!in.geometry().isEmpty() && start <= STAGES.indexOf("shadow"))
-            for (String dk : new String[]{"depthtex0", "shadowtex0"}) {
+            for (String dk : reuseShadow ? new String[]{"depthtex0"} : new String[]{"depthtex0", "shadowtex0"}) {
                 Integer h = images.get(dk);
                 if (h == null)
                     continue;
@@ -426,6 +435,10 @@ public final class FrameExecutor {
             }
             if (skip.contains(p.id)) {
                 trace.add("skip " + p.id + " (iroh.pack.skip)");
+                continue;
+            }
+            if (reuseShadow && (p.stage.equals("shadow") || p.stage.equals("shadowcomp"))) {
+                trace.add("skip " + p.id + " (shadow maps reused)");
                 continue;
             }
             if (upscale != null && upscale.replaces().contains(p.id)) {
@@ -906,9 +919,36 @@ public final class FrameExecutor {
         return overlay(in, Map.of("viewWidth", new double[]{w}, "viewHeight", new double[]{h}));
     }
 
+    /** read-through view: {@code top} first, then {@code base} (P3-7: no copy of the whole uniform map per batch) */
+    static final class Layered extends java.util.AbstractMap<String, double[]> {
+        final Map<String, double[]> top, base;
+
+        Layered(Map<String, double[]> top, Map<String, double[]> base) {
+            this.top = top;
+            this.base = base;
+        }
+
+        @Override
+        public double[] get(Object k) {
+            double[] v = top.get(k);
+            return v != null ? v : base.get(k);
+        }
+
+        @Override
+        public boolean containsKey(Object k) {
+            return top.containsKey(k) || base.containsKey(k);
+        }
+
+        @Override
+        public Set<Entry<String, double[]>> entrySet() {
+            Map<String, double[]> m = new HashMap<>(base);
+            m.putAll(top);
+            return m.entrySet();
+        }
+    }
+
     private static PackFrameInputs overlay(PackFrameInputs in, Map<String, double[]> per) {
-        Map<String, double[]> m = new HashMap<>(in.uniforms());
-        m.putAll(per);
+        Map<String, double[]> m = new Layered(per, in.uniforms());
         return new PackFrameInputs() {
             public int width() { return in.width(); }
             public int height() { return in.height(); }

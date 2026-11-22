@@ -147,6 +147,8 @@ final class PackRuntimeImpl {
         }
     }
 
+    private final ShadowPlanner shadowPlanner = new ShadowPlanner();
+    private int lastPlannedRebuilds = -1;
     private VulkanImage importedAtlas;
     private int hAtlas = -1;
 
@@ -243,10 +245,33 @@ final class PackRuntimeImpl {
             inputs.geometry.clear();
             var c = FrameHooks.context().cameraPos();
             boolean shadow = DebugSwitches.on(PackSwitches.FULL_SHADOW);
+            // P3-7 C: reuse last frame's shadow maps while the shadow camera barely moved (bounded staleness)
+            int maxStale = 0;
+            try {
+                maxStale = Integer.parseInt(DebugSwitches.getOr(PackSwitches.FULL_SHADOW_REUSE, "3").trim());
+            } catch (NumberFormatException ignored) {
+            }
+            boolean reuse = false;
+            if (shadow) {
+                Map<String, double[]> u = inputs.uniforms();
+                double[][] d = shadowPlanner.decide(u.get("shadowModelView"), u.get("shadowProjection"), maxStale, 2e-3,
+                        lc.executor() == null || lc.rebuilds != lastPlannedRebuilds);
+                lastPlannedRebuilds = lc.rebuilds;
+                reuse = d[2][0] == 1;
+                if (reuse) {
+                    u.put("shadowModelView", d[0]);
+                    u.put("shadowModelViewInverse", Mat.invert(d[0]));
+                    u.put("shadowProjection", d[1]);
+                    u.put("shadowProjectionInverse", Mat.invert(d[1]));
+                }
+            }
+            if (lc.executor() != null)
+                lc.executor().reuseShadow = reuse;
             net.vulkanmod.render.chunk.WorldRenderer wr = net.vulkanmod.render.chunk.WorldRenderer.getInstance();
-            wr.collectPackTerrain(inputs.geometry, c.x(), c.y(), c.z(), shadow ? inputs.uniforms().get("shadowModelView") : null, inputs.shadowDistance);
+            wr.collectPackTerrain(inputs.geometry, c.x(), c.y(), c.z(), shadow && !reuse ? inputs.uniforms().get("shadowModelView") : null, inputs.shadowDistance);
             stats.mainDraws = wr.packMainDraws;
-            stats.shadowSections = shadow ? wr.packShadowSections : 0;
+            stats.shadowSections = shadow && !reuse ? wr.packShadowSections : 0;
+            stats.shadowReused = shadowPlanner.reused;
             stats.shadowDraws = shadow ? wr.packShadowDraws : 0;
             stats.batches = inputs.geometry.size();
         }
@@ -306,7 +331,7 @@ final class PackRuntimeImpl {
     /** CPU cost of the pack frame and the terrain/shadow counts, published every 2 s (iroh.pack.cpu) and in -Diroh.profile */
     static final class FrameStats {
         long cpuNs, frames, lastLog = System.nanoTime();
-        int mainDraws, shadowSections, shadowDraws, batches;
+        int mainDraws, shadowSections, shadowDraws, batches, shadowReused;
         String last = "no samples yet";
 
         void maybeLog(boolean full) {
@@ -314,7 +339,8 @@ final class PackRuntimeImpl {
             if (now - lastLog < 2_000_000_000L || frames == 0)
                 return;
             last = String.format("pack cpu ms/frame %.3f (%s, %d frames)%s", cpuNs / 1e6 / frames, full ? "full" : "post", frames,
-                    full ? String.format(" terrain draws %d, shadow sections %d draws %d, batches %d", mainDraws, shadowSections, shadowDraws, batches) : "");
+                    full ? String.format(" terrain draws %d, shadow sections %d draws %d, batches %d, shadow maps reused %d", mainDraws, shadowSections,
+                            shadowDraws, batches, shadowReused) : "");
             DebugSwitches.publish(PackSwitches.CPU, last);
             cpuNs = 0;
             frames = 0;

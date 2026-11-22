@@ -402,6 +402,7 @@ public class WorldRenderer {
         Arrays.fill(ALL_FACINGS, -1);
     }
     private final int[] packMask = new int[512];
+    private final int[] packLightMask = new int[512];
     private final int[] packIdx = new int[512];
     public int packShadowSections, packShadowDraws, packMainDraws;
 
@@ -477,6 +478,9 @@ public class WorldRenderer {
                 }
             }
             packShadowDraws = 0;
+            // P3-7 C: only the facing buckets the light can see (+ UNDEFINED), see ShadowPlanner
+            java.util.Arrays.fill(packLightMask, dev.elemore.iroh.shaderpack.runtime.ShadowPlanner.lightFacingMask(
+                    dev.elemore.iroh.shaderpack.runtime.ShadowPlanner.lightDir(shadowView)));
             for (int i = 0; i < areas; i++) {
                 if (packShadowCount[i] == 0)
                     continue;
@@ -486,7 +490,7 @@ public class WorldRenderer {
                 for (TerrainRenderType t : TerrainRenderType.VALUES)
                     if (allowed.contains(t) && a.drawBuffers.getAreaBuffer(t) != null)
                         packShadowDraws += packAdd(out, ib, quads, a.drawBuffers, t, "shadow:" + packClass(t), packShadowCount[i],
-                                packShadowIdx[i], ALL_FACINGS, camX, camY, camZ);
+                                packShadowIdx[i], packLightMask, camX, camY, camZ);
             }
         }
         ib.submitUploads();

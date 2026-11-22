@@ -92,6 +92,7 @@ public final class PackReplay {
         try (HeadlessVkBackend gpu = new HeadlessVkBackend(Boolean.getBoolean("iroh.replay.allowGpu"), 1L << 30)) {
             System.out.println("# device " + gpu.deviceName + " (" + gpu.name() + ")");
             FrameExecutor ex = new FrameExecutor(data, plan, folder, gpu, FrameExecutor.cap(1L << 30));
+            ex.keepTrace = true;
             if (opt.containsKey("upscale")) {
                 // P3-7 D: the scene renders at w x h (render size), display = w,h / scale; Navidson's cut (CutPoint):
                 // after composite5, input colortex3, composite6 (TAA) replaced; bilinear stand-in upscaler
