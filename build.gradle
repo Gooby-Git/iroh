@@ -164,6 +164,16 @@ tasks.register('coreOverrideTest', JavaExec) {
 	if (project.hasProperty('pack')) args project.property('pack')
 }
 
+// perf/frame-attrib: -Diroh.slowFrames ring/record/summary on a fake clock. ./gradlew slowFramesTest
+tasks.register('slowFramesTest', JavaExec) {
+	group = 'verification'
+	description = 'Slow-frame attribution: self times, nesting, ring without allocation, summary ranking'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.diag.SlowFramesTest'
+	jvmArgs '-ea'
+}
+
 // rc14 (td-f57b86): camera states x fog option -> expected vanilla fog. ./gradlew fogDecisionTest
 tasks.register('fogDecisionTest', JavaExec) {
 	group = 'verification'

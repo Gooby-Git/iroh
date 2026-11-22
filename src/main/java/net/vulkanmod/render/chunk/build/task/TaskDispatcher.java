@@ -164,6 +164,28 @@ public class TaskDispatcher {
      * Callers that are waiting for specific sections (ZERO_FRAMES / ONE_FRAME defer modes, loading screens) pass true.
      */
     public boolean updateSections(boolean unlimited) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.SECTION_INTAKE);
+        try {
+            return updateSections0(unlimited);
+        } finally {
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.SECTION_INTAKE);
+        }
+    }
+
+    /** perf/frame-attrib: render-thread view of the builders (slow-frame counters). */
+    public int busyBuilders() {
+        return this.threads == null ? 0 : Math.max(0, this.threads.length - this.idleThreads);
+    }
+
+    public int pendingTaskCount() {
+        return this.pendingTasks.get();
+    }
+
+    public int pendingResultCount() {
+        return this.compileResults.size();
+    }
+
+    private boolean updateSections0(boolean unlimited) {
         long t0 = System.nanoTime();
         long bytes0 = dev.elemore.iroh.diag.UploadStats.chunkBytes;
         CompileResult result;
@@ -182,6 +204,10 @@ public class TaskDispatcher {
             } finally {
                 releaseAll(result); // idempotent: whatever the upload did not consume goes back
             }
+        }
+        if (dev.elemore.iroh.diag.SlowFrames.ON) {
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SECTIONS, n);
+            dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SECTION_KB, (int) (approxBytes >> 10));
         }
         approxBytes = 0;
         if (dev.elemore.iroh.diag.UploadStats.ON) {

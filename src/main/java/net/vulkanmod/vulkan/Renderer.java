@@ -205,6 +205,15 @@ public class Renderer {
     }
 
     public void preInitFrame() {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.PRE_FRAME); // perf/frame-attrib
+        try {
+            preInitFrame0();
+        } finally {
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.PRE_FRAME);
+        }
+    }
+
+    private void preInitFrame0() {
         Profiler p = Profiler.getMainProfiler();
         p.pop();
         p.round();
@@ -220,7 +229,9 @@ public class Renderer {
         drawer.resetBuffers(currentFrame);
 
         WorldRenderer.getInstance().uploadSections();
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.UPLOAD_SUBMIT);
         UploadManager.INSTANCE.submitUploads();
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.UPLOAD_SUBMIT);
     }
 
     // Iroh (rc5, td-1cb256): under -ea, the render thread's LWJGL MemoryStack must be back where it was at beginFrame
@@ -255,10 +266,12 @@ public class Renderer {
         boolean outer = !inBeginFrame;
         if (STACK_CHECK && outer) checkStackBalance(null);
         inBeginFrame = true;
+        if (dev.elemore.iroh.diag.SlowFrames.ON && outer) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.BEGIN); // perf/frame-attrib
         try {
             beginFrame0();
         } finally {
             if (outer) inBeginFrame = false;
+            if (dev.elemore.iroh.diag.SlowFrames.ON && outer) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.BEGIN);
         }
     }
 
@@ -299,7 +312,9 @@ public class Renderer {
         if (skipRendering || recordingCmds)
             return;
 
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.FENCE);
         waitFrameFence(); // rc8: bounded
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.FENCE);
         // perf/uploads: the frame that last used this slot finished; complete finished upload epochs (no wait) and make
         // sure everything submitted before that frame is done before the slot's deferred frees run below.
         Synchronization.INSTANCE.frameSlotDone(currentFrame);
@@ -325,8 +340,10 @@ public class Renderer {
 
             IntBuffer pImageIndex = stack.mallocInt(1);
 
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.ACQUIRE);
             int vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkAcquireNextImageKHR(device, swapChain.getId(), VUtil.UINT64_MAX,
                                                  imageAvailableSemaphores.get(currentFrame), VK_NULL_HANDLE, pImageIndex), "vkAcquireNextImageKHR");
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.ACQUIRE);
 
             if (vkResult == VK_SUBOPTIMAL_KHR || vkResult == VK_ERROR_OUT_OF_DATE_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
@@ -384,7 +401,9 @@ public class Renderer {
         p.push("End_rendering");
 
         // perf/uploads: queued in-frame uploads are recorded before the frame command buffer ends
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.FLUSH_INFRAME); // perf/frame-attrib
         net.vulkanmod.vulkan.texture.VulkanImage.flushInFrame();
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.FLUSH_INFRAME);
 
         // Iroh (rc3r2, td-7937f0): mainPass.end ends the command buffer; from here on nothing may record into it, even if
         // the submit below throws (device lost / out of date during a world teardown).
@@ -395,9 +414,15 @@ public class Renderer {
         }
 
         // perf/uploads: submit this frame's uploads and close its epoch; no CPU wait (was a full fence wait every frame)
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.UPLOAD_SUBMIT);
         StagingBuffer.flushConsumers(currentFrame);
+        if (dev.elemore.iroh.diag.SlowFrames.ON) {
+            dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.UPLOAD_SUBMIT);
+            dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.SUBMIT);
+        }
 
         submitFrame();
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.SUBMIT);
 
         // Iroh (P1-13a): AFTER_PRESENT (no command buffer is recording; CPU-side work only)
         dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.AFTER_PRESENT);
@@ -490,7 +515,9 @@ public class Renderer {
 
             presentInfo.pImageIndices(stack.ints(imageIndex));
 
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.PRESENT);
             vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo), "vkQueuePresentKHR");
+            if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.PRESENT);
 
             if (vkResult == VK_ERROR_OUT_OF_DATE_KHR || vkResult == VK_SUBOPTIMAL_KHR || swapChainUpdate) {
                 swapChainUpdate = true;

@@ -38,6 +38,10 @@
     "profiling.GuiMixin",
     "profiling.KeyboardHandlerM",
     "profiling.LevelRendererMixin",
+    "profiling.slow.SlowFramesMinecraftM",
+    "profiling.slow.SlowFramesGameRendererM",
+    "profiling.slow.SlowFramesTaskM",
+    "profiling.slow.SlowFramesLevelM",
 
     "render.BufferUploaderM",
     "render.GameRendererMixin",
