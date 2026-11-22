@@ -31,7 +31,7 @@ public final class RtReplay {
         float[] sunDir, sunE = {3.2f, 3.0f, 2.7f}, zenith = {0.18f, 0.30f, 0.62f}, horizon = {0.55f, 0.62f, 0.75f};
         float sunRadius = 0.035f;   // 2 degrees: a visible penumbra at 160x90 (the real sun is 0.27 deg)
         boolean fog = true;
-        float fogDensity = 0.012f, fogFalloff = 0.08f, fogBase = 6f;
+        float fogDensity = 0.006f, fogFalloff = 0.08f, fogBase = 6f;
         float[] waterExtinction;
         float polishedRoughness = 0;
 
