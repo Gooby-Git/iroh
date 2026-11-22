@@ -87,6 +87,21 @@ public final class FrameExecutor {
     public Set<String> skip = Set.of();
     /** called after the inputs were uploaded/copied (capture hook) */
     public Runnable afterInputs;
+    /**
+     * P3-7 upscaler seam (null = off; set before the first frame). The inputs are at RENDER size (in.width/height,
+     * as the render-scale scene target will be); the pack renders at that size up to and including pass {@code after}
+     * and at {@code displayW x displayH} after it; the engine computes motion vectors from depth and the
+     * previous-frame matrices; {@code upscaler} turns {@code input} into its display-size image; the passes in
+     * {@code replaces} are skipped; every later pass runs on display-size copies ("D:" keys) of what it reads/writes.
+     */
+    public record Upscale(String after, String input, Set<String> replaces, int displayW, int displayH, PackUpscaler upscaler) {}
+
+    public Upscale upscale;
+    private boolean postCut;
+    private int displayW, displayH;
+    private final Set<String> displayKeys = new java.util.TreeSet<>();
+    private String upscaleOutKey, upscaleInKey;
+
     /** P3-6: called when the pass loop enters a stage (full-mode capture before "deferred") */
     public java.util.function.Consumer<String> onStage;
 
@@ -127,6 +142,8 @@ public final class FrameExecutor {
     public void prepare(PackFrameInputs in) {
         width = in.width();
         height = in.height();
+        displayW = upscale != null ? upscale.displayW() : width;
+        displayH = upscale != null ? upscale.displayH() : height;
         for (ResourcePlan.Image im : plan.images) {
             int w, h, dpt = 1;
             if (im.relative) {
@@ -162,9 +179,11 @@ public final class FrameExecutor {
                 images.put(key, gpu.createImage(d));
             }
         }
-        // output of final
-        images.put("output", gpu.createImage(new GpuBackend.ImageDesc("pack:output", "R8G8B8A8_UNORM", width, height, 1, 1,
+        // output of final (display size)
+        images.put("output", gpu.createImage(new GpuBackend.ImageDesc("pack:output", "R8G8B8A8_UNORM", displayW, displayH, 1, 1,
                 Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST"))));
+        if (upscale != null)
+            prepareUpscale();
         // pipelines for the passes this frame will run
         for (PassGraph.Pass p : frame.passes) {
             if (!runs(p, in))
@@ -314,6 +333,7 @@ public final class FrameExecutor {
             prepare(in);
         gpu.beginFrame();
         lastAccess.clear();
+        postCut = false;
         trace.add("frame start=" + in.startStage() + " size=" + width + "x" + height);
         int start = STAGES.indexOf(in.startStage());
 
@@ -408,6 +428,10 @@ public final class FrameExecutor {
                 trace.add("skip " + p.id + " (iroh.pack.skip)");
                 continue;
             }
+            if (upscale != null && upscale.replaces().contains(p.id)) {
+                trace.add("skip " + p.id + " (replaced by the upscaler)");
+                continue;
+            }
             switch (p.kind) {
                 case "fullscreen" -> {
                     gpu.timeBegin(p.id);
@@ -432,7 +456,10 @@ public final class FrameExecutor {
                 case "flip" -> trace.add("flip " + p.id + " " + p.flipsAfter + " (frozen in the plan)");
                 default -> trace.add("skip " + p.id + " (" + p.kind + ")");
             }
+            if (upscale != null && p.id.equals(upscale.after()))
+                runCut(in);
         }
+        postCut = false;
         // end of frame: alt -> main copies for flipped, never-cleared pairs
         for (PassGraph.Target t : frame.targets.values()) {
             if (!(t.endOfFrameCopy && t.pairNeeded()))
@@ -530,8 +557,157 @@ public final class FrameExecutor {
     private Integer imageFor(String target, String half) {
         if (target.equals("output"))
             return images.get("output");
+        if (postCut) {
+            Integer d = images.get("D:" + target + "#" + half);
+            if (d == null)
+                d = images.get("D:" + target);
+            if (d != null)
+                return d;
+        }
         Integer h = images.get(target + "#" + half);
         return h != null ? h : images.get(target);
+    }
+
+    // ------------------------------------------------------------------------------------------------ upscaler seam
+
+    private int motionPipe = -1;
+
+    /** display-size copies of every target half a post-cut pass touches, the motion-vector target and its pipeline */
+    private void prepareUpscale() {
+        int cutIdx = -1;
+        for (int i = 0; i < frame.passes.size(); i++)
+            if (frame.passes.get(i).id.equals(upscale.after()))
+                cutIdx = i;
+        if (cutIdx < 0) {
+            problems.add("upscale: no pass " + upscale.after() + " in " + frame.folder + ": upscaler off");
+            upscale = null;
+            displayW = width;
+            displayH = height;
+            return;
+        }
+        for (int i = cutIdx + 1; i < frame.passes.size(); i++) {
+            PassGraph.Pass p = frame.passes.get(i);
+            if (!(p.kind.equals("fullscreen") || p.kind.equals("compute")))
+                continue;
+            if (upscale.replaces().contains(p.id)) {
+                for (Map<String, Object> w : p.writes)
+                    if (upscale.input().equals(w.get("target")))
+                        upscaleOutKey = w.get("target") + "#" + w.get("half");
+                for (Map<String, Object> r : p.reads)
+                    if (upscale.input().equals(r.get("resource")) || upscale.input().equals(r.get("name")))
+                        upscaleInKey = upscale.input() + "#" + r.getOrDefault("half", "main");
+                continue;
+            }
+            for (Map<String, Object> w : p.writes)
+                if (!"output".equals(w.get("target")))
+                    displayKeys.add(w.get("target") + "#" + w.get("half"));
+            for (Map<String, Object> r : p.reads)
+                if ("colortex".equals(r.get("kind")))
+                    displayKeys.add(r.get("resource") + "#" + r.getOrDefault("half", "main"));
+                else if ("depth".equals(r.get("kind"))) {
+                    String res = String.valueOf(r.get("resource"));
+                    displayKeys.add(res.startsWith("depthtex1") ? "depthtex1" : res.startsWith("depthtex2") ? "depthtex2" : "depthtex0");
+                }
+        }
+        if (upscaleOutKey != null)
+            displayKeys.add(upscaleOutKey);
+        if (upscaleInKey == null)
+            upscaleInKey = upscale.input() + "#main";
+        for (String k : displayKeys) {
+            Integer src = images.get(k);
+            if (src == null)
+                src = images.get(k.replaceAll("#.*", ""));
+            if (src == null)
+                continue;
+            GpuBackend.ImageDesc d = gpu.desc(src);
+            Set<String> usage = new LinkedHashSet<>(d.usage());
+            usage.add("TRANSFER_DST");
+            String dk = "D:" + (images.containsKey(k) ? k : k.replaceAll("#.*", ""));
+            if (!images.containsKey(dk))
+                images.put(dk, gpu.createImage(new GpuBackend.ImageDesc("pack:" + dk, d.vkFormat(), displayW, displayH, 1, d.mips(), usage)));
+        }
+        images.put("engine:motion", gpu.createImage(new GpuBackend.ImageDesc("pack:engine:motion", "R16G16_SFLOAT", width, height, 1, 1,
+                Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST"))));
+        var vs = dev.elemore.iroh.shaderpack.PackCompiler.compile(dev.elemore.iroh.shaderpack.PackGlsl.Stage.VERTEX, MOTION_VS, "iroh-motion.vsh");
+        var fs = dev.elemore.iroh.shaderpack.PackCompiler.compile(dev.elemore.iroh.shaderpack.PackGlsl.Stage.FRAGMENT, MOTION_FS, "iroh-motion.fsh");
+        if (vs.spirv() == null || fs.spirv() == null) {
+            problems.add("upscale: motion shader: " + vs.error() + " " + fs.error());
+            return;
+        }
+        motionPipe = gpu.createPipeline(new GpuBackend.PipelineDesc("engine:motion", vs.spirv(), fs.spirv(), null,
+                List.of(new GpuBackend.VertexInput(0, "vec4", "position")), List.of("R16G16_SFLOAT"), List.of("off"),
+                List.of(new GpuBackend.Slot(0, 0, "UNIFORM_BUFFER", "IrohMotion", "IrohMotion"),
+                        new GpuBackend.Slot(0, 1, "SAMPLER", "sampler2D", "depthtex"))));
+        pipelines.put("engine:motion", motionPipe);
+        trace.add("upscale prepared: render " + width + "x" + height + " -> display " + displayW + "x" + displayH + ", " + upscale.upscaler().name()
+                + ", input " + upscaleInKey + " -> D:" + upscaleOutKey + ", display copies " + displayKeys);
+    }
+
+    /** camera-only motion vectors (static world): current pixel -> previous pixel, NDC delta x 0.5 (uv units) */
+    static final String MOTION_VS = """
+            #version 450
+            layout(location = 0) in vec4 pos;
+            layout(location = 0) out vec2 uv;
+            void main() { uv = pos.xy; gl_Position = vec4(pos.xy * 2.0 - 1.0, 0.0, 1.0); }
+            """;
+    static final String MOTION_FS = """
+            #version 450
+            layout(location = 0) in vec2 uv;
+            layout(location = 0) out vec4 mv;
+            layout(set = 0, binding = 0) uniform IrohMotion { mat4 projInv; mat4 viewInv; mat4 prevView; mat4 prevProj; vec4 camDelta; };
+            layout(set = 0, binding = 1) uniform sampler2D depthtex;
+            void main() {
+                float d = texelFetch(depthtex, ivec2(gl_FragCoord.xy), 0).r;
+                vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+                vec4 v = projInv * ndc;
+                v /= v.w;
+                vec3 p = (viewInv * v).xyz + camDelta.xyz;  // player space of this frame -> of the previous frame
+                vec4 pc = prevProj * (prevView * vec4(p, 1.0));
+                mv = vec4((pc.xy / pc.w - ndc.xy) * 0.5, 0.0, 1.0);
+            }
+            """;
+
+    /** after the cut pass: motion vectors, the upscale, display copies of everything else the later passes read */
+    private void runCut(PackFrameInputs in) {
+        Integer depth = images.get("depthtex0"), mv = images.get("engine:motion");
+        if (motionPipe >= 0 && depth != null && mv != null) {
+            access(depth, "SAMPLED_READ");
+            access(mv, "ATTACHMENT_WRITE");
+            Map<String, double[]> u = in.uniforms();
+            ByteBuffer b = ByteBuffer.allocate(4 * 64 + 16).order(ByteOrder.LITTLE_ENDIAN);
+            double[][] ms = {u.getOrDefault("gbufferProjectionInverse", IDENTITY), u.getOrDefault("gbufferModelViewInverse", IDENTITY),
+                    u.getOrDefault("gbufferPreviousModelView", IDENTITY), u.getOrDefault("gbufferPreviousProjection", IDENTITY)};
+            for (int m = 0; m < 4; m++)
+                for (int i = 0; i < 16; i++)
+                    b.putFloat(m * 64 + i * 4, (float) ms[m][i]);
+            double[] c = u.getOrDefault("cameraPosition", new double[3]), pc = u.getOrDefault("previousCameraPosition", c);
+            for (int i = 0; i < 3; i++)
+                b.putFloat(256 + i * 4, (float) (c[i] - pc[i]));
+            gpu.draw(new GpuBackend.Draw("engine:motion", motionPipe, new int[]{mv}, new int[]{0, 0, width, height},
+                    Map.of(1, GpuBackend.Bind.image(depth, "NEAREST")), Map.of(), b.array()));
+            trace.add("engine motion vectors " + width + "x" + height);
+        }
+        for (String k : displayKeys) {
+            if (k.equals(upscaleOutKey))
+                continue;
+            Integer src = images.get(k), dst = images.get("D:" + k);
+            if (src == null || dst == null)
+                continue;
+            access(src, "TRANSFER_READ");
+            access(dst, "TRANSFER_WRITE");
+            gpu.blit(src, dst);
+            trace.add("display copy " + k);
+        }
+        Integer inImg = images.get(upscaleInKey), outImg = upscaleOutKey == null ? null : images.get("D:" + upscaleOutKey);
+        if (inImg != null && outImg != null) {
+            access(inImg, "TRANSFER_READ");
+            if (mv != null)
+                access(mv, "SAMPLED_READ");
+            access(outImg, "TRANSFER_WRITE");
+            upscale.upscaler().dispatch(gpu, inImg, depth == null ? -1 : depth, mv == null ? -1 : mv, outImg, width, height, displayW, displayH);
+            trace.add("upscale " + upscale.upscaler().name() + " " + upscaleInKey + " " + width + "x" + height + " -> D:" + upscaleOutKey + " " + displayW + "x" + displayH);
+        }
+        postCut = true;
     }
 
     private void fullscreen(PassGraph.Pass p, PackFrameInputs in) {
@@ -575,7 +751,7 @@ public final class FrameExecutor {
         if (p.scale instanceof List<?> l && !l.isEmpty())
             s = ((Number) l.get(0)).doubleValue();
         int[] viewport = {0, 0, (int) Math.max(1, Math.round(aw * s)), (int) Math.max(1, Math.round(ah * s))};
-        byte[] ubo = uniformBlock(u, in, true);
+        byte[] ubo = uniformBlock(u, sized(in), true);
         gpu.draw(new GpuBackend.Draw(p.id, pipe, colour, viewport, set0, set1, ubo));
         trace.add("draw " + p.id + " -> " + keys + " viewport " + viewport[2] + "x" + viewport[3] + " reads " + readKeys(p));
         passIndex = frame.passes.indexOf(p);
@@ -688,7 +864,7 @@ public final class FrameExecutor {
             per.put("blockEntityId", new double[]{-1});
             per.put("entityId", new double[]{-1});
             per.put("renderStage", new double[]{renderStage(g.geometryClass(), shadow)});
-            batches.add(new GpuBackend.GeoBatch(uniformBlock(u, overlay(in, per), false), vb, g.quads(), 0L, 0L, g.indirect()));
+            batches.add(new GpuBackend.GeoBatch(uniformBlock(u, overlay(sized(in), per), false), vb, g.quads(), 0L, 0L, g.indirect()));
             quads += g.quads();
         }
         gpu.drawGeometry(new GpuBackend.GeoDraw(p.id, pipe, colour, depth, viewport, set0, set1, batches));
@@ -720,6 +896,14 @@ public final class FrameExecutor {
             case "hand_solid", "hand_translucent" -> 19;
             default -> 0;
         };
+    }
+
+    /** with the upscaler: viewWidth/viewHeight are the render size before the cut and the display size after it */
+    private PackFrameInputs sized(PackFrameInputs in) {
+        if (upscale == null)
+            return in;
+        int w = postCut ? displayW : width, h = postCut ? displayH : height;
+        return overlay(in, Map.of("viewWidth", new double[]{w}, "viewHeight", new double[]{h}));
     }
 
     private static PackFrameInputs overlay(PackFrameInputs in, Map<String, double[]> per) {
@@ -767,7 +951,7 @@ public final class FrameExecutor {
         Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
         accessBinds(set0, "STORAGE_WRITE");
         int[] groups = groups(p, u);
-        gpu.dispatch(new GpuBackend.Dispatch(p.id, pipe, groups, set0, binds(p, u, 1), uniformBlock(u, in, false)));
+        gpu.dispatch(new GpuBackend.Dispatch(p.id, pipe, groups, set0, binds(p, u, 1), uniformBlock(u, sized(in), false)));
         trace.add("dispatch " + p.id + " " + java.util.Arrays.toString(groups));
     }
 
@@ -866,7 +1050,8 @@ public final class FrameExecutor {
                 }
                 case "colortex-image" -> h = imageFor(res, "main");
                 case "depth" -> {
-                    h = images.get(res.startsWith("depthtex1") ? "depthtex1" : res.startsWith("depthtex2") ? "depthtex2" : "depthtex0");
+                    String dk = res.startsWith("depthtex1") ? "depthtex1" : res.startsWith("depthtex2") ? "depthtex2" : "depthtex0";
+                    h = postCut && images.containsKey("D:" + dk) ? images.get("D:" + dk) : images.get(dk);
                     if (!type.contains("Shadow"))
                         sampler = "NEAREST";
                 }

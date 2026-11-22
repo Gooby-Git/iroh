@@ -599,6 +599,14 @@ public abstract class VkPackBackend implements GpuBackend {
                 r.dstSubresource().aspectMask(b.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
                 r.dstOffsets(1).set(b.d.width(), b.d.height(), 1);
                 vkCmdBlitImage(cmd(), a.image, sa, b.image, sb, r, VK_FILTER_LINEAR);
+            } else if (a.format == b.format && a.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && depthBlit(a.format)) {
+                // P3-7: depth resized for passes after the upscale cut: NEAREST is the only filter allowed for depth
+                VkImageBlit.Buffer r = VkImageBlit.calloc(1, s);
+                r.srcSubresource().aspectMask(a.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+                r.srcOffsets(1).set(a.d.width(), a.d.height(), 1);
+                r.dstSubresource().aspectMask(b.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+                r.dstOffsets(1).set(b.d.width(), b.d.height(), 1);
+                vkCmdBlitImage(cmd(), a.image, sa, b.image, sb, r, VK_FILTER_NEAREST);
             } else {
                 String note = "blit " + a.d.name() + " -> " + b.d.name() + " skipped: depth formats or sizes differ";
                 if (!log.contains(note))
@@ -607,6 +615,19 @@ public abstract class VkPackBackend implements GpuBackend {
         }
         leaveTransfer(a, la, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         leaveTransfer(b, lb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    }
+
+    private final Map<Integer, Boolean> depthBlitOk = new HashMap<>();
+
+    private boolean depthBlit(int format) {
+        return depthBlitOk.computeIfAbsent(format, f -> {
+            try (MemoryStack s = stackPush()) {
+                VkFormatProperties fp = VkFormatProperties.calloc(s);
+                vkGetPhysicalDeviceFormatProperties(phys(), f, fp);
+                int need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+                return (fp.optimalTilingFeatures() & need) == need;
+            }
+        });
     }
 
     private int enterTransfer(Img im, int to) {

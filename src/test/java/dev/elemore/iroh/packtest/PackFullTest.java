@@ -132,6 +132,29 @@ public final class PackFullTest {
             ex.close();
             check("close never frees the renderer's atlas or scene depth", !rec.freed.contains(atlas) && !rec.freed.contains(sceneDepth));
         }
+        // P3-7 D: the upscaler seam on the recording backend (render 160x90 -> display 320x180)
+        if (plan.frames.containsKey("world0")) {
+            RecordingBackend rec = new RecordingBackend();
+            SyntheticFullScene in = new SyntheticFullScene(data, plan.frames.get("world0"), plan.resources.get("world0"), 160, 90);
+            FrameExecutor ex = new FrameExecutor(data, plan, "world0", rec, FrameExecutor.cap(1L << 30));
+            ex.upscale = new FrameExecutor.Upscale("composite5", "colortex3", java.util.Set.of("composite6"), 320, 180,
+                    new dev.elemore.iroh.shaderpack.runtime.PackUpscaler.Bilinear());
+            ex.frame(in);
+            ex.frame(in);
+            check("upscale: no problems " + ex.problems, ex.problems.isEmpty());
+            check("upscale: no violations " + rec.violations, rec.violations.isEmpty());
+            check("upscale: composite6 (TAA) not drawn", rec.draws.stream().noneMatch(d -> d.pass().equals("composite6")));
+            check("upscale: composite5 at render size", rec.draws.stream().filter(d -> d.pass().equals("composite5")).allMatch(d -> d.viewport()[2] == 160));
+            check("upscale: composite7 and final at display size", rec.draws.stream().filter(d -> d.pass().equals("composite7") || d.pass().equals("final"))
+                    .allMatch(d -> d.viewport()[2] == 320 && d.viewport()[3] == 180) && rec.draws.stream().anyMatch(d -> d.pass().equals("final")));
+            check("upscale: gbuffers at render size", rec.geoDraws.stream().filter(g -> g.pass().equals("gbuffers_terrain")).allMatch(g -> g.viewport()[2] == 160));
+            check("upscale: motion vectors drawn each frame", rec.draws.stream().filter(d -> d.pass().equals("engine:motion")).count() == 2);
+            String tr = String.join("\n", ex.trace);
+            check("upscale: dispatched after composite5, before composite7", tr.indexOf("upscale bilinear") > tr.indexOf("draw composite5")
+                    && tr.indexOf("upscale bilinear") < tr.indexOf("draw composite7"));
+            ex.close();
+            check("upscale: close frees everything", rec.live() == 0 && rec.livePipelines() == 0);
+        }
         System.out.println("# packfull " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
     }

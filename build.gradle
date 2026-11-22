@@ -432,6 +432,7 @@ tasks.register('packReplay', JavaExec) {
 	if (project.hasProperty('post')) a << "--post"
 	if (project.hasProperty('full')) a << "--full"
 	if (project.hasProperty('roundtrip')) a << "--roundtrip"
+	if (project.hasProperty('upscale')) a << "--upscale=" + project.property('upscale')
 	args a
 	doFirst {
 		def sys = ['/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', '/usr/share/vulkan/icd.d/lvp_icd.json'].find { new File(it).exists() }

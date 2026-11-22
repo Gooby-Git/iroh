@@ -92,6 +92,13 @@ public final class PackReplay {
         try (HeadlessVkBackend gpu = new HeadlessVkBackend(Boolean.getBoolean("iroh.replay.allowGpu"), 1L << 30)) {
             System.out.println("# device " + gpu.deviceName + " (" + gpu.name() + ")");
             FrameExecutor ex = new FrameExecutor(data, plan, folder, gpu, FrameExecutor.cap(1L << 30));
+            if (opt.containsKey("upscale")) {
+                // P3-7 D: the scene renders at w x h (render size), display = w,h / scale; Navidson's cut (CutPoint):
+                // after composite5, input colortex3, composite6 (TAA) replaced; bilinear stand-in upscaler
+                double sc = Double.parseDouble(opt.get("upscale"));
+                ex.upscale = new FrameExecutor.Upscale("composite5", "colortex3", java.util.Set.of("composite6"),
+                        (int) Math.round(w / sc), (int) Math.round(h / sc), new dev.elemore.iroh.shaderpack.runtime.PackUpscaler.Bilinear());
+            }
             if (opt.containsKey("post")) {
                 // POST mode as the game runs it: a raster "scene" colour + depth come in by blit, flat clears, the output is
                 // blitted back into the scene colour (the in-game path's copies, exercised on lavapipe)
@@ -147,6 +154,42 @@ public final class PackReplay {
                 };
             for (int f = 0; f < frames; f++)
                 ex.frame(in);
+            if (opt.containsKey("upscale") && ex.images.containsKey("engine:motion")) {
+                // P3-7 D: camera-only motion vectors: zero for a static camera; with the camera moved +1 block
+                // along x since the previous frame, non-zero and finite everywhere
+                float[] mv0 = gpu.readback(ex.images.get("engine:motion"));
+                double max0 = 0;
+                for (int i = 0; i < mv0.length; i += 4)
+                    max0 = Math.max(max0, Math.max(Math.abs(mv0[i]), Math.abs(mv0[i + 1])));
+                Map<String, double[]> moved = new LinkedHashMap<>(in.uniforms());
+                double[] cam = moved.get("cameraPosition");
+                moved.put("previousCameraPosition", new double[]{cam[0] - 1, cam[1], cam[2]});
+                PackFrameInputs base = in;
+                ex.frame(new PackFrameInputs() {
+                    public int width() { return base.width(); }
+                    public int height() { return base.height(); }
+                    public Map<String, double[]> uniforms() { return moved; }
+                    public java.util.Set<String> suppliedImages() { return base.suppliedImages(); }
+                    public float[] image(String n) { return base.image(n); }
+                    public int[] extent(String n) { return base.extent(n); }
+                    public String startStage() { return base.startStage(); }
+                    public double frameSeconds() { return base.frameSeconds(); }
+                    public List<Geometry> geometry() { return base.geometry(); }
+                    public java.util.Set<String> geometryTextures() { return base.geometryTextures(); }
+                });
+                float[] mv1 = gpu.readback(ex.images.get("engine:motion"));
+                double sumX = 0, bad = 0;
+                for (int i = 0; i < mv1.length; i += 4) {
+                    if (!Float.isFinite(mv1[i]) || !Float.isFinite(mv1[i + 1]))
+                        bad++;
+                    sumX += mv1[i];
+                }
+                double meanX = sumX / (mv1.length / 4.0);
+                report.append(String.format("# motion static max %.6f, camera +1x mean mv.x %.5f (uv units), non-finite %d%n", max0, meanX, (long) bad));
+                if (max0 > 1e-3 || bad > 0 || meanX <= 0)
+                    ok = false;
+                ex.frame(in); // back to the static frame for the golden
+            }
             if (opt.containsKey("full") && opt.containsKey("roundtrip")) {
                 // P3-6: the in-game FULL-mode capture path offline: read back every target before "deferred" (the
                 // half a replay uploads into), write an .irohframe, replay it from "deferred" on a fresh executor and
@@ -228,7 +271,8 @@ public final class PackReplay {
             // real captures (G1 capture1, 117 MB, kept OUT of the repo under ~/Projects/proctor) get their own golden by dir name
             String kind = opt.containsKey("capture")
                     ? "capture-" + PackHarness.safe(Paths.get(opt.get("capture")).getFileName().toString().replace(".irohframe", ""))
-                    : opt.containsKey("post") ? "synthetic-post" : opt.containsKey("full") ? "synthetic-full" : "synthetic";
+                    : (opt.containsKey("post") ? "synthetic-post" : opt.containsKey("full") ? "synthetic-full" : "synthetic")
+                    + (opt.containsKey("upscale") ? "-up" + opt.get("upscale") : "");
             Path golden = Paths.get("src/test/replay").resolve(PackHarness.safe(name) + "-" + folder + "-" + w + "x" + h + "-" + kind + ".golden");
             String mode = opt.get("golden");
             if (mode != null) {
