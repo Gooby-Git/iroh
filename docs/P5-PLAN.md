@@ -49,6 +49,29 @@ All rungs: vanilla clone first (20 s boot), `-Diroh.rt=true`, look RAY_TRACED, f
 - **R5 look review:** Navidson-in-RT items (owner taste call; reserved for the owner).
 - **R6 soak:** 30 min flight + idle, VRAM growth rule, no device loss.
 
+## 3b. P5-1 ladder for the first real-GPU runs (each ONE guarded launch; vanilla clone; `-Diroh.rt=true`; never two perf runs)
+
+Guard budgets for every rung (SYSTEM SAFETY v2): preflight footprint vanilla + RT 2.5 GiB (pack + RT 5.0 GiB), total VRAM
+kill at 12.5 GiB, own growth +3 GiB in 60 s, fps cap 240 (60 for look rungs), `MESA_VK_ABORT_ON_DEVICE_LOSS=1`, one
+world per launch, RT memory owner `iroh-rt` capped at 1.5 GiB inside Iroh (refusal = wait / shrink residency, never
+force). A guard kill stops the ladder until the owner acks.
+- **R0 capability probe (no world):** boot to title with `-Diroh.rt=true`; StartupReport line lists AS/ray-query/BDA
+  features and `R16G16B16A16_SNORM` AS vertex support (`RtAccel.vertexFormatSupported`); inert check with RT off.
+- **R1 coverage + memory:** one world, 3 fixed cameras: RT primary vs raster coverage >= 99.5%; BLAS bytes per
+  triangle built and compacted ON RADV (lavapipe: 104 B, 0% compaction), quads per non-empty section, AS total vs the
+  1.5 GiB cap, TLAS instance count.
+- **R2 per-stage GPU time (exclusive slot, load1 < 3):** timestamps per pass at 1707x960 for LOW/MEDIUM/HIGH/ULTRA:
+  G-buffer, AS upkeep, sun visibility, block light, GI + cache + resolve, reflections, checkerboard recon, own denoiser
+  (3 channels), compose, FSR 3.1, post. Replaces every ESTIMATE in P5-DESIGN sections 10 and 13 and
+  `RtPreset.estimateMs`; also the measured G rays/s on RADV (the Radiance datum is an assumption).
+- **R3 correctness scenes:** the rtLook scenes rebuilt in a flat test world by command (village house with torches,
+  cave mouth, pond, oak trees, smooth plaza) at the same times of day: screenshots next to the offline contact sheets;
+  light-switch lag (lever + lamp) in frames; disocclusion trail when strafing past a wall.
+- **R4 pack memory + rejoin**, **R5 look review (owner)**, **R6 soak**: as section 3.
+First real-GPU measurements wanted, in order: AS bytes/triangle + compaction on RADV; rays/s per pass; denoiser ms per
+channel at 1707x960; FSR 3.1 ms; whether ray query in compute on RADV matches RT pipelines for one pass; VRAM of the
+whole RT set at RD 12 (target <= 1.5 GiB RT + denoiser/FSR targets).
+
 ## 4. Memory: per section, at render distance 12 / 24, and the caps
 
 Measured: lavapipe 104 B per triangle (208 B per quad), compaction saved 0% there; lavapipe's format says nothing about

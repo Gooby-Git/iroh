@@ -217,3 +217,58 @@ compose/fog order of 7 (with a stand-in fog), 9 (except checkerboard and NRD) an
 Designed only: Navidson sky LUT for misses, Tempest cloud shadows, entity/block-entity BLAS, per-section light grid,
 ReSTIR reuse, checkerboard, NRD + FSR hookup, LabPBR and the smooth-block rules, the game-side geometry adapter, the
 compute-queue build executor.
+
+## 13. P5-1 additions (2026-11-22; offline on lavapipe only)
+
+**Built and measured** (`./gradlew rtReplay` 66 checks incl. step (i); `./gradlew rtLook`; `./gradlew rtSeamTest`):
+- Full chain (step i): jittered G-buffer (FSR Halton, `fr.jitter`), motion vectors from UNJITTERED clip positions,
+  converted ONCE to UV units in `RtChain.pack`; own denoiser in two instances (diffuse with IN_ALBEDO; specular +
+  shadow visibility without: see retro RQ-P51-a); `compose_look.comp` applies sun = E x cos x denoised visibility x
+  cloud shadow; FSR 3.1 with a shading-change reactive mask; `post.comp` tone map + owner's grade.
+  Display-res numbers vs the CPU reference (frame 29 of the move): noisy->bilinear relMAE 0.088 / tonemapped RMSE
+  0.036; denoised->bilinear 0.070 / 0.030; noisy->FSR 0.064 / 0.027; **chain 0.062 / 0.026, detail corr 0.335**;
+  CPU reference at render res + bilinear (ceiling) 0.048 / 0.023. Static flicker 0.0005 (noisy 0.0245).
+  Light switched on: 50% after 1 frame, 90% after 12 (without the reactive mask: > 24).
+- Look (section 7 made real): own sky + owner multipliers, owner's mountain fog and grade, own Lottes-form tone curve,
+  water (wave normals, Snell bend, total internal reflection from below, absorption + in-scatter), rain film, emissive
+  and smooth tables (`RtMaterialRules`), sRGB albedo decode, cloud-shadow hook (stub). Contact sheets per preset.
+- Presets by measured rays per render pixel: LOW 1.17-1.88, MEDIUM 1.24-1.99, HIGH 1.54-2.54, ULTRA 1.57-2.57 (village
+  scenes); checkerboard GI + reflections (`recon.comp`) halves their rays at no measurable display error on the test move
+  (0.0259 vs 0.0259); RIS M 4/8/16 within 1%. ESTIMATED frame cost at the worst measured rays (Radiance datum, x1.6
+  shading factor, + fixed stages): MEDIUM ~9.9 ms at its 1506x847 render size for 1440p, HIGH ~14.7 ms at 1707x960,
+  ULTRA ~33 ms at 2560x1440 (not a 60 fps preset on the target card by this estimate).
+
+**Designed, not built (P5-1 ran out of budget after steps 1-3):**
+- Per-section light grid + ReSTIR DI temporal/spatial reuse: unchanged design (section 4). On the test move RIS M barely
+  matters (error is bias/reconstruction-dominated); the grid is expected to matter in torch-dense interiors (cave scene
+  had the most light rays, 0.95/px): measure there first.
+- **Entity shadows and reflections (step 4): choice = per-PART rigid BLAS + per-frame TLAS instances**, with a capped
+  refit set as fallback. Reasons: vanilla entity models are ModelPart cubes posed by rigid per-part matrices every frame
+  (limbs, heads, lids); a per-TYPE static BLAS cannot follow animation, and a per-ENTITY refit set rebuilds geometry
+  that never deforms. So: one tiny BLAS per (entity model, part) built once (a cube = 12 triangles; a zombie ~6 parts),
+  and each frame one TLAS instance per visible part of each entity within the residency radius, with its pose matrix
+  (3x4, so instance normals need the object-to-world transform in the shaders, unlike terrain's translation-only
+  instances) and customIndex -> a per-instance record (texture, previous transform for motion vectors). TLAS is rebuilt
+  every frame anyway: cost per entity = ~6 instances x 64 B + one matrix upload; no build. Fallback for renderers that
+  emit free-form vertices (modded GeckoLib/AzureLib bones are mostly rigid too; true deformers are rare): capture the
+  entity's vertex stream into a buffer, BLAS with ALLOW_UPDATE, refit per frame for the N nearest (start N = 32), rebuild
+  every 30 frames. Offline proof to build: a moving box (rigid instance) and a quad "mob" of 6 parts swinging, shadow on
+  the ground vs the CPU reference, cost per entity on lavapipe.
+- **Game-side adapter (step 5)**, all behind `RtSettings.active` (default off), written to merge with INT-1/INT-2:
+  device creation adds VK_KHR_acceleration_structure, VK_KHR_ray_query, VK_KHR_deferred_host_operations and their
+  feature structs (ONE `VkPhysicalDeviceAccelerationStructureFeaturesKHR`, ONE `VkPhysicalDeviceRayQueryFeaturesKHR`)
+  and sets `bufferDeviceAddress` in the SAME single `VkPhysicalDeviceVulkan12Features` that `DeviceCaps.apply` owns (two
+  structs of one sType are invalid: vulkanmod.md INT-1); VMA gets `VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT` only
+  then; the arena buffers get `SHADER_DEVICE_ADDRESS | ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY`; MemoryGuard owner
+  `iroh-rt` (1.5 GiB cap). Section listener (api-4 SectionListener, `RtGameBridge`) feeds `BlasBuildQueue` with the
+  arena's device address + per-bucket offsets IN PLACE (no copy); TLAS per frame at `BEFORE_MAIN_PASS`; the passes after
+  the world pass; the Look switch row in the Iroh video-settings section (NAVIDSON | RAY_TRACED, greyed with a reason
+  when `RtCapabilities` says no). Inert test: the existing rtSeamTest constant-pool scan plus an `integrationInertTest`
+  pin for every new hot-path guard.
+  **G-buffer source decision: MRT, not depth reconstruction.** The terrain/entity shaders in RT mode write one extra
+  RGBA32UI attachment (oct normal 16x2, albedo sRGB 8x3 + material id 6 bits + sky-open bit, viewZ, motion half2: the
+  layout rtReplay proves) into the P3-11 MRT main pass. Reconstructing normals from depth is wrong on every block edge
+  (the derivative crosses the silhouette; Minecraft is all edges) and cannot recover the material id or albedo, so it
+  would still need a second attachment; the MRT target costs 16 B/px (25 MiB at 1707x960) and one more colour write in
+  the terrain pass (ESTIMATE 0.1-0.3 ms), and the mesher must write tint-only vertex colour in RT mode (face shade + AO
+  out of the colour, rt-iroh.md trap) and the atlas must be read as sRGB (P5-1 trap).
