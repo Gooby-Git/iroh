@@ -19,7 +19,7 @@ public final class HotPathAudit {
     /** file -> method names (all overloads / lambdas inside the body are included) */
     public static final Map<String, String[]> HOT = new LinkedHashMap<>();
     static {
-        HOT.put("net/vulkanmod/vulkan/Renderer.java", new String[]{"bindGraphicsPipeline", "preInitFrame", "preInitFrame0", "beginFrame", "beginFrame0", "endFrame", "beginRendering", "endRenderPass"});
+        HOT.put("net/vulkanmod/vulkan/Renderer.java", new String[]{"bindGraphicsPipeline", "preInitFrame", "preInitFrame0", "beginFrame", "beginFrame0", "endFrame", "beginRendering", "endRenderPass", "beginRenderPass"});
         HOT.put("net/vulkanmod/vulkan/framebuffer/Framebuffer.java", new String[]{"beginRenderPass"});
         HOT.put("net/vulkanmod/vulkan/framebuffer/SceneTarget.java", new String[]{"getFramebufferId"});
         HOT.put("net/vulkanmod/vulkan/pass/DefaultMainPass.java", new String[]{"begin", "end", "rebindMainTarget"});
@@ -69,6 +69,7 @@ public final class HotPathAudit {
         CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/Sections.java#captureFog", "fogWanted");
         CALLEE_GUARD.put("dev/elemore/iroh/apiimpl/Sections.java#any", "LISTENERS.isEmpty()");
         CALLEE_GUARD.put("dev/elemore/iroh/gpu/game/GpuLifecycle.java#frameStart", "device");
+        CALLEE_GUARD.put("dev/elemore/iroh/gpu/GpuCore.java#orNull", "instance"); // INT-3: api 4.1 settle after BEFORE_MAIN_PASS
         CALLEE_GUARD.put("dev/elemore/iroh/gpu/game/GpuLifecycle.java#worldPhase", "worldPhase = active");
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onWorldEnd", "!active");
         CALLEE_GUARD.put("dev/elemore/iroh/shaderpack/runtime/PackRuntime.java#onBeforeEntities", "!active");
@@ -99,7 +100,7 @@ public final class HotPathAudit {
 
     /** feature guards and hook calls: the things that run when everything is off */
     static final Pattern GUARD = Pattern.compile(
-            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
+            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
                     + "\\s*\\.\\s*(\\w+)");
 
     public static Map<String, List<String>> audit(Path src) throws Exception {

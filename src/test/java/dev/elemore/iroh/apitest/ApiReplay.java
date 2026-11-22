@@ -131,19 +131,32 @@ public final class ApiReplay {
             ComputePipelineHandle cull = IrohCompute.pipeline(OWNER, "cull", CULL, 3, 4);
             ByteBuffer push = MemoryUtil.memAlloc(4).order(ByteOrder.LITTLE_ENDIAN);
             push.putInt(N).flip();
+            core.frameStart();
+            IrohProfile.begin(OWNER, "cull");
             IrohCompute.dispatch(cull, new IrohCompute.Binding[]{IrohCompute.Binding.read(quads), IrohCompute.Binding.write(cmds),
                     IrohCompute.Binding.readWrite(count)}, push, (N + 63) / 64, 1, 1);
+            IrohProfile.end(OWNER);
 
             RenderTargetHandle color = IrohTargets.create(OWNER, "color", IrohTargets.Format.RGBA8, W, H);
             RenderTargetHandle depth = IrohTargets.create(OWNER, "depth", IrohTargets.Format.DEPTH32F, W, H);
             IndirectPipelineHandle draw = IrohDraw.indirectPipeline(OWNER, "quads", VS, FS, 2, 0, 0, IrohTargets.Format.RGBA8,
                     IrohTargets.Format.DEPTH32F, VK_COMPARE_OP_LESS, true, false);
             IrohDraw.prepareIndirectCount(cmds, 0, count, 0, N, 20);
+            IrohProfile.begin(OWNER, "draw");
             IrohTargets.beginRendering(color, depth, true, new float[]{0, 0, 0, 0}, 1f, quads, colors, index, cmds, count);
             IrohDraw.multiDrawIndirectCount(draw, new IrohCompute.Binding[]{IrohCompute.Binding.read(quads), IrohCompute.Binding.read(colors)},
                     null, null, index, false, cmds, 0, count, 0, N, 20);
             IrohTargets.endRendering();
+            IrohProfile.end(OWNER);
             ByteBuffer px = IrohTargets.readback(color).order(ByteOrder.LITTLE_ENDIAN);
+            if (!forceFallback) {
+                core.frameStart(); // the frame was flushed by the readback: its timestamps are in
+                double cullMs = IrohProfile.ms(OWNER, "cull"), drawMs = IrohProfile.ms(OWNER, "draw");
+                boolean ts = dev.timestampCapacity() > 0;
+                check("api 4.1 per-owner GPU timestamps (" + (ts ? "cull " + String.format("%.3f", cullMs) + " ms, draw " + String.format("%.3f", drawMs)
+                        + " ms; line: " + core.profileLine() : "device has none") + ")", !ts || cullMs > 0 && drawMs > 0 && core.profileLine().contains(OWNER + ":draw="));
+                compositeCheck(core, color, px);
+            }
             int[] img = new int[W * H];
             for (int i = 0; i < W * H; i++) img[i] = px.getInt(i * 4);
             MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -155,6 +168,7 @@ public final class ApiReplay {
             long held = core.ownerBytes(OWNER);
             check((forceFallback ? "fallback" : "drawIndirectCount") + ": owner holds " + counts[0] + " objects, " + held + " bytes accounted",
                     counts[0] == 9 && held == N * 16 + N * 4 + 12 + N * 20 + 4 + 2L * W * H * 4);
+            core.freeOwner("apireplay-main");
             int freed = core.freeOwner(OWNER);
             dev.flush();
             leftover[0] = dev.allocatedBytes() - before;
@@ -171,6 +185,73 @@ public final class ApiReplay {
             GpuCore.uninstall();
             dev.close();
         }
+    }
+
+    static final String VS_FULL = """
+            #version 450
+            void main() { vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }
+            """;
+    static final String FS_UNDER = """
+            #version 450
+            layout(location = 0) out vec4 o;
+            layout(set = 0, binding = 0) uniform sampler2D scene;
+            layout(set = 0, binding = 1) uniform sampler2D lm; // Iroh's lightmap key, a stand-in here
+            void main() {
+                vec4 s = texelFetch(scene, ivec2(gl_FragCoord.xy), 0);
+                o = vec4(s.rgb * texture(lm, vec2(0.5)).r, 1.0 - s.a);
+                gl_FragDepth = s.a > 0.0 ? 0.25 : 1.0;
+            }
+            """;
+
+    /**
+     * api 4.1 end to end: a stand-in main colour/depth, an external texture (the lightmap key) resolved to a stand-in, the
+     * scene target composited UNDER the main image by a full-screen draw (GL blendFunc(ONE, SRC_ALPHA)), joined like the
+     * game's main pass after runOutsideMainPass settled the writes. CPU reference per pixel.
+     */
+    static void compositeCheck(GpuCore core, RenderTargetHandle scene, ByteBuffer scenePx) {
+        String o = "apireplay-main";
+        RenderTargetHandle mc = IrohTargets.create(o, "main colour stand-in", IrohTargets.Format.RGBA8, W, H);
+        RenderTargetHandle md = IrohTargets.create(o, "main depth stand-in", IrohTargets.Format.DEPTH32F, W, H);
+        ByteBuffer c = MemoryUtil.memAlloc(W * H * 4).order(ByteOrder.LITTLE_ENDIAN), d = MemoryUtil.memAlloc(W * H * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < W * H; i++) {
+            c.putInt((int) (0xFF000000L | ((i * 2654435761L) & 0xFFFFFF)));
+            d.putFloat(1f);
+        }
+        c.flip();
+        d.flip();
+        ByteBuffer white = MemoryUtil.memAlloc(4).order(ByteOrder.LITTLE_ENDIAN);
+        white.putInt(0xFFFFFFFF).flip();
+        IrohTargets.runOutsideMainPass(() -> {
+            IrohTargets.upload(mc, c);
+            IrohTargets.upload(md, d);
+        });
+        core.standInMain(mc, md);
+        GpuTexture lmStand = IrohTextures.create(o, "lightmap stand-in", 1, 1, 1, white, true);
+        core.standIn(GpuCore.LIGHTMAP, lmStand);
+        IndirectPipelineHandle comp = IrohDraw.indirectPipeline(o, "under", VS_FULL, FS_UNDER, 0, 2, 0, IrohTargets.Format.RGBA8,
+                IrohTargets.Format.DEPTH32F, org.lwjgl.vulkan.VK10.VK_COMPARE_OP_ALWAYS, true, IrohTargets.Blend.UNDER);
+        IrohTargets.beginRendering(IrohTargets.mainColor(), IrohTargets.mainDepth(), false, null, 1f);
+        IrohDraw.draw(comp, new IrohCompute.Binding[0], new GpuTexture[]{scene, IrohTextures.lightmapTexture()}, null, 3, 1);
+        IrohTargets.endRendering();
+        ByteBuffer out = IrohTargets.readback(mc).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer depthOut = IrohTargets.readback(md).order(ByteOrder.LITTLE_ENDIAN);
+        int bad = 0, badDepth = 0;
+        for (int i = 0; i < W * H; i++) {
+            int s = scenePx.getInt(i * 4), m = c.getInt(i * 4), r = out.getInt(i * 4);
+            float sa = (s >>> 24) / 255f;
+            for (int ch = 0; ch < 3; ch++) {
+                float v = ((s >> (ch * 8)) & 255) / 255f + ((m >> (ch * 8)) & 255) / 255f * (1 - sa);
+                int want = Math.round(Math.min(1f, v) * 255f);
+                if (Math.abs(((r >> (ch * 8)) & 255) - want) > 1) { bad++; break; }
+            }
+            float wantD = sa > 0 ? 0.25f : 1f;
+            if (depthOut.getFloat(i * 4) != wantD) badDepth++;
+        }
+        check("api 4.1 composite UNDER the main stand-in with an external (lightmap) stand-in: " + bad + " colour, " + badDepth
+                + " depth pixels off the CPU reference", bad == 0 && badDepth == 0);
+        MemoryUtil.memFree(c);
+        MemoryUtil.memFree(d);
+        MemoryUtil.memFree(white);
     }
 
     public static void main(String[] args) throws Exception {

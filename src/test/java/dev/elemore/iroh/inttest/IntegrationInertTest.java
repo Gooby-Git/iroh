@@ -46,6 +46,7 @@ public final class IntegrationInertTest {
         PINNED.put("Renderer.preInitFrame", "SlowFrames.ON x2 (static final)");
         PINNED.put("Renderer.beginFrame0", "SlowFrames.ON x4 (static final), GpuLifecycle.frameStart x1 (one volatile null test: api 4 is lazy)");
         PINNED.put("Renderer.endFrame", "SlowFrames.ON x5 (static final), FrameHooks.dispatch x1 (AFTER_PRESENT: FrameProfiler.ON + empty-array test)");
+        PINNED.put("Renderer.beginRenderPass", "(audited since INT-3) FrameProfiler.ON x1 (static final), FrameHooks.beginFrame x1 (context fields, no guard needed), FrameHooks.dispatch x2 (BEFORE_MAIN_PASS, FRAME_BEGIN: empty-array tests), GpuCore.orNull x1 (INT-3, api 4.1 settle: one volatile null test, api 4 is lazy)");
         PINNED.put("Renderer.beginRendering", "");
         PINNED.put("Framebuffer.beginRenderPass", "");
         PINNED.put("DefaultMainPass.begin", "");
@@ -162,6 +163,7 @@ public final class IntegrationInertTest {
         expect.put("Renderer.preInitFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
         expect.put("Renderer.preInitFrame0", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
         expect.put("Renderer.beginFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");
+        expect.put("Renderer.beginRenderPass", "{FrameHooks.beginFrame=1, FrameHooks.dispatch=2, FrameProfiler.ON=1, FrameProfiler.frameStart=1, GpuCore.orNull=1}"); // INT-3 (api 4.1 settle)
         expect.put("Renderer.beginRendering", "{}");
         expect.put("Renderer.endRenderPass", "{}");
         expect.put("Framebuffer.beginRenderPass", "{}");

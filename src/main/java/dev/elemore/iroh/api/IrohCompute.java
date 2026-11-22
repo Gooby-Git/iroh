@@ -29,6 +29,20 @@ public final class IrohCompute {
         return GpuCore.get().computePipeline(owner, name, glsl450, storageBuffers, pushBytes);
     }
 
+    /** api 4.1: plus {@code sampledTextures} combined image samplers at bindings n.. (after the storage buffers). */
+    public static ComputePipelineHandle pipeline(String owner, String name, String glsl450, int storageBuffers, int sampledTextures, int pushBytes) {
+        return GpuCore.get().computePipeline(owner, name, glsl450, storageBuffers, sampledTextures, pushBytes);
+    }
+
+    /** api 4.1: with sampled textures (targets written by a pass are made visible first). */
+    public static void dispatch(ComputePipelineHandle pipeline, Binding[] bindings, GpuTexture[] textures, ByteBuffer push, int x, int y, int z) {
+        GpuCore.get().dispatch(pipeline, bindings, textures, push, x, y, z);
+    }
+
+    public static void dispatchIndirect(ComputePipelineHandle pipeline, Binding[] bindings, GpuTexture[] textures, ByteBuffer push, GpuBuffer args, long offset) {
+        GpuCore.get().dispatchIndirect(pipeline, bindings, textures, push, args, offset);
+    }
+
     public static void dispatch(ComputePipelineHandle pipeline, Binding[] bindings, ByteBuffer push, int x, int y, int z) {
         GpuCore.get().dispatch(pipeline, bindings, push, x, y, z);
     }

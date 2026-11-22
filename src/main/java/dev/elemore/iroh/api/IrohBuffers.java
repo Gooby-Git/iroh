@@ -44,4 +44,20 @@ public final class IrohBuffers {
     public static long ownerBytes(String owner) {
         return GpuCore.get().ownerBytes(owner);
     }
+
+    /**
+     * api 4.1: frames the device keeps in flight. An upload lands BEFORE the current frame's GPU work (in game Iroh submits
+     * a frame's uploads ahead of the frame, possibly on another queue), so never upload into bytes an earlier frame in
+     * flight may still read: keep per-frame copies indexed by {@link #frameSlot()} (uniform blocks, job lists), or delay
+     * reuse by this many frames. Clears or writes that must happen between two GPU passes of one frame need a compute
+     * pass, not an upload.
+     */
+    public static int framesInFlight() {
+        return GpuCore.get().framesInFlight();
+    }
+
+    /** api 4.1: the frame slot being recorded (0 .. framesInFlight - 1). */
+    public static int frameSlot() {
+        return GpuCore.get().frameSlot();
+    }
 }

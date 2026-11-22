@@ -22,6 +22,27 @@ public final class IrohTextures {
         return DynamicTextures.create(id, width, height, filter, wrap);
     }
 
+    /**
+     * api 4.1: the block atlas as a {@link GpuTexture} for api 4 pipelines (nearest, with the game's mipmaps; resolved
+     * when bound). Offline devices bind a stand-in registered with {@code GpuCore.standIn("iroh:block_atlas", ...)}.
+     */
+    public static GpuTexture blockAtlasTexture() {
+        return dev.elemore.iroh.gpu.GpuCore.get().externalTexture(dev.elemore.iroh.gpu.GpuCore.BLOCK_ATLAS);
+    }
+
+    /** api 4.1: the lightmap as a {@link GpuTexture} (linear filtered, 16 x 16). */
+    public static GpuTexture lightmapTexture() {
+        return dev.elemore.iroh.gpu.GpuCore.get().externalTexture(dev.elemore.iroh.gpu.GpuCore.LIGHTMAP);
+    }
+
+    /**
+     * api 4.1: a static RGBA8 texture owned by {@code owner} with {@code levels} mips ({@code texels}: level 0 first,
+     * tightly packed). OFFLINE ONLY in 4.1 (stand-ins in tests); in game it throws UnsupportedOperationException.
+     */
+    public static GpuTexture create(String owner, String name, int width, int height, int levels, java.nio.ByteBuffer texels, boolean linear) {
+        return dev.elemore.iroh.gpu.GpuCore.get().createTexture(owner, name, width, height, levels, texels, linear);
+    }
+
     /** api 4: the block atlas id (bind with {@link IrohDraw#texture}). */
     public static ResourceLocation blockAtlas() {
         return net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS;

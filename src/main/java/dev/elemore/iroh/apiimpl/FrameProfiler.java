@@ -133,6 +133,11 @@ public final class FrameProfiler {
         }
         java.util.function.Supplier<String> extra = EXTRA;
         if (extra != null) sb.append(" | ").append(extra.get());
+        dev.elemore.iroh.gpu.GpuCore core = dev.elemore.iroh.gpu.GpuCore.orNull(); // api 4.1: per-owner GPU passes
+        if (core != null) {
+            String owners = core.profileLine();
+            if (!owners.isEmpty()) sb.append(" | api4 ").append(owners);
+        }
         Initializer.LOGGER.info(sb.toString());
         java.util.Arrays.fill(cpuNs, 0);
         java.util.Arrays.fill(gpuMs, 0);

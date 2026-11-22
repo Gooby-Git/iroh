@@ -23,6 +23,8 @@ public final class GpuCore {
     public static final int MAX_BUFFER_BYTES = 1 << 30; // 1 GiB per buffer (v1 chunked heaps use 256 MiB)
     public static final int MAX_GROUPS = 65535;
     public static final double OWNER_SHARE = Double.parseDouble(System.getProperty("iroh.gpu.ownerShare", "0.40"));
+    /** {@link GpuDevice.External} keys of Iroh's own textures (api 4.1). */
+    public static final String BLOCK_ATLAS = "iroh:block_atlas", LIGHTMAP = "iroh:lightmap";
 
     private static volatile GpuCore instance;
     /**
@@ -215,12 +217,13 @@ public final class GpuCore {
 
     final class Compute extends Res implements ComputePipelineHandle {
         final Object dev;
-        final int storage, push;
+        final int storage, push, textures;
 
-        Compute(Owner o, String name, Object dev, int storage, int push) {
+        Compute(Owner o, String name, Object dev, int storage, int textures, int push) {
             super(o, name, 0);
             this.dev = dev;
             this.storage = storage;
+            this.textures = textures;
             this.push = push;
         }
 
@@ -259,6 +262,8 @@ public final class GpuCore {
         final float scale;
         /** INT-2: last fitted to the world phase (render size); window resizes then leave it to the next fit */
         boolean worldSized;
+        /** Written as an attachment / copy since the last barrier that covers sampling. */
+        boolean written;
 
         Target(Owner o, String name, IrohTargets.Format format, int w, int h, float scale, Object dev) {
             super(o, name, (long) w * h * format.bytesPerTexel);
@@ -276,6 +281,63 @@ public final class GpuCore {
         @Override public float scale() { return scale; }
         @Override void release() { device.destroyImage(dev); }
     }
+
+    /** A static texture (api 4.1, offline stand-ins). */
+    final class Tex extends Res implements GpuTexture {
+        final Object dev;
+        final int width, height;
+
+        Tex(Owner o, String name, long bytes, int w, int h, Object dev) {
+            super(o, name, bytes);
+            this.width = w;
+            this.height = h;
+            this.dev = dev;
+        }
+
+        @Override public int width() { return width; }
+        @Override public int height() { return height; }
+        @Override void release() { device.destroyImage(dev); }
+    }
+
+    /** One of Iroh's own textures, resolved by the device when bound (never freed by mods). */
+    final class Ext implements GpuTexture {
+        final GpuDevice.External key;
+
+        Ext(String key) {
+            this.key = new GpuDevice.External(key);
+        }
+
+        GpuCore core() { return GpuCore.this; }
+
+        @Override public String owner() { return "iroh"; }
+        @Override public String name() { return key.key(); }
+        @Override public boolean alive() { return true; }
+        @Override public void close() {}
+        @Override public int width() { return 0; }
+        @Override public int height() { return 0; }
+    }
+
+    /** The game's main colour / depth target (api 4.1 tokens; offline: stand-ins). */
+    final class MainToken implements RenderTargetHandle {
+        final boolean depth;
+
+        MainToken(boolean depth) {
+            this.depth = depth;
+        }
+
+        @Override public IrohTargets.Format format() { return depth ? IrohTargets.Format.DEPTH32F : IrohTargets.Format.RGBA8; }
+        // INT-3: the main target's size in the CURRENT phase (render size inside the render-scale world phase)
+        @Override public int width() { return worldPhase ? worldW : screenW; }
+        @Override public int height() { return worldPhase ? worldH : screenH; }
+        @Override public float scale() { return 1; }
+        @Override public String owner() { return "iroh"; }
+        @Override public String name() { return depth ? "main depth" : "main colour"; }
+        @Override public boolean alive() { return true; }
+        @Override public void close() {}
+    }
+
+    private final Map<String, Ext> externals = new HashMap<>();
+    private final MainToken mainColor = new MainToken(false), mainDepth = new MainToken(true);
 
     private Buf buf(GpuBuffer b) {
         if (!(b instanceof Buf x) || x.core() != this) throw new IllegalArgumentException("not an Iroh api 4 buffer of this device");
@@ -358,12 +420,19 @@ public final class GpuCore {
     // ================================================================================================ compute
 
     public ComputePipelineHandle computePipeline(String ownerId, String name, String glsl450, int storageBuffers, int pushBytes) {
+        return computePipeline(ownerId, name, glsl450, storageBuffers, 0, pushBytes);
+    }
+
+    /** api 4.1: storage buffers 0..n-1, then {@code sampledTextures} combined image samplers at n.. */
+    public ComputePipelineHandle computePipeline(String ownerId, String name, String glsl450, int storageBuffers, int sampledTextures, int pushBytes) {
         Owner o = owner(ownerId);
         if (storageBuffers < 0 || storageBuffers > 16) throw new IllegalArgumentException("storage buffers 0..16");
+        if (sampledTextures < 0 || sampledTextures > 8) throw new IllegalArgumentException("sampled textures 0..8");
         if (pushBytes < 0 || pushBytes > 128 || (pushBytes & 3) != 0) throw new IllegalArgumentException("push constants 0..128 bytes, multiple of 4");
         ByteBuffer spv = Glsl.compile(ownerId + ":" + name, glsl450, Glsl.COMPUTE);
         try {
-            return new Compute(o, name, device.createComputePipeline(name, spv, storageBuffers, pushBytes), storageBuffers, pushBytes);
+            return new Compute(o, name, device.createComputePipeline(name, spv, storageBuffers, sampledTextures, pushBytes), storageBuffers,
+                    sampledTextures, pushBytes);
         } finally {
             MemoryUtil.memFree(spv);
         }
@@ -391,19 +460,30 @@ public final class GpuCore {
     }
 
     public void dispatch(ComputePipelineHandle pipeline, IrohCompute.Binding[] b, ByteBuffer push, int x, int y, int z) {
+        dispatch(pipeline, b, null, push, x, y, z);
+    }
+
+    public void dispatch(ComputePipelineHandle pipeline, IrohCompute.Binding[] b, GpuTexture[] textures, ByteBuffer push, int x, int y, int z) {
         Compute p = compute(pipeline);
+        Object[] tex = textures(p.name, p.textures, textures, null, null);
         Buf[] bufs = bindings(p.storage, b, p.name);
         checkPush(p.push, push);
         if (x < 1 || y < 1 || z < 1 || x > MAX_GROUPS || y > MAX_GROUPS || z > MAX_GROUPS)
             throw new IllegalArgumentException("dispatch " + x + "x" + y + "x" + z + ": each 1.." + MAX_GROUPS);
         checkOutside("dispatch");
         declare(b, bufs, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        sampleTargets(textures, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         flushBarrier();
-        device.dispatch(p.dev, devs(bufs), push, x, y, z);
+        device.dispatch(p.dev, devs(bufs), tex, push, x, y, z);
     }
 
     public void dispatchIndirect(ComputePipelineHandle pipeline, IrohCompute.Binding[] b, ByteBuffer push, GpuBuffer args, long offset) {
+        dispatchIndirect(pipeline, b, null, push, args, offset);
+    }
+
+    public void dispatchIndirect(ComputePipelineHandle pipeline, IrohCompute.Binding[] b, GpuTexture[] textures, ByteBuffer push, GpuBuffer args, long offset) {
         Compute p = compute(pipeline);
+        Object[] tex = textures(p.name, p.textures, textures, null, null);
         Buf[] bufs = bindings(p.storage, b, p.name);
         checkPush(p.push, push);
         Buf a = buf(args);
@@ -412,8 +492,84 @@ public final class GpuCore {
         checkOutside("dispatchIndirect");
         use(a, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, false);
         declare(b, bufs, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        sampleTargets(textures, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         flushBarrier();
-        device.dispatchIndirect(p.dev, devs(bufs), push, a.dev, offset);
+        device.dispatchIndirect(p.dev, devs(bufs), tex, push, a.dev, offset);
+    }
+
+    /** Device objects of sampled textures, checked: count, liveness, this device, not an attachment of the pass. */
+    private Object[] textures(String what, int expected, GpuTexture[] t, Target color, Target depth) {
+        int n = t == null ? 0 : t.length;
+        if (n != expected) throw new IllegalArgumentException(what + ": " + n + " textures for " + expected);
+        Object[] out = new Object[n];
+        for (int i = 0; i < n; i++) {
+            GpuTexture x = t[i];
+            if (x == null) throw new IllegalArgumentException(what + ": texture " + i + " is null");
+            if (x instanceof Target tg && tg.core() == this) {
+                tg.checkAlive();
+                if (tg == color || tg == depth) throw new IllegalArgumentException(what + ": texture " + i + " is the pass's own attachment");
+                out[i] = tg.dev;
+            } else if (x instanceof Tex tx && tx.core() == this) {
+                tx.checkAlive();
+                out[i] = tx.dev;
+            } else if (x instanceof Ext e && e.core() == this) {
+                out[i] = e.key;
+            } else throw new IllegalArgumentException(what + ": texture " + i + " is not an api 4 texture of this device"
+                    + (x instanceof MainToken ? " (the main target cannot be sampled: copy it with mainDepthCopy)" : ""));
+        }
+        return out;
+    }
+
+    private boolean targetsWritten;
+
+    /** A target written as an attachment / by a copy and now sampled: one barrier from those writes to {@code stage}. */
+    private void sampleTargets(GpuTexture[] t, int stage) {
+        if (t == null || !targetsWritten) return;
+        for (GpuTexture x : t)
+            if (x instanceof Target tg && tg.written) {
+                device.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, stage, VK_ACCESS_SHADER_READ_BIT);
+                clearWritten();
+                return;
+            }
+    }
+
+    private void clearWritten() {
+        for (Owner o : owners.values()) for (Res r : o.live) if (r instanceof Target tg) tg.written = false;
+        targetsWritten = false;
+    }
+
+    /**
+     * Makes every write recorded so far visible to everything after (one global barrier, only when something is pending).
+     * Iroh calls it after FrameStage.BEFORE_MAIN_PASS and at the end of {@link #runOutsideMainPass}, so main-pass draws
+     * (which cannot place barriers) see what mods wrote before.
+     */
+    public void settleAll() {
+        boolean pending = targetsWritten;
+        for (Owner o : owners.values())
+            for (Res r : o.live)
+                if (r instanceof Buf b && b.writeStages != 0) {
+                    pending = true;
+                    b.writeStages = 0;
+                    b.writeAccess = 0;
+                }
+        if (pending && device.canRecordOutsideMainPass())
+            device.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+        clearWritten();
+    }
+
+    private int outside;
+
+    public void runOutsideMainPass(Runnable work) {
+        device.runOutsideMainPass(() -> {
+            outside++;
+            try {
+                work.run();
+            } finally {
+                outside--;
+                settleAll();
+            }
+        });
     }
 
     private void declare(IrohCompute.Binding[] b, Buf[] bufs, int stage) {
@@ -450,7 +606,8 @@ public final class GpuCore {
         if (width < 1 || height < 1 || width > 16384 || height > 16384) throw new IllegalArgumentException("target size " + width + "x" + height);
         long bytes = (long) width * height * format.bytesPerTexel;
         if (o.bytes + bytes > ownerShareBytes()) {
-            lastRefusal = ownerId + ": target " + name + " would exceed its share";
+            lastRefusal = ownerId + ": target " + name + " (" + (bytes >> 20) + " MiB) would exceed its share " + (ownerShareBytes() >> 20)
+                    + " MiB (holds " + (o.bytes >> 20) + " MiB)";
             return null;
         }
         return new Target(o, name, format, width, height, scale, device.createImage(name, width, height, format.vkFormat, format.depth));
@@ -506,6 +663,7 @@ public final class GpuCore {
     }
 
     Target target(RenderTargetHandle h) {
+        if (h instanceof MainToken) throw new IllegalArgumentException("the main target only works as a beginRendering attachment");
         if (!(h instanceof Target t) || t.core() != this) throw new IllegalArgumentException("not an api 4 render target of this device");
         t.checkAlive();
         return t;
@@ -525,12 +683,187 @@ public final class GpuCore {
         return device.readback(target(t).dev);
     }
 
+    // ================================================================================================ api 4.1 textures / main
+
+    public GpuTexture externalTexture(String key) {
+        return externals.computeIfAbsent(key, Ext::new);
+    }
+
+    /** Offline: the image a key resolves to (the test bed's block atlas / lightmap). */
+    public void standIn(String key, GpuTexture texture) {
+        Object[] d = textures("standIn", 1, new GpuTexture[]{texture}, null, null);
+        if (d[0] instanceof GpuDevice.External) throw new IllegalArgumentException("a stand-in must be a real texture");
+        device.setStandIn(key, d[0]);
+    }
+
+    public GpuTexture createTexture(String ownerId, String name, int w, int h, int levels, ByteBuffer texels, boolean linear) {
+        Owner o = owner(ownerId);
+        if (w < 1 || h < 1 || w > 16384 || h > 16384 || levels < 1 || levels > 32 - Integer.numberOfLeadingZeros(Math.max(w, h)))
+            throw new IllegalArgumentException("texture " + w + "x" + h + " with " + levels + " levels");
+        long bytes = 0;
+        for (int l = 0; l < levels; l++) bytes += (long) Math.max(1, w >> l) * Math.max(1, h >> l) * 4;
+        if (texels == null || texels.remaining() < bytes || !texels.isDirect())
+            throw new IllegalArgumentException("texture " + name + ": a direct buffer of " + bytes + " bytes (all levels)");
+        if (o.bytes + bytes > ownerShareBytes()) {
+            lastRefusal = ownerId + ": texture " + name + " would exceed its share";
+            return null;
+        }
+        return new Tex(o, name, bytes, w, h, device.createTexture(name, w, h, levels, texels, linear));
+    }
+
+    /** Offline: targets standing in for the game's main colour (RGBA8) and depth (DEPTH32F). */
+    public void standInMain(RenderTargetHandle color, RenderTargetHandle depth) {
+        Target c = target(color), d = target(depth);
+        if (c.format != IrohTargets.Format.RGBA8 || d.format != IrohTargets.Format.DEPTH32F) throw new IllegalArgumentException("RGBA8 + DEPTH32F");
+        device.setMainStandIn(c.dev, d.dev);
+    }
+
+    public RenderTargetHandle mainColor() {
+        return mainColor;
+    }
+
+    public RenderTargetHandle mainDepth() {
+        return mainDepth;
+    }
+
+    public void mainDepthCopy(RenderTargetHandle target) {
+        Target t = target(target);
+        if (t.format != IrohTargets.Format.DEPTH32F) throw new IllegalArgumentException("mainDepthCopy into a DEPTH32F target");
+        checkOutside("mainDepthCopy");
+        fitPhase(t); // INT-2 phase-size rule (INT-3: kept through the api 4.1 merge): render size inside the world phase
+        device.copyMainDepth(t.dev);
+    }
+
+    public void copyTarget(RenderTargetHandle src, RenderTargetHandle dst) {
+        Target a = target(src), b = target(dst);
+        if (a != b) fitPhase(b); // INT-3: the written side follows the phase (the source keeps its contents and size)
+        if (a == b || a.format != b.format || a.width != b.width || a.height != b.height)
+            throw new IllegalArgumentException("copy needs two different targets of equal size and format");
+        checkOutside("copy");
+        device.copyImage(a.dev, b.dev);
+    }
+
+    public void uploadTarget(RenderTargetHandle target, ByteBuffer texels) {
+        Target t = target(target);
+        if (texels == null || !texels.isDirect() || texels.remaining() < (long) t.width * t.height * 4)
+            throw new IllegalArgumentException("upload into " + t.name + ": a direct buffer of " + ((long) t.width * t.height * 4) + " bytes");
+        checkOutside("upload");
+        device.uploadImage(t.dev, texels);
+    }
+
+    public int framesInFlight() {
+        return device.framesInFlight();
+    }
+
+    public int frameSlot() {
+        return device.frameSlot();
+    }
+
+    // ================================================================================================ api 4.1 profiling
+
+    private record Marker(String key, int begin, int end) {}
+
+    private final List<List<Marker>> markers = new ArrayList<>();
+    private final Map<String, Integer> openMarks = new HashMap<>();
+    private final Map<String, double[]> passMs = new LinkedHashMap<>(); // key -> {ema, last, frames, sum}
+    private int queries;
+    private boolean queriesReset, queriesFailed;
+
+    /** Start of a frame: the slot's previous queries are finished (fence waited); fold them into the per-pass times. */
+    public void frameStart() {
+        int slot = device.frameSlot();
+        while (markers.size() <= slot) markers.add(new ArrayList<>());
+        List<Marker> m = markers.get(slot);
+        if (!m.isEmpty()) {
+            int max = 0;
+            for (Marker k : m) max = Math.max(max, Math.max(k.begin, k.end) + 1);
+            long[] t = device.readTimestamps(slot, max);
+            if (t != null)
+                for (Marker k : m) {
+                    if (k.end < 0) continue;
+                    double ms = (t[k.end] - t[k.begin]) / 1e6;
+                    double[] v = passMs.computeIfAbsent(k.key, x -> new double[4]);
+                    v[0] = v[2] == 0 ? ms : v[0] * 0.9 + ms * 0.1;
+                    v[1] = ms;
+                    v[2]++;
+                    v[3] += ms;
+                }
+            m.clear();
+        }
+        queries = 0;
+        queriesReset = queriesFailed = false;
+        openMarks.clear();
+    }
+
+    /** GPU time of {@code pass} of {@code owner} from here to {@link #profileEnd}; nothing where timestamps are unsupported. */
+    public void profileBegin(String ownerId, String pass) {
+        if (queriesFailed || device.timestampCapacity() == 0) return;
+        if (!queriesReset) {
+            if (!device.resetTimestamps()) {
+                queriesFailed = true;
+                return;
+            }
+            queriesReset = true;
+        }
+        if (queries + 2 > device.timestampCapacity()) return;
+        String key = owner(ownerId).id + " " + pass;
+        int i = queries++;
+        device.writeTimestamp(i);
+        openMarks.put(ownerId, i);
+        int slot = device.frameSlot();
+        while (markers.size() <= slot) markers.add(new ArrayList<>());
+        markers.get(slot).add(new Marker(key, i, -1));
+    }
+
+    public void profileEnd(String ownerId) {
+        Integer b = openMarks.remove(ownerId);
+        if (b == null) return;
+        int i = queries++;
+        device.writeTimestamp(i);
+        List<Marker> m = markers.get(device.frameSlot());
+        for (int k = m.size() - 1; k >= 0; k--)
+            if (m.get(k).begin == b) {
+                m.set(k, new Marker(m.get(k).key, b, i));
+                break;
+            }
+    }
+
+    /** Smoothed ms of a pass (0 when never measured). */
+    public double profileMs(String ownerId, String pass) {
+        double[] v = passMs.get(ownerId + " " + pass);
+        return v == null ? 0 : v[0];
+    }
+
+    /** Mean ms of a pass over every frame measured so far, and how many frames. */
+    public double[] profileMean(String ownerId, String pass) {
+        double[] v = passMs.get(ownerId + " " + pass);
+        return v == null ? new double[]{0, 0} : new double[]{v[3] / Math.max(1, v[2]), v[2]};
+    }
+
+    /** "vista mesh=0.210 vista cull=0.050 ..." (smoothed ms). */
+    public String profileLine() {
+        StringBuilder b = new StringBuilder();
+        for (var e : passMs.entrySet()) {
+            if (b.length() > 0) b.append(' ');
+            b.append(e.getKey().replace(' ', ':')).append('=').append(String.format(Locale.ROOT, "%.3f", e.getValue()[0]));
+        }
+        return b.toString();
+    }
+
     // ================================================================================================ indirect draws
 
     public IndirectPipelineHandle indirectPipeline(String ownerId, String name, String vertexGlsl, String fragmentGlsl, int storageBuffers,
                                                    int sampledTextures, int pushBytes, IrohTargets.Format color, IrohTargets.Format depth,
                                                    int depthCompare, boolean depthWrite, boolean blend) {
+        return indirectPipeline(ownerId, name, vertexGlsl, fragmentGlsl, storageBuffers, sampledTextures, pushBytes, color, depth, depthCompare,
+                depthWrite, blend ? IrohTargets.Blend.ALPHA : IrohTargets.Blend.NONE);
+    }
+
+    public IndirectPipelineHandle indirectPipeline(String ownerId, String name, String vertexGlsl, String fragmentGlsl, int storageBuffers,
+                                                   int sampledTextures, int pushBytes, IrohTargets.Format color, IrohTargets.Format depth,
+                                                   int depthCompare, boolean depthWrite, IrohTargets.Blend blend) {
         Owner o = owner(ownerId);
+        if (blend == null) throw new IllegalArgumentException("blend required");
         if (color == null && depth == null) throw new IllegalArgumentException("a colour or a depth format");
         if (color != null && color.depth) throw new IllegalArgumentException("colour format " + color + " is a depth format");
         if (depth != null && !depth.depth) throw new IllegalArgumentException("depth format " + depth + " is not a depth format");
@@ -540,7 +873,7 @@ public final class GpuCore {
         ByteBuffer fs = Glsl.compile(ownerId + ":" + name + ".frag", fragmentGlsl, Glsl.FRAGMENT);
         try {
             Object dev = device.createDrawPipeline(name, vs, fs, storageBuffers, sampledTextures, pushBytes,
-                    color == null ? 0 : color.vkFormat, depth == null ? 0 : depth.vkFormat, depthCompare, depthWrite, blend);
+                    color == null ? 0 : color.vkFormat, depth == null ? 0 : depth.vkFormat, depthCompare, depthWrite, blend.ordinal());
             return new Indirect(o, name, dev, storageBuffers, sampledTextures, pushBytes, color, depth);
         } finally {
             MemoryUtil.memFree(vs);
@@ -586,7 +919,7 @@ public final class GpuCore {
                     """;
             ByteBuffer spv = Glsl.compile("iroh:zeroTail", src, Glsl.COMPUTE);
             try {
-                zeroTailPipe = device.createComputePipeline("iroh zero tail", spv, 2, 16);
+                zeroTailPipe = device.createComputePipeline("iroh zero tail", spv, 2, 0, 16);
             } finally {
                 MemoryUtil.memFree(spv);
             }
@@ -594,7 +927,7 @@ public final class GpuCore {
         ByteBuffer push = MemoryUtil.memAlloc(16);
         try {
             push.putInt((int) (off >> 2)).putInt((int) (countOff >> 2)).putInt(maxDraws).putInt(stride >> 2).flip();
-            device.dispatch(zeroTailPipe, new Object[]{c.dev, n.dev}, push, (maxDraws + 63) / 64, 1, 1);
+            device.dispatch(zeroTailPipe, new Object[]{c.dev, n.dev}, null, push, (maxDraws + 63) / 64, 1, 1);
         } finally {
             MemoryUtil.memFree(push);
         }
@@ -621,6 +954,10 @@ public final class GpuCore {
      * read (storage, index, commands, counts): their barriers go here, before the pass.
      */
     public void beginRendering(RenderTargetHandle color, RenderTargetHandle depth, boolean clear, float[] clearRgba, float clearDepth, GpuBuffer... reads) {
+        if (color instanceof MainToken || depth instanceof MainToken) {
+            beginMain(color, depth, clear, reads);
+            return;
+        }
         Target c = color == null ? null : target(color), d = depth == null ? null : target(depth);
         if (c == null && d == null) throw new IllegalArgumentException("a colour or a depth target");
         if (c != null) fitPhase(c); // INT-2 phase-size rule
@@ -645,34 +982,87 @@ public final class GpuCore {
         device.beginRendering(c == null ? null : c.dev, d == null ? null : d.dev, clearRgba == null ? new float[4] : clearRgba, clearDepth, clear);
         passColor = c;
         passDepth = d;
+        if (c != null) c.written = true;
+        if (d != null) d.written = true;
+        targetsWritten = true;
+    }
+
+    private boolean inMain;
+
+    /** Joins the main pass: no barriers possible, so every declared read must already be settled. */
+    private void beginMain(RenderTargetHandle color, RenderTargetHandle depth, boolean clear, GpuBuffer[] reads) {
+        if (color != mainColor || depth != mainDepth) throw new IllegalArgumentException("the main target: mainColor() with mainDepth()");
+        if (clear) throw new IllegalArgumentException("the main target is never cleared by a mod");
+        if (inMain || passColor != null || passDepth != null) throw new IllegalStateException("a pass is already open");
+        if (device.mainColorFormat() != IrohTargets.Format.RGBA8.vkFormat || device.mainDepthFormat() != IrohTargets.Format.DEPTH32F.vkFormat)
+            throw new UnsupportedOperationException("main target formats " + device.mainColorFormat() + "/" + device.mainDepthFormat() + " are not RGBA8/D32F");
+        passReads.clear();
+        for (GpuBuffer r : reads) {
+            Buf b = buf(r);
+            // an upload is fine: uploads land before the frame's GPU work (game: Iroh's upload submit; offline: emulated)
+            boolean uploadOnly = b.writeStages == VK_PIPELINE_STAGE_TRANSFER_BIT && b.writeAccess == VK_ACCESS_TRANSFER_WRITE_BIT;
+            if (b.writeStages != 0 && !uploadOnly)
+                throw new IllegalStateException(b.name + " was written after the last settle: write it in BEFORE_MAIN_PASS or runOutsideMainPass");
+            b.readStages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+            passReads.add(b);
+        }
+        if (targetsWritten) throw new IllegalStateException("a target was written after the last settle: render it inside runOutsideMainPass");
+        device.beginMainRendering();
+        inMain = true;
     }
 
     public void endRendering() {
-        if (passColor == null && passDepth == null) throw new IllegalStateException("endRendering without beginRendering");
-        device.endRendering();
+        if (inMain) {
+            device.endMainRendering();
+            inMain = false;
+        } else {
+            if (passColor == null && passDepth == null) throw new IllegalStateException("endRendering without beginRendering");
+            device.endRendering();
+        }
         passColor = passDepth = null;
         passReads.clear();
         passPrepared.clear();
     }
 
-    public void multiDrawIndirectCount(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, RenderTargetHandle[] textures, ByteBuffer push,
-                                       GpuBuffer index, boolean index32, GpuBuffer commands, long commandOffset, GpuBuffer count, long countOffset,
-                                       int maxDraws, int stride) {
+    private IrohTargets.Format passColorFormat() {
+        return inMain ? IrohTargets.Format.RGBA8 : passColor == null ? null : passColor.format;
+    }
+
+    private IrohTargets.Format passDepthFormat() {
+        return inMain ? IrohTargets.Format.DEPTH32F : passDepth == null ? null : passDepth.format;
+    }
+
+    private Indirect drawPipe(IndirectPipelineHandle pipeline, String what) {
         if (!(pipeline instanceof Indirect p) || p.core() != this) throw new IllegalArgumentException("not an api 4 indirect pipeline of this device");
         p.checkAlive();
-        if (passColor == null && passDepth == null) throw new IllegalStateException("multiDrawIndirectCount outside beginRendering/endRendering");
-        if ((passColor == null ? null : passColor.format) != p.color || (passDepth == null ? null : passDepth.format) != p.depth)
-            throw new IllegalArgumentException(p.name + " was made for " + p.color + "/" + p.depth + ", the pass has "
-                    + (passColor == null ? null : passColor.format) + "/" + (passDepth == null ? null : passDepth.format));
+        if (!inMain && passColor == null && passDepth == null) throw new IllegalStateException(what + " outside beginRendering/endRendering");
+        if (passColorFormat() != p.color || passDepthFormat() != p.depth)
+            throw new IllegalArgumentException(p.name + " was made for " + p.color + "/" + p.depth + ", the pass has " + passColorFormat() + "/" + passDepthFormat());
+        return p;
+    }
+
+    /** api 4.1: a non-indexed draw (full-screen pass: 3 vertices, 1 instance) inside a pass. */
+    public void draw(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, GpuTexture[] textures, ByteBuffer push, int vertexCount, int instanceCount) {
+        Indirect p = drawPipe(pipeline, "draw");
         Buf[] bufs = bindings(p.storage, storage, p.name);
-        int nt = textures == null ? 0 : textures.length;
-        if (nt != p.textures) throw new IllegalArgumentException(p.name + ": " + nt + " textures for " + p.textures);
-        Object[] tex = new Object[nt];
-        for (int i = 0; i < nt; i++) {
-            Target t = target(textures[i]);
-            if (t == passColor || t == passDepth) throw new IllegalArgumentException("a texture is the pass's own attachment");
-            tex[i] = t.dev;
+        Object[] tex = textures(p.name, p.textures, textures, passColor, passDepth);
+        if (inMain) for (GpuTexture t : textures == null ? new GpuTexture[0] : textures)
+            if (t instanceof Target tg && tg.written) throw new IllegalStateException(tg.name + " written after the last settle");
+        checkPush(p.push, push);
+        if (vertexCount < 1 || instanceCount < 1) throw new IllegalArgumentException("vertexCount and instanceCount >= 1");
+        for (int i = 0; i < bufs.length; i++) {
+            requireDeclared(bufs[i]);
+            if (storage[i].access() != IrohCompute.Access.READ) throw new IllegalArgumentException("draws read storage buffers only (binding " + i + ")");
         }
+        device.draw(p.dev, devs(bufs), tex, push, vertexCount, instanceCount);
+    }
+
+    public void multiDrawIndirectCount(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, GpuTexture[] textures, ByteBuffer push,
+                                       GpuBuffer index, boolean index32, GpuBuffer commands, long commandOffset, GpuBuffer count, long countOffset,
+                                       int maxDraws, int stride) {
+        Indirect p = drawPipe(pipeline, "multiDrawIndirectCount");
+        Buf[] bufs = bindings(p.storage, storage, p.name);
+        Object[] tex = textures(p.name, p.textures, textures, passColor, passDepth);
         checkPush(p.push, push);
         Buf idx = buf(index), c = buf(commands), n = buf(count);
         if ((idx.usage & INDEX) == 0) throw new IllegalArgumentException(idx.name + " lacks INDEX usage");

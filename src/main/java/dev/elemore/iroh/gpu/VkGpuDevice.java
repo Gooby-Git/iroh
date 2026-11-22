@@ -33,10 +33,20 @@ public abstract class VkGpuDevice implements GpuDevice {
 
     protected abstract VkImg allocImage(String name, int width, int height, int format, int usage, int aspect);
 
+    /** An image with mips for {@link #createTexture} (GENERAL layout after creation is the caller's job). */
+    protected abstract VkImg allocTexture(String name, int width, int height, int levels, boolean linear);
+
     /** Run {@code r} once the GPU no longer uses what it frees. */
     protected abstract void deferFree(Runnable r);
 
-    protected abstract long sampler();
+    /** Nearest or linear filtering, mipmaps linear between levels, clamp to edge. */
+    protected abstract long sampler(boolean linear);
+
+    /** The device's image for an {@link GpuDevice.External} key (game: Iroh's live texture; offline: its stand-in). */
+    protected abstract VkImg resolveExternal(String key);
+
+    /** Nanoseconds per timestamp tick, or 0 when timestamps are unsupported. */
+    protected abstract double timestampPeriodNs();
 
     /** A buffer: Vulkan handle, size, the subclass' allocation. */
     public record VkBuf(long buffer, long size, Object alloc) {}
@@ -44,16 +54,26 @@ public abstract class VkGpuDevice implements GpuDevice {
     /** An image in GENERAL layout with one view. */
     public static final class VkImg {
         public final long image, view;
-        public final int format, width, height, aspect;
+        public final int format, width, height, aspect, levels;
         public final Object alloc;
+        /** Sampled with linear filtering (else nearest); layout when sampled. */
+        public final boolean linear;
+        public final int sampleLayout;
 
         public VkImg(long image, long view, int format, int width, int height, int aspect, Object alloc) {
+            this(image, view, format, width, height, aspect, 1, false, VK_IMAGE_LAYOUT_GENERAL, alloc);
+        }
+
+        public VkImg(long image, long view, int format, int width, int height, int aspect, int levels, boolean linear, int sampleLayout, Object alloc) {
             this.image = image;
             this.view = view;
             this.format = format;
             this.width = width;
             this.height = height;
             this.aspect = aspect;
+            this.levels = levels;
+            this.linear = linear;
+            this.sampleLayout = sampleLayout;
             this.alloc = alloc;
         }
     }
@@ -132,9 +152,9 @@ public abstract class VkGpuDevice implements GpuDevice {
     }
 
     @Override
-    public Object createComputePipeline(String name, ByteBuffer spirv, int storageBuffers, int pushBytes) {
+    public Object createComputePipeline(String name, ByteBuffer spirv, int storageBuffers, int sampledTextures, int pushBytes) {
         try (MemoryStack s = stackPush()) {
-            long sl = setLayout(s, storageBuffers, 0, VK_SHADER_STAGE_COMPUTE_BIT);
+            long sl = setLayout(s, storageBuffers, sampledTextures, VK_SHADER_STAGE_COMPUTE_BIT);
             long pl = pipelineLayout(s, sl, pushBytes, VK_SHADER_STAGE_COMPUTE_BIT);
             long mod = module(s, spirv);
             VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, s).sType$Default().layout(pl);
@@ -142,7 +162,7 @@ public abstract class VkGpuDevice implements GpuDevice {
             LongBuffer lb = s.mallocLong(1);
             check(vkCreateComputePipelines(device(), pipelineCache(), ci, null, lb), "compute pipeline " + name);
             vkDestroyShaderModule(device(), mod, null);
-            return new Pipe(lb.get(0), pl, sl, storageBuffers, 0, pushBytes, true, 0, 0);
+            return new Pipe(lb.get(0), pl, sl, storageBuffers, sampledTextures, pushBytes, true, 0, 0);
         }
     }
 
@@ -184,7 +204,7 @@ public abstract class VkGpuDevice implements GpuDevice {
 
     @Override
     public Object createDrawPipeline(String name, ByteBuffer vs, ByteBuffer fs, int storageBuffers, int sampledTextures, int pushBytes,
-                                     int colorFormat, int depthFormat, int depthCompare, boolean depthWrite, boolean blend) {
+                                     int colorFormat, int depthFormat, int depthCompare, boolean depthWrite, int blend) {
         int stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         try (MemoryStack s = stackPush()) {
             long sl = setLayout(s, storageBuffers, sampledTextures, stages);
@@ -193,10 +213,15 @@ public abstract class VkGpuDevice implements GpuDevice {
             VkPipelineShaderStageCreateInfo.Buffer st = VkPipelineShaderStageCreateInfo.calloc(2, s);
             st.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vm).pName(s.UTF8("main"));
             st.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fm).pName(s.UTF8("main"));
-            VkPipelineColorBlendAttachmentState.Buffer cb = VkPipelineColorBlendAttachmentState.calloc(1, s).colorWriteMask(0xF).blendEnable(blend);
-            if (blend)
+            VkPipelineColorBlendAttachmentState.Buffer cb = VkPipelineColorBlendAttachmentState.calloc(1, s).colorWriteMask(0xF)
+                    .blendEnable(blend != BLEND_NONE);
+            if (blend == BLEND_ALPHA) // GL blendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)
                 cb.get(0).srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA).dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
                         .colorBlendOp(VK_BLEND_OP_ADD).srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+                        .alphaBlendOp(VK_BLEND_OP_ADD);
+            else if (blend == BLEND_UNDER) // GL blendFunc(ONE, SRC_ALPHA): what is drawn goes under the image (frame x alpha)
+                cb.get(0).srcColorBlendFactor(VK_BLEND_FACTOR_ONE).dstColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA)
+                        .colorBlendOp(VK_BLEND_OP_ADD).srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA)
                         .alphaBlendOp(VK_BLEND_OP_ADD);
             if (colorFormat == 0) cb.limit(0);
             VkGraphicsPipelineCreateInfo.Buffer ci = VkGraphicsPipelineCreateInfo.calloc(1, s).sType$Default()
@@ -272,10 +297,10 @@ public abstract class VkGpuDevice implements GpuDevice {
                         .pBufferInfo(VkDescriptorBufferInfo.calloc(1, s).buffer(b.buffer()).offset(0).range(VK_WHOLE_SIZE));
             }
             for (int i = 0; i < p.textures; i++) {
-                long view = textureView(textures[i]);
+                VkImg t = texture(textures[i]);
                 w.get(p.storage + i).sType$Default().dstSet(set).dstBinding(p.storage + i).descriptorCount(1)
                         .descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                        .pImageInfo(VkDescriptorImageInfo.calloc(1, s).sampler(sampler()).imageView(view).imageLayout(textureLayout(textures[i])));
+                        .pImageInfo(VkDescriptorImageInfo.calloc(1, s).sampler(sampler(t.linear)).imageView(t.view).imageLayout(t.sampleLayout));
             }
             vkUpdateDescriptorSets(device(), w, null);
             vkCmdBindDescriptorSets(c, bindPoint, p.layout, 0, s.longs(set), null);
@@ -284,29 +309,133 @@ public abstract class VkGpuDevice implements GpuDevice {
             vkCmdPushConstants(c, p.layout, pushStages, 0, push);
     }
 
-    /** View of a sampled texture: our images; the game device adds Iroh's own textures. */
-    protected long textureView(Object texture) {
-        return ((VkImg) texture).view;
-    }
-
-    protected int textureLayout(Object texture) {
-        return VK_IMAGE_LAYOUT_GENERAL;
+    /** A sampled texture: our images, or an Iroh-owned one resolved now. */
+    protected VkImg texture(Object texture) {
+        if (texture instanceof External e) {
+            VkImg img = resolveExternal(e.key());
+            if (img == null) throw new IllegalStateException("texture " + e.key() + " is not available now");
+            return img;
+        }
+        return (VkImg) texture;
     }
 
     @Override
-    public void dispatch(Object pipeline, Object[] buffers, ByteBuffer push, int x, int y, int z) {
+    public void dispatch(Object pipeline, Object[] buffers, Object[] textures, ByteBuffer push, int x, int y, int z) {
         try (MemoryStack s = stackPush()) {
-            bind(s, (Pipe) pipeline, buffers, null, push, VK_PIPELINE_BIND_POINT_COMPUTE, VK_SHADER_STAGE_COMPUTE_BIT);
+            bind(s, (Pipe) pipeline, buffers, textures, push, VK_PIPELINE_BIND_POINT_COMPUTE, VK_SHADER_STAGE_COMPUTE_BIT);
             vkCmdDispatch(cmd(), x, y, z);
         }
     }
 
     @Override
-    public void dispatchIndirect(Object pipeline, Object[] buffers, ByteBuffer push, Object indirect, long offset) {
+    public void dispatchIndirect(Object pipeline, Object[] buffers, Object[] textures, ByteBuffer push, Object indirect, long offset) {
         try (MemoryStack s = stackPush()) {
-            bind(s, (Pipe) pipeline, buffers, null, push, VK_PIPELINE_BIND_POINT_COMPUTE, VK_SHADER_STAGE_COMPUTE_BIT);
+            bind(s, (Pipe) pipeline, buffers, textures, push, VK_PIPELINE_BIND_POINT_COMPUTE, VK_SHADER_STAGE_COMPUTE_BIT);
             vkCmdDispatchIndirect(cmd(), ((VkBuf) indirect).buffer(), offset);
         }
+    }
+
+    @Override
+    public void draw(Object pipeline, Object[] buffers, Object[] textures, ByteBuffer push, int vertexCount, int instanceCount) {
+        try (MemoryStack s = stackPush()) {
+            bind(s, (Pipe) pipeline, buffers, textures, push, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+            vkCmdDraw(cmd(), vertexCount, instanceCount, 0, 0);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------ api 4.1 images
+
+    @Override
+    public Object createTexture(String name, int width, int height, int levels, ByteBuffer texels, boolean linear) {
+        VkImg img = allocTexture(name, width, height, levels, linear);
+        transitionGeneral(img);
+        uploadImage(img, texels);
+        return img;
+    }
+
+    protected void transitionGeneral(VkImg img) {
+        try (MemoryStack s = stackPush()) {
+            VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(0)
+                    .dstAccessMask(VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT).oldLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+                    .newLayout(VK_IMAGE_LAYOUT_GENERAL).srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .image(img.image);
+            b.subresourceRange().aspectMask(img.aspect).baseMipLevel(0).levelCount(img.levels).baseArrayLayer(0).layerCount(1);
+            vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, b);
+        }
+    }
+
+    @Override
+    public void copyImage(Object src, Object dst) {
+        VkImg a = (VkImg) src, b = (VkImg) dst;
+        if (a.width != b.width || a.height != b.height || a.format != b.format)
+            throw new IllegalArgumentException("copy " + a.width + "x" + a.height + " fmt " + a.format + " -> " + b.width + "x" + b.height + " fmt " + b.format);
+        barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        try (MemoryStack s = stackPush()) {
+            VkImageCopy.Buffer r = VkImageCopy.calloc(1, s);
+            r.srcSubresource().aspectMask(a.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+            r.dstSubresource().aspectMask(b.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+            r.extent().width(a.width).height(a.height).depth(1);
+            vkCmdCopyImage(cmd(), a.image, VK_IMAGE_LAYOUT_GENERAL, b.image, VK_IMAGE_LAYOUT_GENERAL, r);
+        }
+        barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+    }
+
+    // ------------------------------------------------------------------------------------------------ timestamps
+
+    private long[] queryPools;
+    private static final int QUERIES = 256;
+
+    @Override
+    public int timestampCapacity() {
+        return timestampPeriodNs() > 0 ? QUERIES : 0;
+    }
+
+    private long pool(int slot) {
+        if (queryPools == null) {
+            queryPools = new long[framesInFlight()];
+            try (MemoryStack s = stackPush()) {
+                for (int i = 0; i < queryPools.length; i++) {
+                    LongBuffer lb = s.mallocLong(1);
+                    check(vkCreateQueryPool(device(), VkQueryPoolCreateInfo.calloc(s).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP)
+                            .queryCount(QUERIES), null, lb), "query pool");
+                    queryPools[i] = lb.get(0);
+                }
+            }
+        }
+        return queryPools[slot];
+    }
+
+    @Override
+    public boolean resetTimestamps() {
+        if (timestampPeriodNs() <= 0 || !canRecordOutsideMainPass()) return false;
+        vkCmdResetQueryPool(cmd(), pool(frameSlot()), 0, QUERIES);
+        return true;
+    }
+
+    @Override
+    public void writeTimestamp(int index) {
+        vkCmdWriteTimestamp(cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool(frameSlot()), index);
+    }
+
+    @Override
+    public long[] readTimestamps(int slot, int count) {
+        if (count <= 0 || queryPools == null) return null;
+        try (MemoryStack s = stackPush()) {
+            LongBuffer lb = s.mallocLong(count);
+            int r = vkGetQueryPoolResults(device(), pool(slot), 0, count, lb, 8, VK_QUERY_RESULT_64_BIT);
+            if (r != VK_SUCCESS) return null;
+            long[] out = new long[count];
+            double p = timestampPeriodNs();
+            for (int i = 0; i < count; i++) out[i] = (long) (lb.get(i) * p);
+            return out;
+        }
+    }
+
+    protected void destroyQueryPools() {
+        if (queryPools != null) for (long p : queryPools) vkDestroyQueryPool(device(), p, null);
+        queryPools = null;
     }
 
     private int rpColor, rpDepth, rpW, rpH;
@@ -392,6 +521,7 @@ public abstract class VkGpuDevice implements GpuDevice {
 
     /** Destroys render passes and framebuffers (device teardown). */
     protected void destroyShared() {
+        destroyQueryPools();
         for (long fb : framebuffers.values()) vkDestroyFramebuffer(device(), fb, null);
         framebuffers.clear();
         for (long rp : renderPasses.values()) vkDestroyRenderPass(device(), rp, null);

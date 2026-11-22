@@ -32,8 +32,8 @@ public final class IrohApi {
      */
     public static final int API_VERSION = 4;
 
-    /** Minor version within {@link #API_VERSION} (additions only). 3.1 = P1-13a follow-up: FrameStage.OVERLAY, FrameContext.guiGraphics(). */
-    public static final int API_MINOR = 0;
+    /** Minor version within {@link #API_VERSION} (additions only). 4.1 = card V-M3: sampled textures (GpuTexture, Iroh textures), compute textures, Blend, draw, main tokens, runOutsideMainPass, copies, IrohProfile. */
+    public static final int API_MINOR = 1;
 
     private static final Set<Capability> CAPABILITIES = Collections.unmodifiableSet(
             EnumSet.of(Capability.SECTION_VISIBILITY, Capability.FACE_CULL_VETO, Capability.LEAF_CULLING,

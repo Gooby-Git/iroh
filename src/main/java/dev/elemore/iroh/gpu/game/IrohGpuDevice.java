@@ -76,7 +76,109 @@ public final class IrohGpuDevice extends VkGpuDevice {
 
     @Override protected VkDevice device() { return Vulkan.getVkDevice(); }
     @Override protected long pipelineCache() { return net.vulkanmod.vulkan.shader.Pipeline.pipelineCacheHandle(); }
-    @Override protected long sampler() { return SamplerManager.getTextureSampler((byte) 0, SamplerManager.CLAMP_BIT); }
+    @Override
+    protected long sampler(boolean linear) {
+        byte flags = (byte) (SamplerManager.CLAMP_BIT | SamplerManager.USE_MIPMAPS_BIT | SamplerManager.MIPMAP_LINEAR_FILTERING_BIT
+                | (linear ? SamplerManager.LINEAR_FILTERING_BIT : 0));
+        return SamplerManager.getTextureSampler((byte) 15, flags);
+    }
+
+    private double tsPeriod = -1;
+
+    @Override
+    protected double timestampPeriodNs() {
+        if (tsPeriod < 0) {
+            try (MemoryStack s = stackPush()) {
+                VkPhysicalDeviceProperties p = VkPhysicalDeviceProperties.calloc(s);
+                vkGetPhysicalDeviceProperties(device().getPhysicalDevice(), p);
+                tsPeriod = p.limits().timestampComputeAndGraphics() ? p.limits().timestampPeriod() : 0;
+            }
+        }
+        return tsPeriod;
+    }
+
+    @Override public int framesInFlight() { return pools.length; }
+    @Override public int frameSlot() { return Renderer.getCurrentFrame(); }
+
+    /** Iroh's own textures by key: {@code iroh:block_atlas} (nearest, its mips), {@code iroh:lightmap} (linear). */
+    @Override
+    protected VkImg resolveExternal(String key) {
+        net.minecraft.resources.ResourceLocation id = switch (key) {
+            case "iroh:block_atlas" -> net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS;
+            case "iroh:lightmap" -> dev.elemore.iroh.compat.LightmapFilter.lightmapLocation();
+            default -> null;
+        };
+        if (id == null) return null;
+        var tex = net.minecraft.client.Minecraft.getInstance().getTextureManager().getTexture(id, null);
+        var gl = tex == null ? null : net.vulkanmod.gl.VkGlTexture.getTexture(tex.getId());
+        VulkanImage vi = gl == null ? null : gl.getVulkanImage();
+        if (vi == null) return null;
+        int layout = vi.getCurrentLayout() == VK_IMAGE_LAYOUT_UNDEFINED ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : vi.getCurrentLayout();
+        return new VkImg(vi.getId(), vi.getImageView(), vi.format, vi.width, vi.height, VK_IMAGE_ASPECT_COLOR_BIT, vi.mipLevels,
+                key.equals("iroh:lightmap"), layout, vi);
+    }
+
+    @Override
+    protected VkImg allocTexture(String name, int width, int height, int levels, boolean linear) {
+        throw new UnsupportedOperationException("api 4.1: IrohTextures.create is offline-only (in game: sample Iroh's textures or a target)");
+    }
+
+    @Override
+    public void uploadImage(Object image, ByteBuffer texels) {
+        throw new UnsupportedOperationException("api 4.1: image uploads are offline-only");
+    }
+
+    @Override
+    public void setStandIn(String key, Object texture) {
+        throw new UnsupportedOperationException("stand-ins are offline-only");
+    }
+
+    @Override
+    public void setMainStandIn(Object color, Object depth) {
+        throw new UnsupportedOperationException("stand-ins are offline-only");
+    }
+
+    @Override
+    public void copyMainDepth(Object dst) {
+        MainDepth.copy(this, (VkImg) dst);
+    }
+
+    @Override public int mainColorFormat() { return net.vulkanmod.vulkan.framebuffer.SceneTarget.COLOR_FORMAT; }
+    @Override public int mainDepthFormat() { return Vulkan.getDefaultDepthFormat(); }
+
+    /** Joins the bound main pass (world stages): the pipelines' render pass has the main formats, so it is compatible. */
+    @Override
+    public void beginMainRendering() {
+        if (Renderer.getInstance().getBoundRenderPass() == null) Renderer.getInstance().getMainPass().rebindMainTarget();
+        var mp = Renderer.getInstance().getMainPass();
+        var t = mp.getDepthAttachment();
+        int w = t != null ? t.getVulkanImage().width : 1, h = t != null ? t.getVulkanImage().height : 1;
+        try (MemoryStack s = stackPush()) {
+            vkCmdSetViewport(cmd(), 0, VkViewport.calloc(1, s).x(0).y(0).width(w).height(h).minDepth(0).maxDepth(1));
+            VkRect2D.Buffer sc = VkRect2D.calloc(1, s);
+            sc.extent().width(w).height(h);
+            vkCmdSetScissor(cmd(), 0, sc);
+        }
+        inRendering = true;
+    }
+
+    @Override
+    public void endMainRendering() {
+        inRendering = false; // the main pass goes on (viewport left full-window, as Iroh's world stages have it)
+        Renderer.getInstance().invalidateBoundPipeline();
+    }
+
+    @Override
+    public void runOutsideMainPass(Runnable work) {
+        VkCommandBuffer c = cmd();
+        boolean was = Renderer.getInstance().getBoundRenderPass() != null;
+        if (was) Renderer.getInstance().endRenderPass(c);
+        try {
+            work.run();
+        } finally {
+            if (was) Renderer.getInstance().getMainPass().rebindMainTarget();
+        }
+    }
 
     @Override
     protected VkCommandBuffer cmd() {
