@@ -133,7 +133,8 @@ public class RenderRegionBuilder {
      * builders, so one copy per section per batch is shared. The cache lives for one scheduling batch
      * ({@link #beginBatch}) and is dropped whenever a block changes ({@link #remove}). On: -Diroh.graph.cloneCache=true (default off).
      */
-    public static final boolean CLONE_CACHE = Boolean.getBoolean("iroh.graph.cloneCache"); // hitches2: off by default
+    /** Runtime switch (PerfSwitches iroh.graph.cloneCache), read once per batch. */
+    private boolean cloneCacheOn;
     private final it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap<PalettedContainer<BlockState>> clones =
             new it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap<>();
     public int clonesMade, clonesShared;
@@ -141,10 +142,11 @@ public class RenderRegionBuilder {
     /** Render thread, before a batch of rebuilds is scheduled. */
     public void beginBatch() {
         if (!this.clones.isEmpty()) this.clones.clear();
+        this.cloneCacheOn = dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.CLONE_CACHE);
     }
 
     private PalettedContainer<BlockState> cloneOf(LevelChunkSection section, int x, int y, int z) {
-        if (!CLONE_CACHE) return section.getStates().copy();
+        if (!this.cloneCacheOn) return section.getStates().copy();
         long key = SectionPos.asLong(x, y, z);
         PalettedContainer<BlockState> c = this.clones.get(key);
         if (c != null) {

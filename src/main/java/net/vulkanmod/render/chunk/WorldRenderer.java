@@ -208,7 +208,7 @@ public class WorldRenderer {
                 // hitches2 (block 7 verify: the 100 ms refresh throttle lost up to 229 visible sections): with the graph
                 // cache, ANY structural upload since the last walk forces a full walk, so a filter pass only ever runs
                 // on an unchanged graph and equals a fresh full walk by construction.
-                boolean refresh = !net.vulkanmod.render.chunk.graph.SectionGraph.CACHE || this.graphStructureDirty;
+                boolean refresh = !net.vulkanmod.render.chunk.graph.SectionGraph.cacheEnabled() || this.graphStructureDirty;
                 this.graphStructureDirty = false;
                 this.sectionGraph.update(camera, frustum, spectator, refresh);
                 this.waitForImportantRebuilds(camera, frustum, spectator);
@@ -593,11 +593,12 @@ public class WorldRenderer {
     }
 
     public void setSectionDirty(int x, int y, int z, boolean flag) {
-        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK); // perf/hitches
+        // hitches4: count only. Block 8: timing each call (tens of thousands per frame: every set block and each
+        // section of a loaded chunk with its neighbours) made the tool's own exit() show up in 98 slow-frame samples.
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.DIRTY_MARKS, 1);
         this.sectionGrid.setDirty(x, y, z, flag);
 
         this.renderRegionCache.remove(x, z);
-        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.IROH_CHUNK);
     }
 
     public SectionGrid getSectionGrid() {

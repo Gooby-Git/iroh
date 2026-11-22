@@ -31,7 +31,10 @@ import java.util.function.LongSupplier;
  * Pure logic (clock and queue are parameters): invariants tested offline against a vanilla full drain.
  */
 public final class TaskBudget {
-    public static final boolean ENABLED = Boolean.getBoolean("iroh.tasks.budget");
+    /** Runtime switch (PerfSwitches), read every frame. */
+    public static boolean enabled() {
+        return PerfSwitches.on(PerfSwitches.TASKS_BUDGET);
+    }
     static final long MIN_BUDGET_NS = (long) (Double.parseDouble(System.getProperty("iroh.tasks.minBudgetMs", "1")) * 1e6);
     static final long MAX_DELAY_NS = (long) (Double.parseDouble(System.getProperty("iroh.tasks.maxDelayMs", "50")) * 1e6);
     static final long HARD_NS = (long) (Double.parseDouble(System.getProperty("iroh.tasks.hardMs", "250")) * 1e6);

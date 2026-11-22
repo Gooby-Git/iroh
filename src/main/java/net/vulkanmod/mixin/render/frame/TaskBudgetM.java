@@ -26,34 +26,34 @@ public abstract class TaskBudgetM {
     /** v2: the ticks this frame will run are known before the drain. */
     @com.llamalad7.mixinextras.injector.ModifyExpressionValue(method = "runTick", at = @At(value = "INVOKE", target = ADVANCE), require = 0)
     private int iroh$ticksPlanned(int ticks) {
-        if (TaskBudget.ENABLED && iroh$budget != null) iroh$budget.ticksPlanned(Math.min(ticks, 10));
+        if (TaskBudget.enabled() && iroh$budget != null) iroh$budget.ticksPlanned(Math.min(ticks, 10));
         return ticks;
     }
 
     @Inject(method = "runTick", at = @At(value = "INVOKE", target = TICK), require = 0)
     private void iroh$tickIn(boolean tick, CallbackInfo ci) {
-        if (TaskBudget.ENABLED) iroh$tickStart = System.nanoTime();
+        if (TaskBudget.enabled()) iroh$tickStart = System.nanoTime();
     }
 
     @Inject(method = "runTick", at = @At(value = "INVOKE", target = TICK, shift = At.Shift.AFTER), require = 0)
     private void iroh$tickOut(boolean tick, CallbackInfo ci) {
-        if (TaskBudget.ENABLED && iroh$budget != null) iroh$budget.tickDone(System.nanoTime() - iroh$tickStart);
+        if (TaskBudget.enabled() && iroh$budget != null) iroh$budget.tickDone(System.nanoTime() - iroh$tickStart);
     }
     private static final String LIMIT = "Lcom/mojang/blaze3d/systems/RenderSystem;limitDisplayFPS(I)V";
 
     @Inject(method = "runTick", at = @At(value = "INVOKE", target = LIMIT), require = 0)
     private void iroh$sleepIn(boolean tick, CallbackInfo ci) {
-        if (TaskBudget.ENABLED) iroh$sleepStart = System.nanoTime();
+        if (TaskBudget.enabled()) iroh$sleepStart = System.nanoTime();
     }
 
     @Inject(method = "runTick", at = @At(value = "INVOKE", target = LIMIT, shift = At.Shift.AFTER), require = 0)
     private void iroh$sleepOut(boolean tick, CallbackInfo ci) {
-        if (TaskBudget.ENABLED && iroh$budget != null) iroh$budget.idle(System.nanoTime() - iroh$sleepStart);
+        if (TaskBudget.enabled() && iroh$budget != null) iroh$budget.idle(System.nanoTime() - iroh$sleepStart);
     }
 
     @Inject(method = "runTick", at = @At("HEAD"))
     private void iroh$budgetFrameStart(boolean tick, CallbackInfo ci) {
-        if (TaskBudget.ENABLED) {
+        if (TaskBudget.enabled()) {
             if (iroh$budget == null) iroh$budget = TaskBudget.forGame();
             iroh$budget.frameStart();
         }
@@ -63,7 +63,7 @@ public abstract class TaskBudgetM {
     private void iroh$budgetedTasks(Minecraft mc, Operation<Void> original) {
         if (SlowFrames.ON) SlowFrames.enter(SlowFrames.Phase.TASKS);
         try {
-            if (!TaskBudget.ENABLED || iroh$budget == null) {
+            if (!TaskBudget.enabled() || iroh$budget == null) {
                 original.call(mc);
                 return;
             }

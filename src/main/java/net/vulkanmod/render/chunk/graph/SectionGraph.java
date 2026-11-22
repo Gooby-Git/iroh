@@ -72,7 +72,12 @@ public class SectionGraph {
      * edited: connectivity may have changed). Turning, even 180 degrees, is a filter pass over a list that already
      * holds every direction: no hole, no frame of lag.
      */
-    public static final boolean CACHE = Boolean.getBoolean("iroh.graph.cache"); // hitches2: off by default
+    /** Runtime switch (PerfSwitches iroh.graph.cache), read once per update into {@link #cacheOn}. */
+    public static boolean cacheEnabled() {
+        return dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.GRAPH_CACHE);
+    }
+
+    private boolean cacheOn;
     private boolean cacheValid;
     private int cacheSecX, cacheSecY, cacheSecZ;
     private boolean cacheSmartCull;
@@ -105,7 +110,10 @@ public class SectionGraph {
         this.minecraft.getProfiler().push("partial_update");
 
         int secX = blockpos.getX() >> 4, secY = blockpos.getY() >> 4, secZ = blockpos.getZ() >> 4;
-        boolean full = !CACHE || !this.cacheValid || structureRefresh || flag != this.cacheSmartCull
+        boolean wasOn = this.cacheOn;
+        this.cacheOn = cacheEnabled();
+        if (this.cacheOn != wasOn) this.cacheValid = false; // switched at runtime
+        boolean full = !this.cacheOn || !this.cacheValid || structureRefresh || flag != this.cacheSmartCull
                 || secX != this.cacheSecX || secY != this.cacheSecY || secZ != this.cacheSecZ;
 
         if (full) {
@@ -116,7 +124,7 @@ public class SectionGraph {
                 this.updateRenderChunks();
             else
                 this.updateRenderChunksSpectator();
-            if (CACHE) {
+            if (this.cacheOn) {
                 this.cacheValid = true;
                 this.cacheSmartCull = flag;
                 this.cacheSecX = secX;
@@ -316,7 +324,7 @@ public class SectionGraph {
             RenderSection renderSection = this.sectionQueue.poll();
 
             boolean inFrustum = !notInFrustum(renderSection);
-            if (!inFrustum && !CACHE)
+            if (!inFrustum && !this.cacheOn)
                 continue; // perf/hitches: with the cache the walk continues through it (frustum applied per frame)
 
             if (renderSection.directionChanges > maxDirectionsChanges)
@@ -371,7 +379,9 @@ public class SectionGraph {
      * scheduled stay dirty and are picked up by the next update (nearest first: the queue is in graph order). Important
      * (waited-for) rebuilds are never limited. On: -Diroh.graph.rebuildBudget=true (default off).
      */
-    static final boolean REBUILD_BUDGET = Boolean.getBoolean("iroh.graph.rebuildBudget"); // hitches2: off by default
+    static boolean rebuildBudget() {
+        return dev.elemore.iroh.perf.PerfSwitches.on(dev.elemore.iroh.perf.PerfSwitches.REBUILD_BUDGET);
+    }
 
     /** Pure rule (tested): how many more async rebuilds to schedule this update. */
     public static int rebuildAllowance(int pending, int activeBuilders) {
@@ -396,7 +406,7 @@ public class SectionGraph {
         boolean nearbyRule = mode != DeferMode.ALWAYS
                 && this.minecraft.options.prioritizeChunkUpdates().get() == PrioritizeChunkUpdates.NEARBY;
         this.renderRegionCache.beginBatch(); // perf/hitches: block copies shared within this batch
-        int asyncLeft = REBUILD_BUDGET
+        int asyncLeft = rebuildBudget()
                 ? rebuildAllowance(this.taskDispatcher.pendingTaskCount(), this.taskDispatcher.activeBuilderLimit())
                 : Integer.MAX_VALUE;
         int asyncScheduled = 0;
@@ -559,7 +569,7 @@ public class SectionGraph {
             RenderSection renderSection = this.sectionQueue.poll();
 
             boolean inFrustum = !notInFrustum(renderSection);
-            if (!inFrustum && !CACHE)
+            if (!inFrustum && !this.cacheOn)
                 continue;
 
             if (inFrustum)

@@ -179,6 +179,24 @@ public final class HitchesTest {
         check("model, hitches2 rule (structural upload -> full walk): 0 missing and 0 extra over " + framesChecked + " frames",
                 missRule == 0 && extraRule == 0 && framesChecked > 0);
 
+        // ---- 4. runtime switches (hitches4): default off = rc14; IrohDebug/DebugSwitches flip them at runtime
+        PerfSwitches.registerAll();
+        boolean defaultsOff = !TaskBudget.enabled() && !SectionGraph.cacheEnabled() && !ThreadPolicy.tune() && !ThreadPolicy.adaptive()
+                && !ThreadPolicy.physicalCount() && !PerfSwitches.on(PerfSwitches.CLONE_CACHE) && !PerfSwitches.on(PerfSwitches.REBUILD_BUDGET);
+        check("all hitch switches default off (rc14 behaviour)", defaultsOff);
+        String r1 = dev.elemore.iroh.debug.DebugSwitches.set(PerfSwitches.TASKS_BUDGET, "on");
+        boolean onNow = TaskBudget.enabled();
+        dev.elemore.iroh.debug.DebugSwitches.set(PerfSwitches.TASKS_BUDGET, "off");
+        dev.elemore.iroh.debug.DebugSwitches.set(PerfSwitches.GRAPH_CACHE, "on");
+        boolean cacheNow = SectionGraph.cacheEnabled();
+        dev.elemore.iroh.debug.DebugSwitches.set(PerfSwitches.GRAPH_CACHE, "off");
+        check("runtime switch flips the point-of-use read (budget " + r1 + ", graph cache)", onNow && !TaskBudget.enabled() && cacheNow && !SectionGraph.cacheEnabled());
+        boolean threw = false;
+        try { dev.elemore.iroh.debug.DebugSwitches.set("iroh.tasks.nope", "on"); } catch (IllegalArgumentException e) { threw = true; }
+        boolean badValue = false;
+        try { dev.elemore.iroh.debug.DebugSwitches.set(PerfSwitches.TASKS_BUDGET, "maybe"); } catch (IllegalArgumentException e) { badValue = true; }
+        check("unknown key and bad value are refused", threw && badValue);
+
         System.out.println("# hitches " + (fail == 0 ? "PASS " : "FAIL ") + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
     }

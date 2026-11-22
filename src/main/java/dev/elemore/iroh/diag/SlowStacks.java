@@ -39,7 +39,9 @@ public final class SlowStacks {
     static final int PER_FRAME = Math.max(1, Integer.getInteger("iroh.slowFrames.stacksPerFrame", 64));
     static final int PER_SECOND = Math.max(1, Integer.getInteger("iroh.slowFrames.stacksPerSecond", 250));
     static final int WARMUP = Integer.getInteger("iroh.slowFrames.stacksWarmup", 300);
-    static final int MAX_DEPTH = 24;
+    static final int MAX_DEPTH = 40;
+    /** Frames per caller chain in the report (first non-JDK frame + its callers). */
+    static final int CHAIN = 6;
 
     // ---- written by the render thread (volatiles only)
     private static volatile long frameStartNs;   // 0 = not sampling this frame
@@ -167,17 +169,26 @@ public final class SlowStacks {
         if (bufferSerial != frameSerial) return "";
         int n = count;
         if (n == 0) return "";
-        Map<String, Integer> leaf = new HashMap<>(), first = new HashMap<>(), st = new HashMap<>(), lk = new HashMap<>(), ph = new HashMap<>();
+        Map<String, Integer> leaf = new HashMap<>(), first = new HashMap<>(), st = new HashMap<>(), lk = new HashMap<>(), ph = new HashMap<>(),
+                chain = new HashMap<>();
         for (int i = 0; i < n; i++) {
             StackTraceElement[] s = (StackTraceElement[]) stacks[i];
             if (s == null) continue;
             if (s.length > 0) leaf.merge(frame(s[0]), 1, Integer::sum);
-            for (int k = 0; k < s.length && k < MAX_DEPTH; k++) {
+            StringBuilder ch = null;
+            int inChain = 0;
+            for (int k = 0; k < s.length && k < MAX_DEPTH && inChain < CHAIN; k++) {
                 String c = s[k].getClassName();
                 if (c.startsWith("java.") || c.startsWith("jdk.") || c.startsWith("sun.") || c.startsWith("com.sun.")) continue;
-                first.merge(frame(s[k]), 1, Integer::sum);
-                break;
+                if (ch == null) {
+                    first.merge(frame(s[k]), 1, Integer::sum);
+                    ch = new StringBuilder(frame(s[k]));
+                } else {
+                    ch.append(" < ").append(frame(s[k]));
+                }
+                inChain++;
             }
+            if (ch != null) chain.merge(ch.toString(), 1, Integer::sum);
             st.merge(String.valueOf(states[i]), 1, Integer::sum);
             if (locks[i] != null) lk.merge(locks[i], 1, Integer::sum);
             ph.merge(phases[i] < 0 ? "-" : SlowFrames.PHASES[phases[i]].label, 1, Integer::sum);
@@ -188,6 +199,7 @@ public final class SlowStacks {
         top(b, "; leaf", leaf, 5);
         top(b, "; first non-JDK", first, 5);
         if (!lk.isEmpty()) top(b, "; waits on", lk, 3);
+        top(b, "; callers", chain, 3); // hitches4: the first non-JDK frame and the 5 frames that called it
         return b.toString();
     }
 

@@ -77,10 +77,10 @@ public class TaskDispatcher {
         // perf/hitches: count from physical cores (ThreadPolicy), configured count = the base; adaptive extra builders
         // run only while the backlog is large
         int physical = dev.elemore.iroh.perf.ThreadPolicy.physicalCores();
-        int base = dev.elemore.iroh.perf.ThreadPolicy.PHYSICAL_COUNT
+        int base = dev.elemore.iroh.perf.ThreadPolicy.physicalCount()
                 ? dev.elemore.iroh.perf.ThreadPolicy.baseBuilders(n, physical)
                 : dev.elemore.iroh.perf.ThreadPolicy.legacyBuilders(n, Runtime.getRuntime().availableProcessors()); // rc14
-        int max = dev.elemore.iroh.perf.ThreadPolicy.maxBuilders(base, physical, dev.elemore.iroh.perf.ThreadPolicy.ADAPTIVE);
+        int max = dev.elemore.iroh.perf.ThreadPolicy.maxBuilders(base, physical, dev.elemore.iroh.perf.ThreadPolicy.adaptive());
         this.adaptive = max > base ? new dev.elemore.iroh.perf.ThreadPolicy.Adaptive(base, max) : null;
         this.activeLimit = base;
         n = max;

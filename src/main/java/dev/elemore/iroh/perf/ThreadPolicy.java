@@ -31,10 +31,11 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ThreadPolicy {
     // hitches2: every switch OFF by default (block 7: unproven; the jar's default equals rc14). Enable one at a time.
-    public static final boolean TUNE = Boolean.getBoolean("iroh.threads.tune");
-    public static final boolean ADAPTIVE = Boolean.getBoolean("iroh.threads.adaptive");
+    // runtime switches (PerfSwitches); read at thread creation
+    public static boolean tune() { return PerfSwitches.on(PerfSwitches.THREADS_TUNE); }
+    public static boolean adaptive() { return PerfSwitches.on(PerfSwitches.THREADS_ADAPTIVE); }
     /** Builder count from physical cores ((P-2)/2) instead of the base's (logical-1)/2 when the config says auto. */
-    public static final boolean PHYSICAL_COUNT = Boolean.getBoolean("iroh.threads.physicalCount");
+    public static boolean physicalCount() { return PerfSwitches.on(PerfSwitches.THREADS_PHYSICAL); }
     public static final boolean KEEP_OFF_RENDER_CORE = !"false".equals(System.getProperty("iroh.threads.keepOffRenderCore"));
     public static final int BUILDER_NICE = Integer.getInteger("iroh.threads.builderNice", 4);
     private static final boolean LINUX = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("linux");
@@ -174,13 +175,26 @@ public final class ThreadPolicy {
         }
     }
 
+    private static final java.util.Set<String> BUILDER_TIDS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Runtime switch on: applies nice + affinity to the builders already running. */
+    public static boolean applyToRunningBuilders() {
+        if (!LINUX) return false;
+        readTopology();
+        for (String tid : BUILDER_TIDS) PENDING.offer(tid);
+        startApplier();
+        return true;
+    }
+
     /** Called by a builder thread when it starts: queues its own thread id for renice / affinity. Never blocks. */
     public static void registerBuilderThread() {
-        if (!TUNE || !LINUX) return;
+        if (!LINUX) return;
         try {
             // /proc/thread-self -> "<pid>/task/<tid>"
             String link = Files.readSymbolicLink(Path.of("/proc/thread-self")).toString();
             String tid = link.substring(link.lastIndexOf('/') + 1);
+            BUILDER_TIDS.add(tid);
+            if (!tune()) return;
             readTopology();
             PENDING.offer(tid);
             startApplier();
