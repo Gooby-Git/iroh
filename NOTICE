@@ -18,5 +18,5 @@ AMD FidelityFX SDK v1.1.4 (MIT), compiled into the optional native library iroh-
   source is not copied into this repository; iroh-native/fsr/fetch-sdk.sh downloads it by commit and content hash.
 
 NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
-  this repository or the default jar. See THIRD_PARTY.md for what a redistributor must add. This software contains source code provided by
-  NVIDIA Corporation is NOT claimed here: no NVIDIA source or modification of it is distributed by this project.
+  this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
+  distributed by this project.
