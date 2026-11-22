@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -404,8 +405,10 @@ public final class FrameExecutor {
             return;
         }
         PackData.Unit u = data.units.get(p.unit);
+        mipped = new HashSet<>();
         for (String mip : p.mipmapsBefore) {
             String[] tp = mip.replace("(", "").replace(")", "").split(" ");
+            mipped.add(tp[0]);
             Integer h = imageFor(tp[0], tp[1]);
             if (h != null) {
                 access(h, "TRANSFER_WRITE");
@@ -452,6 +455,7 @@ public final class FrameExecutor {
     }
 
     private void compute(PassGraph.Pass p, PackFrameInputs in) {
+        mipped = Set.of();
         Integer pipe = pipelines.get(p.id);
         if (pipe == null) {
             trace.add("skip " + p.id + " (no pipeline)");
@@ -537,6 +541,14 @@ public final class FrameExecutor {
         return 256;
     }
 
+    /**
+     * Targets the current pass samples WITH mipmaps: the ones its mipmap directive generated (Iris: a buffer is
+     * min-filtered LINEAR_MIPMAP_LINEAR only in the pass that mipmaps it, plain LINEAR elsewhere). Every other linear
+     * read uses LINEAR_NOMIP (maxLod 0): implicit-LOD texture() calls with large derivatives (FXAA's sub-texel taps)
+     * otherwise pick a stale or never-written mip (G1 artefact, 2026-11-22: dark texel outlines from composite7 FXAA).
+     */
+    private Set<String> mipped = Set.of();
+
     private GpuBackend.Bind resolve(String name, String type, String fmt, boolean storage, Map<String, Object> read) {
         String sampler = storage ? "STORAGE" : type.contains("Shadow") ? "COMPARE"
                 : type.startsWith("u") || type.startsWith("i") ? "NEAREST" : "LINEAR";
@@ -545,7 +557,11 @@ public final class FrameExecutor {
             String kind = (String) read.get("kind");
             String res = String.valueOf(read.get("resource"));
             switch (kind) {
-                case "colortex", "shadowcolor" -> h = imageFor(res, String.valueOf(read.getOrDefault("half", "main")));
+                case "colortex", "shadowcolor" -> {
+                    h = imageFor(res, String.valueOf(read.getOrDefault("half", "main")));
+                    if (sampler.equals("LINEAR") && !mipped.contains(res))
+                        sampler = "LINEAR_NOMIP";
+                }
                 case "colortex-image" -> h = imageFor(res, "main");
                 case "depth" -> {
                     h = images.get(res.startsWith("depthtex1") ? "depthtex1" : res.startsWith("depthtex2") ? "depthtex2" : "depthtex0");

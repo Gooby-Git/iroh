@@ -577,12 +577,13 @@ public abstract class VkPackBackend implements GpuBackend {
     protected long sampler(String kind) {
         return samplers.computeIfAbsent(kind, k -> {
             try (MemoryStack s = stackPush()) {
-                boolean linear = k.equals("LINEAR") || k.equals("COMPARE");
+                boolean linear = k.equals("LINEAR") || k.equals("LINEAR_NOMIP") || k.equals("COMPARE");
+                boolean mips = k.equals("LINEAR"); // only a pass's own mipmapped targets read other levels
                 VkSamplerCreateInfo ci = VkSamplerCreateInfo.calloc(s).sType$Default()
                         .magFilter(linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST).minFilter(linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST)
                         .mipmapMode(linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST)
                         .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                        .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).maxLod(VK_LOD_CLAMP_NONE)
+                        .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).maxLod(mips ? VK_LOD_CLAMP_NONE : 0f)
                         .compareEnable(k.equals("COMPARE")).compareOp(VK_COMPARE_OP_LESS_OR_EQUAL);
                 LongBuffer lb = s.mallocLong(1);
                 check(vkCreateSampler(device(), ci, null, lb), "sampler");

@@ -30,6 +30,9 @@ public final class RecordingBackend implements GpuBackend {
     /** frame counter and the frame each image was last used in (epoch rule: never freed while a frame using it is in flight) */
     public int frameNo;
     public final Map<Integer, Integer> lastUse = new HashMap<>();
+    /** images whose mip chain matches level 0 (generateMips after the last write); a LINEAR (mipmapped) read of any
+     *  other multi-level image would see stale levels (G1 FXAA outline artefact) */
+    private final java.util.Set<Integer> mipsFresh = new HashSet<>();
 
     @Override
     public String name() {
@@ -163,6 +166,8 @@ public final class RecordingBackend implements GpuBackend {
 
     private void write(int image, String what) {
         use(image, what);
+        if (!what.equals("mips"))
+            mipsFresh.remove(image);
         if (dirty.containsKey(image))
             violations.add(what + " writes " + n(image) + " used since its last barrier (" + dirty.get(image) + ")");
         dirty.put(image, "W");
@@ -182,6 +187,7 @@ public final class RecordingBackend implements GpuBackend {
         if (imageDescs.get(image).mips() <= 1)
             violations.add("mips requested on " + n(image) + " which has one level");
         write(image, "mips");
+        mipsFresh.add(image);
         mipCalls.add(new int[]{image, draws.size()});
         calls.add("mips " + n(image));
     }
@@ -205,6 +211,9 @@ public final class RecordingBackend implements GpuBackend {
                 if (attached.contains(b.image()))
                     violations.add(d.pass() + " samples " + n(b.image()) + " while it is attached (feedback loop)");
                 read(b.image(), d.pass());
+                GpuBackend.ImageDesc bd = imageDescs.get(b.image());
+                if ("LINEAR".equals(b.sampler()) && bd != null && bd.mips() > 1 && !mipsFresh.contains(b.image()))
+                    violations.add(d.pass() + " samples " + n(b.image()) + " with mipmaps whose levels are stale");
             }
         for (int c : d.colour()) {
             ImageDesc cd = imageDescs.get(c);

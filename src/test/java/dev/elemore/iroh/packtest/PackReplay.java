@@ -179,9 +179,13 @@ public final class PackReplay {
             Files.writeString(out.resolve("stats.json"), Json.write(js), StandardCharsets.UTF_8);
             // golden: hash of the output's RGBA8 bytes + NaN-free flags
             String hash = sha256(TexelCodec.encode("R8G8B8A8_UNORM", gpu.readback(ex.images.get("output"))));
-            Path golden = Paths.get("src/test/replay").resolve(PackHarness.safe(name) + "-" + folder + "-" + w + "x" + h + "-synthetic.golden");
+            // real captures (G1 capture1, 117 MB, kept OUT of the repo under ~/Projects/proctor) get their own golden by dir name
+            String kind = opt.containsKey("capture")
+                    ? "capture-" + PackHarness.safe(Paths.get(opt.get("capture")).getFileName().toString().replace(".irohframe", ""))
+                    : opt.containsKey("post") ? "synthetic-post" : "synthetic";
+            Path golden = Paths.get("src/test/replay").resolve(PackHarness.safe(name) + "-" + folder + "-" + w + "x" + h + "-" + kind + ".golden");
             String mode = opt.get("golden");
-            if (mode != null && !opt.containsKey("capture")) {
+            if (mode != null) {
                 if (mode.equals("update")) {
                     Files.createDirectories(golden.getParent());
                     Files.writeString(golden, "sha256 " + hash + "\nframes " + frames + "\n", StandardCharsets.UTF_8);
