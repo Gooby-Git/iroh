@@ -92,10 +92,15 @@ public final class RtLookSheets {
             float[] post = RtLookModel.apply(fd, sc.in());
             System.arraycopy(post, 0, postOut, 0, 12);
             fd.lightCandidates = p.candidates();
+            fd.reuse[1] = dev.elemore.iroh.rt.RtPreset.RESTIR_M_CAP;
+            fd.reuse[2] = dev.elemore.iroh.rt.RtPreset.RESTIR_SPATIAL_TAPS;
+            fd.reuse[3] = dev.elemore.iroh.rt.RtPreset.LIGHT_GRID_SHARE;
             fd.fog = false;
         };
-        int flags = F_ALPHA_TEST | F_SOFT_SUN | F_CACHE | F_REJECT | (p.halfGi() ? F_HALF_GI : 0) | (p.halfRefl() ? F_HALF_REFL : 0);
+        // P5-3: every preset lights blocks through the light grid + ReSTIR temporal (RtPreset.restirTemporal)
+        int flags = F_ALPHA_TEST | F_SOFT_SUN | F_CACHE | F_REJECT | (p.halfGi() ? F_HALF_GI : 0) | (p.halfRefl() ? F_HALF_REFL : 0) | F_LIGHT_GRID | F_RESTIR;
         ch.gpu.clearCache();
+        ch.gpu.clearReservoirs();
         ch.gpu.resetCounters();
         long t0 = System.nanoTime();
         float[] out = null;

@@ -25,6 +25,13 @@ public enum RtPreset {
     /** Specular rays only below this roughness (water always). */
     public final float reflRoughnessMax;
     public final int historyCap;
+    /** P5-3: block light through the per-section light grid (candidate share {@link #LIGHT_GRID_SHARE}) + ReSTIR DI TEMPORAL
+     *  reuse (restir.comp; M cap 20 x candidates; spatial reuse off: measured biased). Same 1 shadow ray per pixel as RIS;
+     *  per-frame block-light error 2-4x lower (rtLights: cave 1.32 -> 0.31, torch night 1.55 -> 0.43, 225-lamp hall
+     *  1.27 -> 0.62 relMAE; RIS needs more than 8 rays per pixel for the same). */
+    public final boolean restirTemporal = true;
+    public static final float LIGHT_GRID_SHARE = 0.5f, RESTIR_M_CAP = 20f;
+    public static final int RESTIR_SPATIAL_TAPS = 0;
     /** Display / render size ratio handed to the upscaler (FSR Quality 1.5, Balanced 1.7, Performance 2.0). */
     public final float renderScale;
 

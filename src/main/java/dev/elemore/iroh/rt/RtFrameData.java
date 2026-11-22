@@ -15,7 +15,9 @@ public final class RtFrameData {
     public static final int F_ALPHA_TEST = 1, F_CACHE = 2, F_SOFT_SUN = 4, F_REJECT = 8, F_CACHE_UPDATE_ALL = 16;
     /** P5-1: look sky/fog/water (off = the P5-0 analytic test atmosphere the CPU reference models). */
     public static final int F_LOOK = 32, F_UNDERWATER = 64, F_HALF_GI = 128, F_HALF_REFL = 256, F_LIGHT_GRID = 512,
-            F_RESTIR = 1024, F_WAVES = 2048, F_CLOUD_SHADOW = 4096, F_HALF_LIGHT = 8192;
+            F_RESTIR = 1024, F_WAVES = 2048, F_CLOUD_SHADOW = 4096, F_HALF_LIGHT = 8192,
+            /** P5-3: ReSTIR stores an occluded final sample with W = 0 for the next frame (visibility reuse). */
+            F_RESTIR_VISREUSE = 16384;
 
     public final float[] invViewProj = new float[16], viewProj = new float[16], prevViewProj = new float[16];
     public final float[] camPos = new float[3], camFwd = new float[3], prevCamPos = new float[3], prevCamFwd = new float[3];

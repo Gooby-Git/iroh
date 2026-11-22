@@ -1,0 +1,223 @@
+#version 460
+// P5-3 many-light direct lighting (block light), own code written from the papers only:
+//  * candidates: per-section light grid (RtLightGrid: lights of the receiver's 3x3x3 section neighbourhood, per-cell CDF)
+//    mixed with the global power CDF; every candidate is weighted by the MIXTURE pdf, so nothing is cut off by range;
+//  * resampled importance sampling (Talbot et al. 2005) streamed through a weighted reservoir;
+//  * ReSTIR DI temporal + spatial reuse (Bitterli, Wyman, Pharr, Shirley, Lefohn, Jarosz 2020, "Spatiotemporal reservoir
+//    resampling for real-time ray tracing with dynamic direct lighting"), target = UNSHADOWED contribution in area measure,
+//    combined with the 1/Z normalisation (Z = candidate count of the inputs whose own target is > 0 at the chosen sample),
+//    ONE visibility ray per pixel for the final sample. Optional visibility reuse (F_RESTIR_VISREUSE): an occluded final
+//    sample is stored with W = 0 for the next frame's reuse (less noise in shadow, measured bias: knowledge/rt-iroh.md).
+// Phase 0: initial candidates (+ temporal reuse with F_RESTIR). Phase 1: spatial reuse (fr.reuse.z taps) + shading.
+// Reservoir = vec4(sample point xyz, 0) + vec4(W, M, light index as float (-1 = none), 0) (an index stored as float BITS
+// would be a denormal that some drivers flush). Stored points are re-validated against the
+// light they name (a light switched off or a remeshed section: the sample dies instead of lighting from a stale place).
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "rt_common.glsl"
+layout(std430, set = 0, binding = 9) readonly buffer ResPrev { vec4 resPrev[]; };
+layout(std430, set = 0, binding = 10) buffer ResTmp { vec4 resTmp[]; };
+layout(std430, set = 0, binding = 11) writeonly buffer ResOut { vec4 resOut[]; };
+layout(std430, set = 0, binding = 12) writeonly buffer Out { vec4 outv[]; };
+layout(std430, set = 0, binding = 13) readonly buffer GPrev { uvec4 gprev[]; };
+layout(std430, set = 0, binding = 14) readonly buffer Cells { uvec2 cells[]; };
+layout(std430, set = 0, binding = 15) readonly buffer Ents { uvec2 ents[]; };
+layout(push_constant) uniform P { uint phase; uint gx; uint gy; uint gz; } pc;
+
+float lum3(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+uint cellOf(vec3 p) {
+    ivec3 c = ivec3(floor(p / 16.0));
+    if (any(lessThan(c, ivec3(0))) || c.x >= int(pc.gx) || c.y >= int(pc.gy) || c.z >= int(pc.gz)) return 0xFFFFFFFFu;
+    return (uint(c.y) * pc.gz + uint(c.z)) * pc.gx + uint(c.x);
+}
+
+float share(uint cell) {
+    if ((fr.dims.w & F_LIGHT_GRID) == 0u || cell == 0xFFFFFFFFu || cells[cell].y == 0u) return 0.0;
+    return fr.reuse.w;
+}
+
+float pCell(uint cell, uint li) {
+    uint lo = cells[cell].x, hi = lo + cells[cell].y;
+    while (lo < hi) { uint mid = (lo + hi) >> 1; if (ents[mid].x < li) lo = mid + 1u; else hi = mid; }
+    if (lo >= cells[cell].x + cells[cell].y || ents[lo].x != li) return 0.0;
+    float c1 = uintBitsToFloat(ents[lo].y), c0 = lo == cells[cell].x ? 0.0 : uintBitsToFloat(ents[lo - 1u].y);
+    return c1 - c0;
+}
+
+/** Probability of picking light li at a receiver in {@code cell} (mixture of the cell CDF and the global power CDF). */
+float lightPdf(uint cell, uint li) {
+    float s = share(cell);
+    float pg = lights[li * 5u + 2u].w;
+    return s > 0.0 ? s * pCell(cell, li) + (1.0 - s) * pg : pg;
+}
+
+uint pickLight(uint cell) {
+    float s = share(cell);
+    if (s > 0.0 && rnd() < s) {
+        float u = rnd();
+        uint lo = cells[cell].x, hi = lo + cells[cell].y - 1u;
+        while (lo < hi) { uint mid = (lo + hi) >> 1; if (uintBitsToFloat(ents[mid].y) < u) lo = mid + 1u; else hi = mid; }
+        return ents[lo].x;
+    }
+    float u = rnd();
+    uint lo = 0u, hi = fr.counts.x - 1u;
+    while (lo < hi) { uint mid = (lo + hi) >> 1; if (lights[mid * 5u + 1u].w < u) lo = mid + 1u; else hi = mid; }
+    return lo;
+}
+
+/** A point on light li for receiver x; pdf in AREA measure given the light (solid angle near, area far: as emitIrradiance). */
+bool samplePoint(uint li, vec3 x, out vec3 p, out float pdfA) {
+    vec4 L0 = lights[li * 5u], L1 = lights[li * 5u + 1u], L2 = lights[li * 5u + 2u], L3 = lights[li * 5u + 3u];
+    if (dot(x - L0.xyz, L3.xyz) <= 0.0) return false;
+    float r1 = rnd(), r2 = rnd();
+    vec3 c = L0.xyz + 0.5 * (L1.xyz + L2.xyz) - x;
+    bool near = dot(c, c) < 9.0 * (dot(L1.xyz, L1.xyz) + dot(L2.xyz, L2.xyz));
+    float S;
+    if (near && sampleSphericalRect(x, L0.xyz, L1.xyz, L2.xyz, r1, r2, p, S)) {
+        vec3 w = p - x;
+        float d2 = dot(w, w), cl = -dot(L3.xyz, w) * inversesqrt(d2);
+        if (cl <= 0.0) return false;
+        pdfA = cl / (S * d2);
+        return true;
+    }
+    p = L0.xyz + L1.xyz * r1 + L2.xyz * r2;
+    pdfA = 1.0 / L0.w;
+    return true;
+}
+
+/** Unshadowed contribution of point y on light li at (x, n), area measure: Le_lum cos_x cos_l / d^2 (0 if invalid). */
+float phat(vec3 x, vec3 n, vec3 y, uint li) {
+    if (li >= fr.counts.x) return 0.0;
+    vec4 L0 = lights[li * 5u], L1 = lights[li * 5u + 1u], L2 = lights[li * 5u + 2u], L3 = lights[li * 5u + 3u];
+    vec3 q = y - L0.xyz;   // still on that light? (index reused, light gone or moved: the sample dies)
+    float a = dot(q, L1.xyz) / dot(L1.xyz, L1.xyz), b = dot(q, L2.xyz) / dot(L2.xyz, L2.xyz);
+    if (abs(dot(q, L3.xyz)) > 2e-3 || a < -1e-3 || a > 1.001 || b < -1e-3 || b > 1.001) return 0.0;
+    vec3 w = y - x;
+    float d2 = dot(w, w);
+    if (d2 < 1e-8) return 0.0;
+    w *= inversesqrt(d2);
+    float cx = dot(n, w), cl = -dot(L3.xyz, w);
+    if (cx <= 0.0 || cl <= 0.0) return 0.0;
+    return lum3(lights[li * 5u + 4u].rgb) * cx * cl / d2;
+}
+
+struct Res { vec3 y; uint li; float wsum; float W; float M; };
+
+void stream(inout Res r, vec3 y, uint li, float w, float m) {
+    r.wsum += w;
+    r.M += m;
+    if (w > 0.0 && rnd() * r.wsum < w) { r.y = y; r.li = li; }
+}
+
+Res load(vec4 a, vec4 b) { Res r; r.y = a.xyz; r.li = b.z < 0.0 ? 0xFFFFFFFFu : uint(b.z + 0.5); r.W = b.x; r.M = b.y; r.wsum = 0.0; return r; }
+vec4 packB(Res r) { return vec4(r.W, r.M, r.li == 0xFFFFFFFFu ? -1.0 : float(r.li), 0.0); }
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= fr.dims.x || px.y >= fr.dims.y) return;
+    uint i = px.y * fr.dims.x + px.x;
+    Surf s = surface(px);
+    bool ok = s.valid && mat0(s.tile).z == 0.0 && fr.counts.x > 0u;
+    uint M0 = max(1u, uint(fr.params.z));
+    if (pc.phase == 0u) {
+        Res r; r.y = vec3(0.0); r.li = 0xFFFFFFFFu; r.wsum = 0.0; r.M = 0.0; r.W = 0.0;
+        if (ok) {
+            rngInit(px, fr.dims.z, 11u);
+            uint cell = cellOf(s.pos + s.n * 0.01);
+            for (uint k = 0u; k < M0; k++) {
+                uint li = pickLight(cell);
+                vec3 y;
+                float pdfA;
+                float w = 0.0;
+                if (samplePoint(li, s.pos, y, pdfA)) w = phat(s.pos, s.n, y, li) / (lightPdf(cell, li) * pdfA);
+                stream(r, y, li, w, 1.0);
+            }
+            float ph = r.li == 0xFFFFFFFFu ? 0.0 : phat(s.pos, s.n, r.y, r.li);
+            r.W = ph > 0.0 ? r.wsum / (r.M * ph) : 0.0;
+            if ((fr.dims.w & F_RESTIR) != 0u) {
+                // temporal: the reprojected previous final reservoir, if it lies on the same surface (denoiser's tests)
+                vec2 prev = vec2(px) + 0.5 + s.mv;
+                ivec2 q = ivec2(floor(prev));
+                if (q.x >= 0 && q.y >= 0 && q.x < int(fr.dims.x) && q.y < int(fr.dims.y)) {
+                    uint j = uint(q.y) * fr.dims.x + uint(q.x);
+                    uvec4 gp = gprev[j];
+                    float pz = uintBitsToFloat(gp.z), ez = dot(s.pos - fr.prevCamPos.xyz, fr.prevCamFwd.xyz);
+                    if (pz > 0.0 && abs(pz - ez) < 0.05 * ez + 0.05 && dot(octDecode(unpackUnorm2x16(gp.x)), s.n) > 0.9) {
+                        Res t = load(resPrev[j * 2u], resPrev[j * 2u + 1u]);
+                        t.M = min(t.M, fr.reuse.y * float(M0));
+                        Res c; c.y = r.y; c.li = r.li; c.wsum = 0.0; c.M = 0.0;
+                        stream(c, r.y, r.li, ph * r.W * r.M, r.M);
+                        float pt = phat(s.pos, s.n, t.y, t.li);
+                        // a dead history sample (its light gone, renumbered or switched off) means the previous frame's target
+                        // differs here: counting its M in Z diluted the new light ~20x (rtLights lag test: output fell BELOW
+                        // the lights-off level for 16+ frames). Such history is dropped instead.
+                        if (pt <= 0.0) t.M = 0.0;
+                        stream(c, t.y, t.li, pt * t.W * t.M, t.M);
+                        float pc2 = c.li == 0xFFFFFFFFu ? 0.0 : phat(s.pos, s.n, c.y, c.li);
+                        // 1/Z: both inputs lie on this surface (the reprojection test), so Z = M when the target is > 0
+                        c.W = pc2 > 0.0 ? c.wsum / (c.M * pc2) : 0.0;
+                        r = c;
+                    }
+                }
+            }
+        }
+        resTmp[i * 2u] = vec4(r.y, 0.0);
+        resTmp[i * 2u + 1u] = packB(r);
+        return;
+    }
+    // ---------------------------------------------------------------- phase 1: spatial reuse + shading
+    Res r = load(resTmp[i * 2u], resTmp[i * 2u + 1u]);
+    vec3 e = vec3(0.0);
+    uint rays = 0u;
+    if (ok) {
+        rngInit(px, fr.dims.z, 12u);
+        uint taps = uint(fr.reuse.z);
+        if (taps > 0u) {
+            Res c; c.y = r.y; c.li = r.li; c.wsum = 0.0; c.M = 0.0;
+            stream(c, r.y, r.li, (r.li == 0xFFFFFFFFu ? 0.0 : phat(s.pos, s.n, r.y, r.li)) * r.W * r.M, r.M);
+            uint nb[4];
+            float nm[4];
+            uint used = 0u;
+            for (uint tp = 0u; tp < min(taps, 4u); tp++) {
+                // radius ~2% of the render width (1..4 px at 160x90, ~35 px at 1707x960): 2..16 px at 160x90 crossed
+                // whole objects and made spatial reuse WORSE than temporal alone (rtLights, measured)
+                float ang = 6.2831853 * rnd(), rad = 1.0 + 0.02 * float(fr.dims.x) * sqrt(rnd());
+                ivec2 q = ivec2(px) + ivec2(round(vec2(cos(ang), sin(ang)) * rad));
+                if (q.x < 0 || q.y < 0 || q.x >= int(fr.dims.x) || q.y >= int(fr.dims.y)) continue;
+                Surf sq = surface(uvec2(q));
+                if (!sq.valid || dot(sq.n, s.n) < 0.9 || abs(sq.viewZ - s.viewZ) > 0.1 * s.viewZ) continue;
+                uint j = uint(q.y) * fr.dims.x + uint(q.x);
+                Res t = load(resTmp[j * 2u], resTmp[j * 2u + 1u]);
+                stream(c, t.y, t.li, phat(s.pos, s.n, t.y, t.li) * t.W * t.M, t.M);
+                nb[used] = uint(q.y) * 65536u + uint(q.x);
+                nm[used] = t.M;
+                used++;
+            }
+            float pcs = c.li == 0xFFFFFFFFu ? 0.0 : phat(s.pos, s.n, c.y, c.li);
+            float Z = pcs > 0.0 ? r.M : 0.0;
+            for (uint u = 0u; u < used; u++) {
+                Surf sq = surface(uvec2(nb[u] & 65535u, nb[u] >> 16));
+                if (phat(sq.pos, sq.n, c.y, c.li) > 0.0) Z += nm[u];
+            }
+            c.W = pcs > 0.0 && Z > 0.0 ? c.wsum / (Z * pcs) : 0.0;
+            r = c;
+        }
+        if (r.li != 0xFFFFFFFFu && r.W > 0.0) {
+            vec3 w = r.y - s.pos;
+            float d = length(w);
+            w /= d;
+            vec4 L3 = lights[r.li * 5u + 3u];
+            float cx = dot(s.n, w), cl = -dot(L3.xyz, w);
+            if (cx > 0.0 && cl > 0.0) {
+                rays++;
+                if (visible(s.pos + s.n * EPS, w, d - 2.0 * EPS, MASK_SHADOW))
+                    e = lights[r.li * 5u + 4u].rgb * (cx * cl / (d * d)) * r.W;
+                else if ((fr.dims.w & F_RESTIR_VISREUSE) != 0u) r.W = 0.0;
+            }
+        }
+    }
+    resOut[i * 2u] = vec4(r.y, 0.0);
+    resOut[i * 2u + 1u] = packB(r);
+    outv[i] = vec4(e, 1.0);
+    if (rays > 0u) atomicAdd(counters[2], rays);
+}

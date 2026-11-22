@@ -44,3 +44,4 @@ struct Frame {
 #define F_WAVES 2048u
 #define F_CLOUD_SHADOW 4096u
 #define F_HALF_LIGHT 8192u
+#define F_RESTIR_VISREUSE 16384u

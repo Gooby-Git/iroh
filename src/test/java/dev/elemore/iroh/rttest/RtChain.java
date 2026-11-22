@@ -95,7 +95,8 @@ final class RtChain implements AutoCloseable {
             gpu.setFrame(c, p, seed, flags, light);
             gpu.gbuffer();
             gpu.trace("sun visibility", gpu.pSunVis, bSunVis);
-            gpu.trace("block light", gpu.pEmit, bEmit);
+            if ((flags & (F_RESTIR | F_LIGHT_GRID)) != 0) gpu.restir(bEmit);   // P5-3: light grid + ReSTIR DI
+            else gpu.trace("block light", gpu.pEmit, bEmit);
             gpu.trace("GI 1 bounce + cache", gpu.pGi, gpu.cache, bGi);
             if ((flags & F_CACHE) != 0) gpu.cacheResolve();
             if ((flags & F_HALF_GI) != 0) { gpu.trace("checkerboard recon", gpu.pRecon, bGi, bTmpG); VkBuf t = bGi; bGi = bTmpG; bTmpG = t; }

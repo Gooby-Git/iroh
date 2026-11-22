@@ -38,7 +38,7 @@ final class RtGpu implements AutoCloseable {
     VkBuf verts, inst, atlas, mats, lights, frame, counters, origins, cmds, cache;
     VkBuf gbufCur, gbufPrev;
     Object gImage, dImage, raster, rasterEnt;
-    RtCompute.Pass pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon;
+    RtCompute.Pass pRestir, pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon;
     /** P5-1: upscaler jitter in pixels for the next setFrame (content shifts by +jitter). */
     float[] jitterPx = {0, 0};
     RtAccel.Accel tlas;
@@ -232,6 +232,66 @@ final class RtGpu implements AutoCloseable {
         up(lights, 0, lb.flip());
         uploadBarrier();
         fd.lightCount = ls.size();
+        buildLightGrid(ls, totalPower);
+    }
+
+    // ------------------------------------------------------------------------------------------------ P5-3 light grid + ReSTIR
+    dev.elemore.iroh.rt.RtLightGrid grid;
+    VkBuf gridCells, gridEnts, resA, resB, resTmp;
+    double gridBuildMs, raysPerPixel;
+
+    /** Per-section light grid over the scene's sections, rebuilt whenever the light list changes (timed: CPU ms). */
+    void buildLightGrid(List<RtScene.Light> ls, double totalPower) {
+        float[] c = new float[ls.size() * 3], p = new float[ls.size()];
+        for (int i = 0; i < ls.size(); i++) {
+            RtScene.Light l = ls.get(i);
+            for (int a = 0; a < 3; a++) c[i * 3 + a] = l.p0()[a] + 0.5f * (l.e1()[a] + l.e2()[a]);
+            p[i] = (float) (l.power() / totalPower);
+        }
+        long t0 = System.nanoTime();
+        grid = new dev.elemore.iroh.rt.RtLightGrid(scene.SX, scene.SY, scene.SZ, c, p);
+        gridBuildMs = (System.nanoTime() - t0) / 1e6;
+        uploadGrid();
+    }
+
+    void uploadGrid() {
+        ByteBuffer cb = le(Math.max(16, grid.cells.length * 4)), eb = le(Math.max(16, grid.entLight.length * 8));
+        for (int v : grid.cells) cb.putInt(v);
+        for (int i = 0; i < grid.entLight.length; i++) eb.putInt(grid.entLight[i]).putFloat(grid.entCdf[i]);
+        cb.position(0).limit(cb.capacity());
+        eb.position(0).limit(eb.capacity());
+        if (gridCells != null) { dev.destroyBuffer(gridCells); dev.destroyBuffer(gridEnts); }
+        gridCells = buf(cb.capacity());
+        gridEnts = buf(eb.capacity());
+        up(gridCells, 0, cb);
+        up(gridEnts, 0, eb);
+        uploadBarrier();
+    }
+
+    void clearReservoirs() {
+        if (resA == null) { resA = buf(N * 32L); resB = buf(N * 32L); resTmp = buf(N * 32L); }
+        ByteBuffer z = le(N * 32);
+        for (int i = 0; i < N; i++) z.putFloat(i * 32 + 24, -1f);
+        up(resA, 0, z);
+        up(resB, 0, z);
+        uploadBarrier();
+    }
+
+    /** Block light through the light grid / ReSTIR (restir.comp, two phases), irradiance into {@code out}. */
+    void restir(VkBuf out) {
+        if (resA == null) clearReservoirs();
+        ByteBuffer push = MemoryUtil.memAlloc(16).order(ByteOrder.LITTLE_ENDIAN);
+        time("block light (grid / ReSTIR)", () -> {
+            for (int ph = 0; ph < 2; ph++) {
+                push.putInt(0, ph).putInt(4, grid.gx).putInt(8, grid.gy).putInt(12, grid.gz);
+                comp.dispatch(pRestir, tlas.handle, scene(resA, resTmp, resB, out, gbufPrev, gridCells, gridEnts), push, (W + 7) / 8, (H + 7) / 8, 1);
+                comp.barrier();
+            }
+        });
+        MemoryUtil.memFree(push);
+        VkBuf t = resA;
+        resA = resB;
+        resB = t;
     }
 
     int lightsBytes;
@@ -362,6 +422,7 @@ final class RtGpu implements AutoCloseable {
         pComposeLook = pass("compose_look.comp", true, 12, 0);
         pPost = pass("post.comp", false, 3, 4);
         pRecon = pass("recon.comp", true, 10, 0);
+        pRestir = pass("restir.comp", true, 15, 16);
     }
 
     RtCompute.Pass pass(String name, boolean traces, int buffers, int push) {
@@ -544,7 +605,7 @@ final class RtGpu implements AutoCloseable {
         if (rasterEnt != null) dev.destroyPipeline(rasterEnt);
         if (tlas != null) accel.destroy(tlas);
         accel.close();
-        for (RtCompute.Pass p : new RtCompute.Pass[]{pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon})
+        for (RtCompute.Pass p : new RtCompute.Pass[]{pRestir, pEmitUnit, pPrimary, pSun, pEmit, pGi, pResolve, pRefl, pAccum, pCompose, pSum, pSunVis, pComposeLook, pPost, pRecon})
             if (p != null) comp.destroy(p);
         comp.close();
         dev.destroyPipeline(raster);

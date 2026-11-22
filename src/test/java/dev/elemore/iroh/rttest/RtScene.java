@@ -33,11 +33,12 @@ public final class RtScene {
     // blocks
     public static final int AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, PLANKS = 4, LOG = 5, LEAVES = 6, PANE = 7, WATER = 8,
             GLOWSTONE = 9, POLISHED = 10, LANTERN = 11, COBBLE = 12, TORCH = 13, GLASS = 14, SAND = 15, GRAVEL = 16, IRON = 17, SMOOTH = 18,
-            ROOF = 19, WLANTERN = 20;
+            ROOF = 19, WLANTERN = 20, RED_LAMP = 21, PURPLE_LAMP = 22, GREEN_LAMP = 23;
     // atlas tiles (4x4 grid of 16x16 texels)
     public static final int T_GRASS_TOP = 0, T_GRASS_SIDE = 1, T_DIRT = 2, T_STONE = 3, T_PLANKS = 4, T_LOG = 5, T_LOG_TOP = 6,
             T_LEAVES = 7, T_PANE = 8, T_WATER = 9, T_GLOWSTONE = 10, T_POLISHED = 11, T_LANTERN = 12, T_COBBLE = 13, T_TORCH = 14,
-            T_GLASS = 15, T_SAND = 16, T_GRAVEL = 17, T_IRON = 18, T_SMOOTH = 19, T_ROOF = 20, T_WLANTERN = 21, T_STICK = 22, TILES = 64;
+            T_GLASS = 15, T_SAND = 16, T_GRAVEL = 17, T_IRON = 18, T_SMOOTH = 19, T_ROOF = 20, T_WLANTERN = 21, T_STICK = 22, TILES = 64,
+            T_RED_LAMP = 28, T_PURPLE_LAMP = 29, T_GREEN_LAMP = 30;   // P5-3 hall lamps (24-27: entity textures)
     public static final int ATLAS = 128, TILE = 16, GRID = 8;
     public static final float WATER_TOP = 0.875f;
 
@@ -81,11 +82,23 @@ public final class RtScene {
         this(false);
     }
 
+    /** P5-3 stress scene: a closed 48x32x48 hall (no sky) lit by 225 emissive blocks of four colours under the ceiling. */
+    public final boolean hall;
+
+    public static RtScene hall() {
+        return new RtScene(false, true);
+    }
+
     public RtScene(boolean village) {
+        this(village, false);
+    }
+
+    private RtScene(boolean village, boolean hall) {
         this.village = village;
-        SX = village ? 5 : 2;
+        this.hall = hall;
+        SX = village ? 5 : hall ? 3 : 2;
         SY = 2;
-        SZ = village ? 5 : 2;
+        SZ = village ? 5 : hall ? 3 : 2;
         W = SX * 16;
         H = SY * 16;
         D = SZ * 16;
@@ -95,7 +108,8 @@ public final class RtScene {
         if (village) {
             generateVillage();
             computeLight();
-        } else generate();
+        } else if (hall) generateHall();
+        else generate();
         mesh();
     }
 
@@ -120,6 +134,7 @@ public final class RtScene {
 
     static boolean opaqueCube(int b) {
         return b == GRASS || b == DIRT || b == STONE || b == PLANKS || b == LOG || b == GLOWSTONE || b == POLISHED || b == LANTERN
+                || b == RED_LAMP || b == PURPLE_LAMP || b == GREEN_LAMP
                 || b == COBBLE || b == SAND || b == GRAVEL || b == IRON || b == SMOOTH || b == ROOF;
     }
 
@@ -134,6 +149,9 @@ public final class RtScene {
         materials[T_POLISHED] = new Material(0.3f, 0, false, true, 0, 0, 0, 0.04f);
         materials[T_GLOWSTONE] = new Material(1f, 0, false, false, 9.0f, 6.0f, 2.6f, 0.04f);
         materials[T_LANTERN] = new Material(1f, 0, false, false, 1.6f, 6.0f, 7.0f, 0.04f);
+        materials[T_RED_LAMP] = new Material(1f, 0, false, false, 8.0f, 1.2f, 0.8f, 0.04f);
+        materials[T_PURPLE_LAMP] = new Material(1f, 0, false, false, 5.0f, 1.5f, 8.0f, 0.04f);
+        materials[T_GREEN_LAMP] = new Material(1f, 0, false, false, 1.5f, 7.0f, 2.0f, 0.04f);
         if (village) villageMaterials();
     }
 
@@ -198,6 +216,9 @@ public final class RtScene {
                         case T_COBBLE -> { float c = ((hash(x / 3, y / 3, 5) & 3) == 0) ? 0.62f : 0.80f; r = g = b = (0.46f + n * 0.2f) * c; }
                         case T_TORCH -> { r = 1.0f; g = 0.85f + n * 0.1f; b = 0.45f; }
                         case T_STICK -> { r = 0.42f + n * 0.05f; g = 0.30f; b = 0.17f; }
+                        case T_RED_LAMP -> { r = 0.95f; g = 0.35f + n * 0.1f; b = 0.25f; }
+                        case T_PURPLE_LAMP -> { r = 0.75f + n * 0.1f; g = 0.40f; b = 0.95f; }
+                        case T_GREEN_LAMP -> { r = 0.40f; g = 0.95f; b = 0.45f + n * 0.1f; }
                         case T_GLASS -> { boolean fr = x == 0 || y == 0 || x == 15 || y == 15 || (x == y + 3 && x < 9); r = 0.85f; g = 0.92f; b = 0.95f; a = fr ? 1 : 0; }
                         case T_SAND -> { r = 0.86f + n * 0.06f; g = 0.80f + n * 0.06f; b = 0.60f + n * 0.05f; }
                         case T_GRAVEL -> { float c = ((hash(x / 2, y / 2, 7) & 3) == 0) ? 0.7f : 1f; r = (0.55f + n * 0.12f) * c; g = (0.52f + n * 0.12f) * c; b = (0.50f + n * 0.1f) * c; }
@@ -266,6 +287,28 @@ public final class RtScene {
         set(9, 8, 16, GLOWSTONE);
     }
 
+    void generateHall() {
+        box(0, 0, 0, 47, 3, 47, STONE);
+        for (int x = 0; x < 48; x++) for (int z = 0; z < 48; z++) if (((x / 4) + (z / 4)) % 2 == 0) set(x, 3, z, SMOOTH);
+        for (int y = 4; y <= 17; y++)
+            for (int i = 0; i < 48; i++) { set(i, y, 0, STONE); set(i, y, 47, STONE); set(0, y, i, STONE); set(47, y, i, STONE); }
+        box(0, 18, 0, 47, 19, 47, STONE);
+        for (int x = 8; x <= 40; x += 8) for (int z = 8; z <= 40; z += 8) box(x, 4, z, x, 17, z, COBBLE);
+        int[] kinds = {GLOWSTONE, LANTERN, RED_LAMP, PURPLE_LAMP, GREEN_LAMP};
+        int n = 0;
+        for (int x = 3; x <= 45; x += 3)
+            for (int z = 3; z <= 45; z += 3) {
+                if (x % 8 == 0 && z % 8 == 0) continue;
+                set(x, 17, z, kinds[(hash(x, z, 31) & 3) + ((x + z) % 5 == 0 ? 1 : 0)]);
+                n++;
+            }
+        // low walls between the aisles: occluders that make the light grid and visibility matter
+        for (int x = 4; x <= 43; x++) if (x % 8 != 0) { set(x, 4, 16, PLANKS); set(x, 5, 16, PLANKS); set(x, 4, 32, PLANKS); set(x, 5, 32, PLANKS); }
+        hallLamps = n;
+    }
+
+    int hallLamps;
+
     // ------------------------------------------------------------------------------------------------ mesher
 
     static final int[][] DIRS = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
@@ -290,6 +333,9 @@ public final class RtScene {
             case IRON -> T_IRON;
             case SMOOTH -> T_SMOOTH;
             case ROOF -> T_ROOF;
+            case RED_LAMP -> T_RED_LAMP;
+            case PURPLE_LAMP -> T_PURPLE_LAMP;
+            case GREEN_LAMP -> T_GREEN_LAMP;
             default -> T_STONE;
         };
     }
