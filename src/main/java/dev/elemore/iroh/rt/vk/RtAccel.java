@@ -37,7 +37,8 @@ public final class RtAccel {
     public static final int STAGE_AS_BUILD = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     public static final int ACCESS_AS_READ = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR, ACCESS_AS_WRITE = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 
-    /** One geometry of a BLAS: a run of quads (4 vertices, 2 triangles each) inside a vertex buffer. */
+    /** One geometry of a BLAS: a run of quads (4 vertices, 2 triangles each) inside a vertex buffer; with {@code vertices}
+     *  null, {@code vertexOffset} is the absolute device address of the first vertex (P5-2: the game's raster arena). */
     public record Geometry(VkBuf vertices, long vertexOffset, int vertexStride, int quadCount, float[] transform3x4, boolean opaque, int vertexFormat) {
         /** Iroh's 16-byte terrain vertex read as R16G16B16A16_SNORM. */
         public Geometry(VkBuf vertices, long vertexOffset, int vertexStride, int quadCount, float[] transform3x4, boolean opaque) {
@@ -157,7 +158,8 @@ public final class RtAccel {
             VkAccelerationStructureGeometryTrianglesDataKHR t = e.geometry().triangles().sType$Default()
                     .vertexFormat(g.vertexFormat).vertexStride(g.vertexStride)
                     .maxVertex(Math.max(0, g.quadCount * 4 - 1)).indexType(VK_INDEX_TYPE_UINT32);
-            t.vertexData().deviceAddress(g.vertices == null ? 0 : address(g.vertices) + g.vertexOffset);
+            // P5-2: vertices == null -> vertexOffset is an absolute device address (the game's raster arena, read in place)
+            t.vertexData().deviceAddress(g.vertices == null ? g.vertexOffset : address(g.vertices) + g.vertexOffset);
             t.indexData().deviceAddress(idx);
             t.transformData().deviceAddress(transformBase == 0 || g.transform3x4 == null ? 0 : transformBase + i * 48L);
         }

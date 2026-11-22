@@ -355,6 +355,7 @@ public class WorldRenderer {
             Initializer.LOGGER.info("Iroh: world unloaded; live Vulkan objects: {}", net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
             if (dev.elemore.iroh.diag.ImageTrace.ON) Initializer.LOGGER.info("Iroh: world unloaded; {}", dev.elemore.iroh.diag.ImageTrace.report()); // rc13
             dev.elemore.iroh.memory.MemoryGuard.worldUnloaded(); // rc8
+            dev.elemore.iroh.rt.game.RtFrameHooks.worldUnloaded(); // P5-2: first statement is the RtSwitch.ON read
             // rc6: again once this frame slot's deferred frees have run (section buffers are scheduled, not yet freed, above)
             net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(() -> Initializer.LOGGER.info(
                     "Iroh: world unloaded, after deferred frees: {}", net.vulkanmod.vulkan.memory.MemoryManager.liveSummary()));

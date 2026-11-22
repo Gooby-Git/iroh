@@ -45,7 +45,7 @@ public class AreaBuffer {
     private Buffer allocateBuffer() {
         Buffer buffer;
         if (this.usage == Usage.VERTEX.usage) {
-            buffer = new VertexBuffer(this.size, MEMORY_TYPE);
+            buffer = new VertexBuffer(this.size, MEMORY_TYPE, dev.elemore.iroh.rt.game.RtVma.arenaUsage()); // P5-2: 0 unless RT
         } else {
             buffer = new IndexBuffer(this.size, MEMORY_TYPE);
         }

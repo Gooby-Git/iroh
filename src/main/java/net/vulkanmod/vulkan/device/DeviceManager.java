@@ -216,7 +216,10 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
             }
 
-            createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));
+            // Iroh P5-2: RT (only when requested at launch AND available): ONE AS + ONE ray-query feature struct in front of
+            // the 1.2 struct's tail, bufferDeviceAddress in the SAME single 1.2 struct, + 3 extensions; else unchanged
+            deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(stack, physicalDevice, deviceVulkan12Features, deviceVulkan12Features.pNext()));
+            createInfo.ppEnabledExtensionNames(asPointerBuffer(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION)));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
@@ -229,6 +232,7 @@ public abstract class DeviceManager {
             Vulkan.checkResult(res, "Failed to create logical device");
 
             vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+            dev.elemore.iroh.rt.game.RtDeviceFeatures.deviceCreated(); // P5-2: no-op unless the RT features were chained
 
             graphicsQueue = new GraphicsQueue(stack, indices.graphicsFamily);
             transferQueue = new TransferQueue(stack, indices.transferFamily);

@@ -49,7 +49,7 @@ public final class RtSeamTest {
         off.feed().sectionBuilt(sec(0, 0, 0, 1000, 1));
         check("inert: no feed registration, no memory touched, no frame work, no device extensions",
                 registrations[0] == 0 && mem.reserveCalls == 0 && off.frame(0, 0, 0) == 0 && off.deviceExtensions().length == 0);
-        check("nothing outside dev.elemore.iroh.rt references the RT core (scan of compiled main classes)", outsideReferences().isEmpty());
+        check("outside dev.elemore.iroh.rt only the pinned hook sites reference the RT core, and only its hook classes (scan of compiled main classes)", outsideReferences().isEmpty());
 
         RtRuntime on = RtRuntime.create(RtSettings.from(Map.of("iroh.rt", "true", "iroh.rt.look", "RAY_TRACED")), RT, mem, RtMemoryModel.radvAssumed(),
                 f -> registrations[0]++);
@@ -136,11 +136,24 @@ public final class RtSeamTest {
         }
         System.out.printf(Locale.ROOT, "    per section: %d quads -> %.0f KiB BLAS (RADV assumed), %.0f KiB on lavapipe (measured 104 B/tri)%n", 3000,
                 model.blasBytes(3000) / 1024.0, new RtMemoryModel(RtMemoryModel.LAVAPIPE_BYTES_PER_TRIANGLE, 0.4, 8).blasBytes(3000) / 1024.0);
+        RtAdapterTest.run();
         System.out.println("# rtseam " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
     }
 
-    /** Main classes outside dev/elemore/iroh/rt/ whose constant pool names a class in dev/elemore/iroh/rt/. */
+    /**
+     * P5-2: the only RT classes code outside dev/elemore/iroh/rt/ may name (each entry point starts with the RtSwitch.ON or
+     * RtDeviceFeatures.enabled read, or is a launch-time decision), plus the P6 denoiser package (its own feature).
+     */
+    static final Set<String> HOOK_CLASSES = Set.of("rt/game/RtDeviceFeatures", "rt/game/RtVma", "rt/game/RtFrameHooks", "rt/game/RtMeshMode",
+            "rt/game/RtStartup", "rt/game/RtSwitch", "rt/game/RtFailures", "rt/game/RtLookArbiter");
+    /** P5-2: the pinned hook sites (merge notes in knowledge/rt-iroh.md "Integration notes"); int-3 adds StartupReport, IrohOptions, the Iroh settings section. */
+    static final Set<String> HOOK_SITES = Set.of("net/vulkanmod/vulkan/device/DeviceManager", "net/vulkanmod/vulkan/Vulkan",
+            "net/vulkanmod/render/chunk/buffer/AreaBuffer", "net/vulkanmod/render/chunk/WorldRenderer",
+            "net/vulkanmod/render/chunk/build/frapi/render/AbstractBlockRenderContext", "dev/elemore/iroh/gpu/game/IrohGpuDevice",
+            "dev/elemore/iroh/diag/StartupReport", "dev/elemore/iroh/config/IrohOptions", "dev/elemore/iroh/ui/IrohSettingsSection");
+
+    /** Main classes outside dev/elemore/iroh/rt/ naming an RT class that is not a hook class, or from a site not pinned. */
     static List<String> outsideReferences() throws IOException {
         Path root;
         try {
@@ -148,21 +161,25 @@ public final class RtSeamTest {
         } catch (Exception e) {
             throw new IOException(e);
         }
-        byte[] needle = "dev/elemore/iroh/rt/".getBytes(StandardCharsets.UTF_8);
+        java.util.regex.Pattern ref = java.util.regex.Pattern.compile("dev/elemore/iroh/(rt/[A-Za-z0-9_/$]+)");
         List<String> hits = new ArrayList<>();
+        Set<String> sites = new TreeSet<>();
         try (Stream<Path> s = Files.walk(root)) {
             for (Path p : (Iterable<Path>) s.filter(x -> x.toString().endsWith(".class"))::iterator) {
                 String rel = root.relativize(p).toString().replace('\\', '/');
                 if (rel.startsWith("dev/elemore/iroh/rt/")) continue;
-                byte[] b = Files.readAllBytes(p);
-                outer:
-                for (int i = 0; i + needle.length <= b.length; i++) {
-                    for (int k = 0; k < needle.length; k++) if (b[i + k] != needle[k]) continue outer;
-                    hits.add(rel);
-                    break;
+                String text = new String(Files.readAllBytes(p), StandardCharsets.ISO_8859_1);
+                java.util.regex.Matcher m = ref.matcher(text);
+                String site = rel.replaceAll("(\\$[^/]*)?\\.class$", "");
+                while (m.find()) {
+                    String c = m.group(1).replaceAll("\\$.*", "");
+                    if (c.startsWith("rt/denoise/")) continue;
+                    if (!HOOK_CLASSES.contains(c) || !HOOK_SITES.contains(site)) hits.add(site + " -> " + c);
+                    else sites.add(site);
                 }
             }
         }
+        System.out.println("  RT hook sites found: " + sites);
         if (!hits.isEmpty()) System.out.println("  references from outside: " + hits);
         return hits;
     }

@@ -279,14 +279,16 @@ public abstract class AbstractBlockRenderContext extends AbstractRenderContext {
 		if (restore)
 			dev.elemore.iroh.apiimpl.ShadeHooks.restore(quad, this.shadeSaved);
 
+		// Iroh P5-2: in RT mode the vertex colour carries the tint only (face shade + AO are RT's job); one read per quad
+		final boolean tintOnly = dev.elemore.iroh.rt.game.RtMeshMode.tintOnly;
 		if (emissive) {
 			for (int i = 0; i < 4; i++) {
-				quad.color(i, ColorHelper.multiplyRGB(quad.color(i), data.br[i]));
+				if (!tintOnly) quad.color(i, ColorHelper.multiplyRGB(quad.color(i), data.br[i]));
 				data.lm[i] = LightTexture.FULL_BRIGHT;
 			}
 		} else {
 			for (int i = 0; i < 4; i++) {
-				quad.color(i, ColorHelper.multiplyRGB(quad.color(i), data.br[i]));
+				if (!tintOnly) quad.color(i, ColorHelper.multiplyRGB(quad.color(i), data.br[i]));
 				data.lm[i] = ColorHelper.maxBrightness(quad.lightmap(i), data.lm[i]);
 			}
 		}
