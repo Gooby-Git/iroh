@@ -16,6 +16,27 @@ import static org.lwjgl.vulkan.VK10.*;
 public class RenderPass {
     Framebuffer framebuffer;
     long id;
+    /** V-3b: render pass variants with GENERAL attachment layouts (index = feedback mask: 1 colour, 2 depth); 0 = {@link #id}. */
+    private final long[] feedbackIds = new long[4];
+
+    /**
+     * V-3b (td-fe54e9): feedback loop. An image sampled while it is an attachment of the bound pass: the pass is ended and
+     * restarted with that attachment in GENERAL (initial, subpass and final-to-tracker transitions recorded in the frame
+     * command buffer before the restart). {@code pending*} = requested for the next beginRenderPass of a framebuffer that
+     * has the image; {@code active*} = the images GENERAL in the pass now. One bound pass at a time, so static.
+     */
+    private static VulkanImage pendingColor, pendingDepth, activeColor, activeDepth;
+    private int activeMask;
+
+    /** the image is an attachment of the bound pass and is GENERAL for it (a feedback loop already set up) */
+    public static boolean isFeedbackActive(VulkanImage image) {
+        return image != null && (image == activeColor || image == activeDepth);
+    }
+
+    /** request GENERAL for {@code image} in the next pass begun on a framebuffer that attaches it */
+    public static void requestFeedback(VulkanImage image, boolean depth) {
+        if (depth) pendingDepth = image; else pendingColor = image;
+    }
 
     final int attachmentCount;
     AttachmentInfo colorAttachmentInfo;
@@ -35,12 +56,20 @@ public class RenderPass {
         this.attachmentCount = count;
 
         if (!Vulkan.DYNAMIC_RENDERING) {
-            createRenderPass();
+            this.id = createRenderPass(0);
         }
 
     }
 
-    private void createRenderPass() {
+    private long idFor(int mask) {
+        if (mask == 0) return this.id;
+        if (feedbackIds[mask] == 0L) feedbackIds[mask] = createRenderPass(mask);
+        return feedbackIds[mask];
+    }
+
+    private long createRenderPass(int feedbackMask) {
+        final int colorLayout = (feedbackMask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        final int depthLayout = (feedbackMask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkAttachmentDescription.Buffer attachments = VkAttachmentDescription.calloc(attachmentCount, stack);
@@ -60,12 +89,12 @@ public class RenderPass {
                         .storeOp(colorAttachmentInfo.storeOp)
                         .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
                         .stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
-                        .initialLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+                        .initialLayout(colorLayout)
                         .finalLayout(colorAttachmentInfo.finalLayout);
 
                 VkAttachmentReference colorAttachmentRef = attachmentRefs.get(0)
                         .attachment(0)
-                        .layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+                        .layout(colorLayout);
 
                 subpass.colorAttachmentCount(1);
                 subpass.pColorAttachments(VkAttachmentReference.calloc(1, stack).put(0, colorAttachmentRef));
@@ -82,12 +111,12 @@ public class RenderPass {
                         .storeOp(depthAttachmentInfo.storeOp)
                         .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
                         .stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
-                        .initialLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .initialLayout(depthLayout)
                         .finalLayout(depthAttachmentInfo.finalLayout);
 
                 VkAttachmentReference depthAttachmentRef = attachmentRefs.get(1)
                         .attachment(1)
-                        .layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+                        .layout(depthLayout);
 
                 subpass.pDepthStencilAttachment(depthAttachmentRef);
             }
@@ -131,7 +160,7 @@ public class RenderPass {
                 throw new RuntimeException("Failed to create render pass");
             }
 
-            id = pRenderPass.get(0);
+            return pRenderPass.get(0);
         }
     }
 
@@ -141,14 +170,27 @@ public class RenderPass {
      * marked used by the frame (see VulkanImage.markAttachmentUse). endRenderPass sets the tracker to finalLayout.
      */
     private void prepareAttachments(VkCommandBuffer commandBuffer, MemoryStack stack) {
+        // V-3b: an attachment requested as a feedback target (sampled while attached) is GENERAL for this pass
+        int mask = 0;
+        VulkanImage color = null, depth = null;
         if (colorAttachmentInfo != null) {
-            VulkanImage color = framebuffer.getColorAttachment();
-            color.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-            color.markAttachmentUse();
+            color = framebuffer.getColorAttachment();
+            if (pendingColor != null && pendingColor == color) mask |= 1;
         }
         if (depthAttachmentInfo != null) {
-            VulkanImage depth = framebuffer.getDepthAttachment();
-            depth.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            depth = framebuffer.getDepthAttachment();
+            if (pendingDepth != null && pendingDepth == depth) mask |= 2;
+        }
+        pendingColor = pendingDepth = null;
+        this.activeMask = mask;
+        activeColor = (mask & 1) != 0 ? color : null;
+        activeDepth = (mask & 2) != 0 ? depth : null;
+        if (color != null) {
+            color.transitionImageLayout(stack, commandBuffer, (mask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            color.markAttachmentUse();
+        }
+        if (depth != null) {
+            depth.transitionImageLayout(stack, commandBuffer, (mask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
             depth.markAttachmentUse();
         }
     }
@@ -158,7 +200,7 @@ public class RenderPass {
 
         VkRenderPassBeginInfo renderPassInfo = VkRenderPassBeginInfo.calloc(stack);
         renderPassInfo.sType$Default();
-        renderPassInfo.renderPass(this.id);
+        renderPassInfo.renderPass(idFor(this.activeMask));
         renderPassInfo.framebuffer(framebufferId);
 
         VkRect2D renderArea = VkRect2D.malloc(stack);
@@ -179,6 +221,8 @@ public class RenderPass {
 
     public void endRenderPass(VkCommandBuffer commandBuffer) {
         vkCmdEndRenderPass(commandBuffer);
+        this.activeMask = 0;
+        activeColor = activeDepth = null;
 
         if (colorAttachmentInfo != null)
             framebuffer.getColorAttachment().setCurrentLayout(colorAttachmentInfo.finalLayout);
@@ -209,7 +253,7 @@ public class RenderPass {
             VkRenderingAttachmentInfo.Buffer colorAttachment = VkRenderingAttachmentInfo.calloc(1, stack);
             colorAttachment.sType(KHRDynamicRendering.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR);
             colorAttachment.imageView(framebuffer.getColorAttachment().getImageView());
-            colorAttachment.imageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            colorAttachment.imageLayout((activeMask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             colorAttachment.loadOp(colorAttachmentInfo.loadOp);
             colorAttachment.storeOp(colorAttachmentInfo.storeOp);
             colorAttachment.clearValue(clearValues.get(0));
@@ -222,7 +266,7 @@ public class RenderPass {
             VkRenderingAttachmentInfo depthAttachment = VkRenderingAttachmentInfo.calloc(stack);
             depthAttachment.sType(KHRDynamicRendering.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR);
             depthAttachment.imageView(framebuffer.getDepthAttachment().getImageView());
-            depthAttachment.imageLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            depthAttachment.imageLayout((activeMask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
             depthAttachment.loadOp(depthAttachmentInfo.loadOp);
             depthAttachment.storeOp(depthAttachmentInfo.storeOp);
             depthAttachment.clearValue(clearValues.get(1));
@@ -235,6 +279,8 @@ public class RenderPass {
 
     public void endDynamicRendering(VkCommandBuffer commandBuffer) {
         KHRDynamicRendering.vkCmdEndRenderingKHR(commandBuffer);
+        this.activeMask = 0;
+        activeColor = activeDepth = null;
     }
 
     public Framebuffer getFramebuffer() {
@@ -245,8 +291,10 @@ public class RenderPass {
         //TODO
 
         if (!Vulkan.DYNAMIC_RENDERING)
-            MemoryManager.getInstance().addFrameOp(
-                    () -> vkDestroyRenderPass(Vulkan.getVkDevice(), this.id, null));
+            MemoryManager.getInstance().addFrameOp(() -> {
+                vkDestroyRenderPass(Vulkan.getVkDevice(), this.id, null);
+                for (long v : feedbackIds) if (v != 0L) vkDestroyRenderPass(Vulkan.getVkDevice(), v, null);
+            });
 
     }
 
