@@ -95,8 +95,8 @@ public final class FreshTextureLayoutRepro {
         int before = ERRORS.size();
         try (MemoryStack s = outer.push()) {
             LongBuffer lb = s.mallocLong(1);
-            long[] color = image(s, dev, mem, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | extra, VK_IMAGE_ASPECT_COLOR_BIT, W, H, levels, viewLevel);
-            long[] depth = image(s, dev, mem, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | extra, VK_IMAGE_ASPECT_DEPTH_BIT, W, H, levels, viewLevel);
+            long[] color = image(s, dev, mem, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | extra, VK_IMAGE_ASPECT_COLOR_BIT, W, H, levels, viewLevel, fresh);
+            long[] depth = image(s, dev, mem, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | extra, VK_IMAGE_ASPECT_DEPTH_BIT, W, H, levels, viewLevel, fresh);
             // pass: both attachments begin in SHADER_READ_ONLY (the layout Iroh's tracker holds), LOAD, attachment layouts inside
             VkAttachmentDescription.Buffer at = VkAttachmentDescription.calloc(2, s);
             at.get(0).format(VK_FORMAT_R8G8B8A8_UNORM).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
@@ -142,7 +142,7 @@ public final class FreshTextureLayoutRepro {
     }
 
     /** returns {image, view}; memory is left to process exit (lavapipe, a few MB). */
-    static long[] image(MemoryStack s, VkDevice dev, VkPhysicalDeviceMemoryProperties mp, int fmt, int usage, int aspect, int w, int h, int levels, int viewLevel) {
+    static long[] image(MemoryStack s, VkDevice dev, VkPhysicalDeviceMemoryProperties mp, int fmt, int usage, int aspect, int w, int h, int levels, int viewLevel, boolean fresh) {
         try (MemoryStack f = s.push()) {
             LongBuffer lb = f.mallocLong(1);
             VkImageCreateInfo ci = VkImageCreateInfo.calloc(f).sType$Default().imageType(VK_IMAGE_TYPE_2D).format(fmt).mipLevels(levels).arrayLayers(1)
@@ -157,6 +157,10 @@ public final class FreshTextureLayoutRepro {
             for (int i = 0; i < mp.memoryTypeCount(); i++) if ((mr.memoryTypeBits() & (1 << i)) != 0) { type = i; break; }
             ck(vkAllocateMemory(dev, VkMemoryAllocateInfo.calloc(f).sType$Default().allocationSize(mr.size()).memoryTypeIndex(type), null, lb), "alloc");
             ck(vkBindImageMemory(dev, img, lb.get(0), 0), "bind");
+            if (!fresh) { // V-0 negative control: tools/vkval-allowlist.txt accepts the layout error for exactly these images
+                ck(EXTDebugUtils.vkSetDebugUtilsObjectNameEXT(dev, VkDebugUtilsObjectNameInfoEXT.calloc(f).sType$Default()
+                        .objectType(VK_OBJECT_TYPE_IMAGE).objectHandle(img).pObjectName(f.UTF8("v0-negative-control"))), "name");
+            }
             VkImageViewCreateInfo vi = VkImageViewCreateInfo.calloc(f).sType$Default().image(img).viewType(VK_IMAGE_VIEW_TYPE_2D).format(fmt);
             vi.subresourceRange().aspectMask(aspect).baseMipLevel(viewLevel).levelCount(1).layerCount(1);
             ck(vkCreateImageView(dev, vi, null, lb), "view");
