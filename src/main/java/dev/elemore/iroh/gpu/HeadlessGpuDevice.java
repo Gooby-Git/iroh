@@ -41,6 +41,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private final java.util.Map<String, VkImg> standIns = new java.util.HashMap<>();
     private VkImg mainColor, mainDepth;
     private final List<Runnable> later = new ArrayList<>();
+    private final java.util.Set<Long> uploadDsts = new java.util.HashSet<>(); // V-0: buffers written by the open upload batch
     private final List<VkBuf> staging = new ArrayList<>();
 
     private record Mem(long memory, long size) {}
@@ -321,7 +322,15 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             vkMapMemory(device, ((Mem) st.alloc()).memory(), 0, len, 0, pp);
             MemoryUtil.memCopy(MemoryUtil.memAddress(src), pp.get(0), len);
             vkUnmapMemory(device, ((Mem) st.alloc()).memory());
-            vkCmdCopyBuffer(uploadCmd(), st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
+            VkCommandBuffer uc = uploadCmd();
+            long dst = ((VkBuf) buffer).buffer();
+            if (!uploadDsts.add(dst)) { // V-0: a second write to the same buffer in one upload batch (syncval WRITE_AFTER_WRITE)
+                vkCmdPipelineBarrier(uc, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                        VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT), null, null);
+                uploadDsts.clear();
+                uploadDsts.add(dst);
+            }
+            vkCmdCopyBuffer(uc, st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
         }
         staging.add(st);
     }
@@ -431,6 +440,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
                 if (uploadRecording) {
                     vkEndCommandBuffer(uploadCmd);
                     uploadRecording = false;
+                    uploadDsts.clear();
                     bufs = s.pointers(uploadCmd, cmd); // the frame's uploads first (game order)
                 } else bufs = s.pointers(cmd);
                 vkResetFences(device, fence);
