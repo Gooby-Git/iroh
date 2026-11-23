@@ -138,12 +138,15 @@ struct Ctx {
 #define VKD2(name) auto name = (PFN_##name)c->dc.vkDeviceProcAddr(c->dc.vkDevice, #name)
 #define VKD(name) auto name = (PFN_##name)c->dc.vkDeviceProcAddr(c->dc.vkDevice, #name)
 
+static const VkImageUsageFlags SHARED_USAGE = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 bool makeShared(Ctx* c, Ctx::Shared& s, VkFormat fmt, uint32_t w, uint32_t h, std::string& err) {
     VKD(vkCreateImage); VKD(vkGetImageMemoryRequirements); VKD(vkAllocateMemory); VKD(vkBindImageMemory);
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D; ci.format = fmt; ci.extent = {w, h, 1}; ci.mipLevels = 1; ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // V-0: the SDK clears reconstructedPrevNearestDepth (vkCmdClearColorImage) and copies shared resources: TRANSFER
+    // usage required (VUID-vkCmdClearColorImage-image-00002, VkImageMemoryBarrier-oldLayout-01213 under validation).
+    ci.usage = SHARED_USAGE; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(c->dc.vkDevice, &ci, nullptr, &s.image) != VK_SUCCESS) { err = "vkCreateImage(shared) failed"; return false; }
     VkMemoryRequirements mr; vkGetImageMemoryRequirements(c->dc.vkDevice, s.image, &mr);
@@ -259,7 +262,7 @@ void freeShFg(FgCtx* c, FgCtx::Sh& s) {
 }
 FfxResource shRes(FgCtx::Sh& s) {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = s.fmt; ci.extent = {s.w, s.h, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = s.fmt; ci.extent = {s.w, s.h, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.usage = SHARED_USAGE;
     return ffxGetResourceVK((void*)(uintptr_t)s.image, ffxGetImageResourceDescriptionVK(s.image, ci), L"iroh-fg-shared", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
 }
 void destroyFg(FgCtx* c) {
@@ -416,7 +419,7 @@ J(void, dispatch)(JNIEnv* env, jclass, jlong h, jobject buf) {
     auto shared = [&](Ctx::Shared& s) {
         VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ci.imageType = VK_IMAGE_TYPE_2D; ci.format = s.fmt; ci.extent = {s.w, s.h, 1}; ci.mipLevels = 1; ci.arrayLayers = 1;
-        ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ci.usage = SHARED_USAGE;
         return ffxGetResourceVK((void*)(uintptr_t)s.image, ffxGetImageResourceDescriptionVK(s.image, ci), L"iroh-shared", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
     };
     d.dilatedDepth = shared(c->dilatedDepth);
