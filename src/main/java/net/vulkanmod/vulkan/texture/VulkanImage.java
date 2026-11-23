@@ -465,6 +465,11 @@ public class VulkanImage {
             return;
         }
 
+        if (feedbackSample()) {
+            markFrameUse();
+            return;
+        }
+
         try (MemoryStack stack = MemoryStack.stackPush()) {
             if (this.uploadOwned) {
                 // td-4a9be3: the pending layout change is in the upload buffer, which executes before the frame:
@@ -506,12 +511,35 @@ public class VulkanImage {
         }
     }
 
+    /**
+     * V-3b (td-fe54e9): this image is sampled while it is an attachment of the bound pass (GL feedback loop: undefined in GL,
+     * but mods read another mip / region, or after a barrier). Vulkan needs the image in GENERAL for the pass (no feedback-loop
+     * extension on int-2b): the pass is ended and restarted ONCE with the attachment GENERAL (RenderPass.prepareAttachments
+     * records the layout change in the frame command buffer, outside the pass; the pass's own initial/subpass layouts are
+     * GENERAL); later samples in the same pass instance find it GENERAL and cost nothing. The descriptor then uses GENERAL
+     * (Pipeline). Not a feedback loop: one null-check of the bound pass, no other cost.
+     * @return true if this image is an attachment of the bound pass (handled; nothing else to record)
+     */
+    private boolean feedbackSample() {
+        Renderer renderer = Renderer.getInstance();
+        if (renderer.getBoundRenderPass() == null) return false;
+        Framebuffer fb = renderer.getBoundFramebuffer();
+        if (fb == null) return false;
+        boolean depth = fb.getDepthAttachment() == this;
+        if (!depth && fb.getColorAttachment() != this) return false;
+        if (RenderPass.isFeedbackActive(this) && this.currentLayout == VK_IMAGE_LAYOUT_GENERAL) return true;
+        logFeedbackOnce();
+        RenderPass.requestFeedback(this, depth);
+        endPassRunResume(() -> { }); // ends the pass and begins it again; prepareAttachments puts this image in GENERAL
+        return true;
+    }
+
     private static boolean loggedFeedback;
 
     private static void logFeedbackOnce() {
         if (!loggedFeedback) {
             loggedFeedback = true;
-            net.vulkanmod.Initializer.LOGGER.warn("Iroh: a texture attached to the bound render pass is sampled by the same pass (GL feedback loop); its layout transition stays in the upload buffer (RQ-10)");
+            net.vulkanmod.Initializer.LOGGER.warn("Iroh: a texture attached to the bound render pass is sampled by the same pass (GL feedback loop); the pass is restarted once with it in GENERAL (V-3b)");
         }
     }
 

@@ -416,8 +416,10 @@ public abstract class Pipeline {
 
                 if (imageDescriptor.isReadOnlyLayout)
                     image.readOnlyLayout();
+                int layout0 = imageDescriptor.isReadOnlyLayout && image.getCurrentLayout() == VK_IMAGE_LAYOUT_GENERAL
+                        ? VK_IMAGE_LAYOUT_GENERAL : imageDescriptor.getLayout(); // V-3b: feedback target
 
-                if (!this.boundTextures[j].isCurrentState(view, sampler)) {
+                if (!this.boundTextures[j].isCurrentState(view, sampler, layout0)) {
                     return true;
                 }
             }
@@ -498,10 +500,10 @@ public abstract class Pipeline {
                 long view = imageDescriptor.getImageView(image);
                 long sampler = dev.elemore.iroh.temporal.TemporalFrame.MIP_ON && dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD
                         ? net.vulkanmod.vulkan.texture.SamplerManager.biased(image.getSampler(), dev.elemore.iroh.temporal.TemporalFrame.mipBias) : image.getSampler(); // P4-1a
-                int layout = imageDescriptor.getLayout();
-
                 if (imageDescriptor.isReadOnlyLayout)
                     image.readOnlyLayout();
+                int layout = imageDescriptor.isReadOnlyLayout && image.getCurrentLayout() == VK_IMAGE_LAYOUT_GENERAL
+                        ? VK_IMAGE_LAYOUT_GENERAL : imageDescriptor.getLayout(); // V-3b: feedback target
 
                 imageInfo[j] = VkDescriptorImageInfo.calloc(1, stack);
                 imageInfo[j].imageLayout(layout);
@@ -519,7 +521,7 @@ public abstract class Pipeline {
                 samplerDescriptorWrite.pImageInfo(imageInfo[j]);
                 samplerDescriptorWrite.dstSet(currentSet);
 
-                this.boundTextures[j].set(view, sampler);
+                this.boundTextures[j].set(view, sampler, layout);
                 ++i;
             }
 
