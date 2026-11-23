@@ -1,3 +1,4 @@
 # V-0 Vulkan validation allowlist for the lavapipe harnesses (build.gradle vkvalCheck).
 # One line per accepted message: VUID | substring of MainMessage, or * | written reason (lavapipe quirk or vendor SDK, with evidence).
 # Nothing goes here without a reason; Iroh and harness bugs are fixed, not listed.
+VUID-vkCmdDraw-None-08608 | [v0-negative-control] | intentional negative control in dynStateVkReplay: rc14 raw sequence (td-0cc003 class) must be flagged by the layer; the harness asserts it fired

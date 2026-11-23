@@ -1105,3 +1105,16 @@ def vkvalCheck = { JavaExec t ->
 	if (errN) throw new GradleException("${label}: ${errN} Vulkan validation errors in ${errs.size()} VUIDs (log ${t.ext.vkvalLog})")
 }
 tasks.withType(JavaExec).configureEach { t -> t.doLast { if (t.ext.has('vkvalLog')) vkvalCheck(t) } }
+
+// V-0: td-0cc003's class on REAL Vulkan: Iroh's CmdState + GraphicsPipeline.dynamicStates drive vkCmd* on lavapipe
+// under the validation layer; negative control (rc14's raw sequence) must be flagged. ./gradlew dynStateVkReplay
+tasks.register('dynStateVkReplay', JavaExec) {
+	group = 'verification'
+	description = 'CmdState dynamic-state rules against the real Khronos validation layer on lavapipe'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.render.DynStateVkReplay'
+	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst { useLavapipe(it) }
+}
