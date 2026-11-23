@@ -871,3 +871,14 @@ tasks.register('vkStackRepro', JavaExec) {
 	args(project.hasProperty('mode') ? project.property('mode') : 'new')
 	doFirst { useLavapipe(it) }
 }
+
+// int-2b-v3 (td-5cbe77): a texture allocated without data is valid at once in GL. Lavapipe + validation layer: the old (no init)
+// path must be flagged at vkQueueSubmit, FreshImage must make it clean. ./gradlew freshTexRepro ; last line "# freshtex PASS|FAIL"
+tasks.register('freshTexRepro', JavaExec) {
+	group = 'verification'
+	description = 'Fresh GL texture layout on lavapipe with the Vulkan validation layer (old path flagged, FreshImage clean)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.FreshTextureLayoutRepro'
+	doFirst { useLavapipe(it) }
+}
