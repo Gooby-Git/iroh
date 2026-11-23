@@ -89,7 +89,15 @@ public final class GpuCore {
 
     public static synchronized void uninstall() {
         GpuCore c = instance;
-        if (c != null) c.freeAll();
+        if (c != null) {
+            c.freeAll();
+            // V-0: Iroh's own lazily built zero-tail pipeline (no-drawIndirectCount path) belongs to no owner; it must go
+            // before the device does (VUID-vkDestroyDevice-device-05137 caught by apiReplay under validation).
+            if (c.zeroTailPipe != null) {
+                c.device.destroyPipeline(c.zeroTailPipe);
+                c.zeroTailPipe = null;
+            }
+        }
         instance = null;
     }
 
