@@ -79,6 +79,9 @@ public final class RtProbe {
                 System.out.println((ok ? "ok   " : "FAIL ") + "variant " + variant + " hit t = " + r.getFloat(0) + " (expected " + want + ")");
             }
             dev.flush();
+            for (VkBuf x : new VkBuf[]{fb, vb, out}) dev.destroyBuffer(x); // V-0: leaked at vkDestroyDevice before
+            MemoryUtil.memFree(fv);
+            MemoryUtil.memFree(d);
             acc.close();
             comp.destroy(p);
             comp.close();

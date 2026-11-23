@@ -213,6 +213,25 @@ class VkvalSplitter extends OutputStream {
 	void flush() { pass.flush() }
 	void close() { if (line.size()) flushLine(); pass.flush() }
 }
+// V-0: VK_LOADER_DEBUG=warn on stderr: proves the validation layer loaded ("forced enabled") and which implicit layers
+// were disabled; those loader lines are counted and swallowed, every other stderr line passes through.
+class VkvalLoaderFilter extends OutputStream {
+	final OutputStream pass; final ByteArrayOutputStream line = new ByteArrayOutputStream()
+	int enabled; final Set<String> disabled = new TreeSet<>()
+	VkvalLoaderFilter(OutputStream pass) { this.pass = pass }
+	void write(int b) { line.write(b); if (b == 10) flushLine() }
+	void flushLine() {
+		def bytes = line.toByteArray(); line.reset()
+		def t = new String(bytes, 'UTF-8')
+		if (t.startsWith('[Vulkan Loader] WARNING | LAYER:')) {
+			if (t.contains('"VK_LAYER_KHRONOS_validation" forced enabled')) enabled++
+			def m = t =~ /Layer "([^"]+)" forced disabled/
+			if (m.find()) disabled << m.group(1)
+		} else if (!t.startsWith('WARNING: [Loader Message] Code 0 : Layer "VK_LAYER_KHRONOS_validation" forced enabled')) pass.write(bytes)
+	}
+	void flush() { pass.flush() }
+	void close() { if (line.size()) flushLine(); pass.flush() }
+}
 def vkvalLayerJson = new File('/usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json')
 def vkvalMode = {
 	def p = project.findProperty('validate')
@@ -286,6 +305,9 @@ def useLavapipe = { JavaExec t, String label = null ->
 		t.environment 'VK_LAYER_SETTINGS_PATH', settings.absolutePath
 		t.ext.vkvalLog = log
 		t.standardOutput = new VkvalSplitter(System.out, log)
+		t.ext.vkvalLoader = new VkvalLoaderFilter(System.err)
+		t.errorOutput = t.ext.vkvalLoader
+		t.environment 'VK_LOADER_DEBUG', 'warn'
 		t.ext.vkvalMode = mode
 		t.ext.vkvalLabel = label ?: t.name
 		t.ignoreExitValue = true   // vkvalCheck prints the validation digest even when the harness itself failed, then fails the task
@@ -1115,12 +1137,13 @@ def vkvalCheck = { JavaExec t ->
 	def total = msgs.size()
 	def rc = t.executionResult.present ? t.executionResult.get().exitValue : -1
 	def errN = errs.sum { it.n } ?: 0
-	println "# vkval ${label} mode=${t.ext.vkvalMode} messages=${total} errors=${errN} (${errs.size()} VUIDs) allowlisted=${allowed.sum { it.n } ?: 0} other=${other.sum { it.n } ?: 0} log=${t.ext.vkvalLog}"
+	def ld = t.ext.vkvalLoader
+	println "# vkval ${label} layer-loaded=${ld.enabled}x implicit-off=${ld.disabled.size()} mode=${t.ext.vkvalMode} messages=${total} errors=${errN} (${errs.size()} VUIDs) allowlisted=${allowed.sum { it.n } ?: 0} other=${other.sum { it.n } ?: 0} log=${t.ext.vkvalLog}"
 	(errs.sort { -it.n } + other.sort { -it.n }).take(12).each { g ->
 		println "#   ${g.sev} x${g.n} ${g.vuid} [${g.fn}]${g.region ? ' region=' + g.region : ''}: ${g.msg.take(300)}"
 	}
 	allowed.each { g -> println "#   allowlisted x${g.n} ${g.vuid}: ${g.allow.reason}" }
-	if (!t.ext.vkvalLog.exists() && rc == 0) throw new GradleException("${label}: validation was requested but the layer wrote no log (did it load? VK_LOADER_DEBUG=layer)")
+	if (ld.enabled == 0) throw new GradleException("${label}: validation was requested but the loader never enabled VK_LAYER_KHRONOS_validation (no VkInstance, or the layer is missing)")
 	if (rc != 0) throw new GradleException("${label}: harness exited ${rc}" + (errN ? " and ${errN} validation errors" : ''))
 	if (errN) throw new GradleException("${label}: ${errN} Vulkan validation errors in ${errs.size()} VUIDs (log ${t.ext.vkvalLog})")
 }

@@ -45,7 +45,7 @@ for r in "${runs[@]}"; do
   name="${r%%|*}"; cmd="${r#*|}"
   timeout 1800 ./gradlew -q $cmd ${VKVAL:+-Pvalidate=$VKVAL} > "$OUT/$name.log" 2>&1; rc=$?
   g=$(grep -oE "golden (ok|MISMATCH|FAIL|updated)[^ ]* ?[0-9a-f]{0,12}|SKIP[^\n]{0,60}" "$OUT/$name.log" | head -1)
-  v=$(grep -oP '^# vkval \S+ mode=\S+ messages=\d+ errors=\K\d+' "$OUT/$name.log" | awk '{s+=$1} END {if (NR) print s}')
+  v=$(grep -oP '^# vkval .* mode=\S+ messages=\d+ errors=\K\d+' "$OUT/$name.log" | awk '{s+=$1} END {if (NR) print s}')
   last=$(grep -E '^#|PASS|FAIL|SKIP|golden|diff' "$OUT/$name.log" | grep -v '^\s*at \|^# vkval\|^#   ' | tail -1 | cut -c1-140)
   printf "%-22s rc=%-3s vkval=%-4s %s %s\n" "$name" "$rc" "${v:--}" "$last" "$g" | tee -a "$OUT/summary.txt"
 done
