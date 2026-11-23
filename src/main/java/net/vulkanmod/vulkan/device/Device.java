@@ -126,25 +126,10 @@ public class Device {
     }
 
     public Set<String> getUnsupportedExtensions(Set<String> requiredExtensions) {
-        try (MemoryStack stack = stackPush()) {
-
-            IntBuffer extensionCount = stack.ints(0);
-
-            vkEnumerateDeviceExtensionProperties(physicalDevice, (String) null, extensionCount, null);
-
-            VkExtensionProperties.Buffer availableExtensions = VkExtensionProperties.malloc(extensionCount.get(0), stack);
-
-            vkEnumerateDeviceExtensionProperties(physicalDevice, (String) null, extensionCount, availableExtensions);
-
-            Set<String> extensions = availableExtensions.stream()
-                    .map(VkExtensionProperties::extensionNameString)
-                    .collect(toSet());
-
-            Set<String> unsupportedExtensions = new HashSet<>(requiredExtensions);
-            unsupportedExtensions.removeAll(extensions);
-
-            return unsupportedExtensions;
-        }
+        Set<String> extensions = net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(physicalDevice);
+        Set<String> unsupportedExtensions = new HashSet<>(requiredExtensions);
+        unsupportedExtensions.removeAll(extensions);
+        return unsupportedExtensions;
     }
 
     public boolean isDrawIndirectSupported() {
