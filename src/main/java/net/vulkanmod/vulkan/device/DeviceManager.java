@@ -284,10 +284,7 @@ public abstract class DeviceManager {
         try (MemoryStack stack = stackPush()) {
             Queue.QueueFamilyIndices indices = findQueueFamilies(device);
 
-            VkExtensionProperties.Buffer availableExtensions = getAvailableExtension(stack, device);
-            boolean extensionsSupported = availableExtensions.stream()
-                    .map(VkExtensionProperties::extensionNameString)
-                    .collect(toSet())
+            boolean extensionsSupported = net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(device)
                     .containsAll(Vulkan.REQUIRED_EXTENSION);
 
             boolean swapChainAdequate = false;
@@ -303,16 +300,6 @@ public abstract class DeviceManager {
 
             return indices.isSuitable() && extensionsSupported && swapChainAdequate;
         }
-    }
-
-    private static VkExtensionProperties.Buffer getAvailableExtension(MemoryStack stack, VkPhysicalDevice device) {
-        IntBuffer extensionCount = stack.ints(0);
-        vkEnumerateDeviceExtensionProperties(device, (String) null, extensionCount, null);
-
-        VkExtensionProperties.Buffer availableExtensions = VkExtensionProperties.malloc(extensionCount.get(0), stack);
-        vkEnumerateDeviceExtensionProperties(device, (String) null, extensionCount, availableExtensions);
-
-        return availableExtensions;
     }
 
     // Use the optimal most performant depth format for the specific GPU

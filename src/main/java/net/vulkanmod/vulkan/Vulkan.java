@@ -212,6 +212,14 @@ public class Vulkan {
     }
 
     private static void createInstance() {
+        PointerBuffer glfw = glfwGetRequiredInstanceExtensions();
+        List<String> base = new ArrayList<>();
+        for (int i = 0; i < glfw.capacity(); i++) base.add(org.lwjgl.system.MemoryUtil.memUTF8(glfw.get(i)));
+        instance = createInstance(base);
+    }
+
+    /** Creates the instance for the given base extension names (GLFW's, or none headless). Public for tools/VkInstanceStackRepro. */
+    public static VkInstance createInstance(List<String> baseExtensions) {
 
         if (ENABLE_VALIDATION_LAYERS && !checkValidationLayerSupport()) {
             // Fails the Proctor gate on purpose: a gate that asked for validation must not pass without it.
@@ -221,62 +229,67 @@ public class Vulkan {
         if (ENABLE_VALIDATION_LAYERS)
             net.vulkanmod.Initializer.LOGGER.info("Iroh: Vulkan validation layer enabled");
 
-        try (MemoryStack stack = stackPush()) {
-
-            // Use calloc to initialize the structs with 0s. Otherwise, the program can crash due to random values
-
-            VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack);
-
+        // No MemoryStack frame is open while LWJGL's VkInstance constructor runs: it enumerates every device extension on the
+        // thread's 64 KB stack and needs nearly all of it on machines with many layers (int-2b-v1 "Out of stack space").
+        // Everything the create info points at lives on the heap and is freed after the constructor has read it.
+        List<java.nio.ByteBuffer> strings = new ArrayList<>();
+        List<PointerBuffer> pointerBuffers = new ArrayList<>();
+        VkApplicationInfo appInfo = VkApplicationInfo.calloc();
+        VkInstanceCreateInfo createInfo = VkInstanceCreateInfo.calloc();
+        VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = null;
+        PointerBuffer instancePtr = org.lwjgl.system.MemoryUtil.memAllocPointer(1);
+        try {
+            java.nio.ByteBuffer appName = org.lwjgl.system.MemoryUtil.memUTF8("VulkanMod");
+            java.nio.ByteBuffer engineName = org.lwjgl.system.MemoryUtil.memUTF8("VulkanMod Engine");
+            strings.add(appName);
+            strings.add(engineName);
             appInfo.sType(VK_STRUCTURE_TYPE_APPLICATION_INFO);
-            appInfo.pApplicationName(stack.UTF8Safe("VulkanMod"));
+            appInfo.pApplicationName(appName);
             appInfo.applicationVersion(VK_MAKE_VERSION(1, 0, 0));
-            appInfo.pEngineName(stack.UTF8Safe("VulkanMod Engine"));
+            appInfo.pEngineName(engineName);
             appInfo.engineVersion(VK_MAKE_VERSION(1, 0, 0));
             appInfo.apiVersion(VK_API_VERSION_1_2);
 
-            VkInstanceCreateInfo createInfo = VkInstanceCreateInfo.calloc(stack);
-
             createInfo.sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
             createInfo.pApplicationInfo(appInfo);
-            createInfo.ppEnabledExtensionNames(getRequiredInstanceExtensions());
+            createInfo.ppEnabledExtensionNames(heapNames(getRequiredInstanceExtensions(baseExtensions), strings, pointerBuffers));
 
             if (ENABLE_VALIDATION_LAYERS) {
+                createInfo.ppEnabledLayerNames(heapNames(new ArrayList<>(VALIDATION_LAYERS), strings, pointerBuffers));
 
-                createInfo.ppEnabledLayerNames(asPointerBuffer(VALIDATION_LAYERS));
-
-                VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = VkDebugUtilsMessengerCreateInfoEXT.calloc(stack);
+                debugCreateInfo = VkDebugUtilsMessengerCreateInfoEXT.calloc();
                 populateDebugMessengerCreateInfo(debugCreateInfo);
                 createInfo.pNext(debugCreateInfo.address());
             }
 
-            // We need to retrieve the pointer of the created instance
-            PointerBuffer instancePtr = stack.mallocPointer(1);
-
             int result = vkCreateInstance(createInfo, null, instancePtr);
             checkResult(result, "Failed to create instance");
 
-            instance = new VkInstance(instancePtr.get(0), createInfo);
+            return new VkInstance(instancePtr.get(0), createInfo);
+        } finally {
+            if (debugCreateInfo != null) debugCreateInfo.free();
+            createInfo.free();
+            appInfo.free();
+            org.lwjgl.system.MemoryUtil.memFree(instancePtr);
+            pointerBuffers.forEach(org.lwjgl.system.MemoryUtil::memFree);
+            strings.forEach(org.lwjgl.system.MemoryUtil::memFree);
         }
+    }
+
+    private static PointerBuffer heapNames(List<String> names, List<java.nio.ByteBuffer> strings, List<PointerBuffer> pointerBuffers) {
+        PointerBuffer pb = org.lwjgl.system.MemoryUtil.memAllocPointer(names.size());
+        pointerBuffers.add(pb);
+        for (String n : names) {
+            java.nio.ByteBuffer b = org.lwjgl.system.MemoryUtil.memUTF8(n);
+            strings.add(b);
+            pb.put(b);
+        }
+        return pb.rewind();
     }
 
     static boolean checkValidationLayerSupport() {
 
-        try (MemoryStack stack = stackPush()) {
-
-            IntBuffer layerCount = stack.ints(0);
-
-            vkEnumerateInstanceLayerProperties(layerCount, null);
-
-            VkLayerProperties.Buffer availableLayers = VkLayerProperties.malloc(layerCount.get(0), stack);
-
-            vkEnumerateInstanceLayerProperties(layerCount, availableLayers);
-
-            Set<String> availableLayerNames = availableLayers.stream()
-                    .map(VkLayerProperties::layerNameString)
-                    .collect(toSet());
-
-            return availableLayerNames.containsAll(Vulkan.VALIDATION_LAYERS);
-        }
+        return net.vulkanmod.vulkan.util.VkEnum.instanceLayers().containsAll(Vulkan.VALIDATION_LAYERS);
     }
 
     private static void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo) {
@@ -382,29 +395,14 @@ public class Vulkan {
      * (and VK_KHR_get_surface_capabilities2) at instance level, or validation reports VUID-vkCreateDevice-ppEnabledExtensionNames-01387.
      * Enable both whenever the loader advertises them; they change nothing for Iroh itself.
      */
-    private static PointerBuffer getRequiredInstanceExtensions() {
-
-        PointerBuffer glfwExtensions = glfwGetRequiredInstanceExtensions();
-        MemoryStack stack = stackGet();
-
-        List<String> names = new ArrayList<>();
-        for (int i = 0; i < glfwExtensions.capacity(); i++) names.add(org.lwjgl.system.MemoryUtil.memUTF8(glfwExtensions.get(i)));
+    private static List<String> getRequiredInstanceExtensions(List<String> baseExtensions) {
+        List<String> names = new ArrayList<>(baseExtensions);
         if (ENABLE_VALIDATION_LAYERS) names.add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
-        Set<String> available = new HashSet<>();
-        IntBuffer cnt = stack.ints(0);
-        if (vkEnumerateInstanceExtensionProperties((String) null, cnt, null) == VK_SUCCESS && cnt.get(0) > 0) {
-            VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(cnt.get(0), stack);
-            if (vkEnumerateInstanceExtensionProperties((String) null, cnt, props) == VK_SUCCESS)
-                props.forEach(p -> available.add(p.extensionNameString()));
-        }
+        Set<String> available = net.vulkanmod.vulkan.util.VkEnum.instanceExtensions(null);
         for (String n : List.of("VK_KHR_get_surface_capabilities2", "VK_EXT_surface_maintenance1"))
             if (available.contains(n) && !names.contains(n)) names.add(n);
-
-        if (names.size() == glfwExtensions.capacity()) return glfwExtensions;
-        PointerBuffer extensions = stack.mallocPointer(names.size());
-        for (String n : names) extensions.put(stack.UTF8(n));
-        return extensions.rewind();
+        return names;
     }
 
     public static void checkResult(int result, String errorMessage) {
