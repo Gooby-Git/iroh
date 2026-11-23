@@ -17,11 +17,13 @@ import static org.lwjgl.vulkan.VK12.*;
  * td-5cbe77 repro on lavapipe with VK_LAYER_KHRONOS_validation (CPU only; refuses any other ICD).
  * Models the GPUBooster render-target pair: a 1280x720 colour and a depth texture allocated through glTexImage2D with no
  * data, then used by a pass that expects them in SHADER_READ_ONLY (what Iroh's tracker claims after allocation).
+ * F-1: three cases (texture pair, renderbuffer pair with TRANSFER_SRC, 4-level images attached at level 2; call sites VkGlRenderbuffer.allocateImage / VkGlTexture.texImage2D).
  * "old" = Iroh before the fix (nothing recorded at allocation): validation must report the layout error at vkQueueSubmit.
  * "new" = FreshImage.record first (the upload buffer submit): 0 errors. Last line "# freshtex PASS|FAIL ...".
  */
 public final class FreshTextureLayoutRepro {
     static final List<String> ERRORS = new ArrayList<>();
+    static boolean allOldFlagged;
 
     public static void main(String[] args) throws Exception {
         String icd = System.getenv("VK_DRIVER_FILES");
@@ -68,21 +70,33 @@ public final class FreshTextureLayoutRepro {
             VkPhysicalDeviceMemoryProperties mem = VkPhysicalDeviceMemoryProperties.calloc(s);
             vkGetPhysicalDeviceMemoryProperties(phys, mem);
 
-            oldErrors = runCase(s, dev, q, pool, mem, false);
-            newErrors = runCase(s, dev, q, pool, mem, true);
+            // case 0 = GL texture pair (V-2), 1 = renderbuffer pair (other size, TRANSFER_SRC too), 2 = mip>0: 4-level images, pass attaches level 2
+            int[] oldE = new int[3], newE = new int[3];
+            for (int c = 0; c < 3; c++) {
+                oldE[c] = runCase(s, dev, q, pool, mem, false, c);
+                newE[c] = runCase(s, dev, q, pool, mem, true, c);
+                System.out.println("  case " + new String[]{"texture", "renderbuffer", "mip>0"}[c] + ": old errors=" + oldE[c] + " new errors=" + newE[c]);
+            }
+            oldErrors = oldE[0] + oldE[1] + oldE[2];
+            newErrors = newE[0] + newE[1] + newE[2];
+            allOldFlagged = oldE[0] > 0 && oldE[1] > 0 && oldE[2] > 0;
         }
-        boolean oldFlagged = oldErrors > 0 && ERRORS.stream().anyMatch(e -> e.contains("UNDEFINED"));
+        boolean oldFlagged = allOldFlagged && oldErrors > 0 && ERRORS.stream().anyMatch(e -> e.contains("UNDEFINED"));
         for (String e : ERRORS.subList(0, Math.min(ERRORS.size(), 3))) System.out.println("  validation: " + e.substring(0, Math.min(e.length(), 260)));
         System.out.println((oldFlagged && newErrors == 0 ? "# freshtex PASS" : "# freshtex FAIL") + " old(no init) errors=" + oldErrors + " new(FreshImage) errors=" + newErrors);
         System.exit(oldFlagged && newErrors == 0 ? 0 : 1);
     }
 
-    static int runCase(MemoryStack outer, VkDevice dev, VkQueue q, long pool, VkPhysicalDeviceMemoryProperties mem, boolean fresh) {
+    static int runCase(MemoryStack outer, VkDevice dev, VkQueue q, long pool, VkPhysicalDeviceMemoryProperties mem, boolean fresh, int kase) {
+        int W = kase == 1 ? 800 : 1280, H = kase == 1 ? 600 : 720, levels = kase == 2 ? 4 : 1;
+        int extra = kase == 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0;
+        int viewLevel = kase == 2 ? 2 : 0;
+        int vw = Math.max(1, W >> viewLevel), vh = Math.max(1, H >> viewLevel);
         int before = ERRORS.size();
         try (MemoryStack s = outer.push()) {
             LongBuffer lb = s.mallocLong(1);
-            long[] color = image(s, dev, mem, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-            long[] depth = image(s, dev, mem, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+            long[] color = image(s, dev, mem, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | extra, VK_IMAGE_ASPECT_COLOR_BIT, W, H, levels, viewLevel);
+            long[] depth = image(s, dev, mem, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | extra, VK_IMAGE_ASPECT_DEPTH_BIT, W, H, levels, viewLevel);
             // pass: both attachments begin in SHADER_READ_ONLY (the layout Iroh's tracker holds), LOAD, attachment layouts inside
             VkAttachmentDescription.Buffer at = VkAttachmentDescription.calloc(2, s);
             at.get(0).format(VK_FORMAT_R8G8B8A8_UNORM).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
@@ -98,7 +112,7 @@ public final class FreshTextureLayoutRepro {
             ck(vkCreateRenderPass(dev, VkRenderPassCreateInfo.calloc(s).sType$Default().pAttachments(at).pSubpasses(sp), null, lb), "renderpass");
             long rp = lb.get(0);
             ck(vkCreateFramebuffer(dev, VkFramebufferCreateInfo.calloc(s).sType$Default().renderPass(rp).pAttachments(s.longs(color[1], depth[1]))
-                    .width(1280).height(720).layers(1), null, lb), "framebuffer");
+                    .width(vw).height(vh).layers(1), null, lb), "framebuffer");
             long fb = lb.get(0);
 
             PointerBuffer pc = s.mallocPointer(1);
@@ -108,14 +122,14 @@ public final class FreshTextureLayoutRepro {
             VkCommandBuffer frame = new VkCommandBuffer(pc.get(0), dev);
             if (fresh) {
                 begin(s, upload);
-                FreshImage.record(s, upload, color[0], VK_IMAGE_ASPECT_COLOR_BIT, false, 1);
-                FreshImage.record(s, upload, depth[0], VK_IMAGE_ASPECT_DEPTH_BIT, true, 1);
+                FreshImage.record(s, upload, color[0], VK_IMAGE_ASPECT_COLOR_BIT, false, levels);
+                FreshImage.record(s, upload, depth[0], VK_IMAGE_ASPECT_DEPTH_BIT, true, levels);
                 ck(vkEndCommandBuffer(upload), "end");
                 submit(s, q, upload);
             }
             begin(s, frame);
             VkRenderPassBeginInfo rb = VkRenderPassBeginInfo.calloc(s).sType$Default().renderPass(rp).framebuffer(fb);
-            rb.renderArea().extent().set(1280, 720);
+            rb.renderArea().extent().set(vw, vh);
             vkCmdBeginRenderPass(frame, rb, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdEndRenderPass(frame);
             ck(vkEndCommandBuffer(frame), "end");
@@ -128,13 +142,13 @@ public final class FreshTextureLayoutRepro {
     }
 
     /** returns {image, view}; memory is left to process exit (lavapipe, a few MB). */
-    static long[] image(MemoryStack s, VkDevice dev, VkPhysicalDeviceMemoryProperties mp, int fmt, int usage, int aspect) {
+    static long[] image(MemoryStack s, VkDevice dev, VkPhysicalDeviceMemoryProperties mp, int fmt, int usage, int aspect, int w, int h, int levels, int viewLevel) {
         try (MemoryStack f = s.push()) {
             LongBuffer lb = f.mallocLong(1);
-            VkImageCreateInfo ci = VkImageCreateInfo.calloc(f).sType$Default().imageType(VK_IMAGE_TYPE_2D).format(fmt).mipLevels(1).arrayLayers(1)
+            VkImageCreateInfo ci = VkImageCreateInfo.calloc(f).sType$Default().imageType(VK_IMAGE_TYPE_2D).format(fmt).mipLevels(levels).arrayLayers(1)
                     .samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL).usage(usage | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
                     .sharingMode(VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
-            ci.extent().set(1280, 720, 1);
+            ci.extent().set(w, h, 1);
             ck(vkCreateImage(dev, ci, null, lb), "image");
             long img = lb.get(0);
             VkMemoryRequirements mr = VkMemoryRequirements.calloc(f);
@@ -144,7 +158,7 @@ public final class FreshTextureLayoutRepro {
             ck(vkAllocateMemory(dev, VkMemoryAllocateInfo.calloc(f).sType$Default().allocationSize(mr.size()).memoryTypeIndex(type), null, lb), "alloc");
             ck(vkBindImageMemory(dev, img, lb.get(0), 0), "bind");
             VkImageViewCreateInfo vi = VkImageViewCreateInfo.calloc(f).sType$Default().image(img).viewType(VK_IMAGE_VIEW_TYPE_2D).format(fmt);
-            vi.subresourceRange().aspectMask(aspect).levelCount(1).layerCount(1);
+            vi.subresourceRange().aspectMask(aspect).baseMipLevel(viewLevel).levelCount(1).layerCount(1);
             ck(vkCreateImageView(dev, vi, null, lb), "view");
             return new long[]{img, lb.get(0)};
         }

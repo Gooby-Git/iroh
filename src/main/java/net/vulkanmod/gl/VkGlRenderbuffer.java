@@ -176,6 +176,8 @@ public class VkGlRenderbuffer {
                     .addUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
                     .createVulkanImage();
 
+        this.vulkanImage.initFresh(); // F-1 (td-5cbe77): renderbuffer storage is valid at once in GL; clear + SHADER_READ_ONLY like V-2
+
         VTextureSelector.bindTexture(this.vulkanImage);
     }
 
