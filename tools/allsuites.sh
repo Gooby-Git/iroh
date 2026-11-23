@@ -1,6 +1,8 @@
 #!/bin/bash
 # INT-3 (+INT-4 RT suites): run every JavaExec suite of an Iroh worktree + the 16 pack replay goldens + apiReplay golden + FULL round trip;
 # one summary line each (rc, last "#" line, golden status). usage: tools/allsuites.sh <worktree> <outdir> [task ...]
+# V-0: lavapipe suites run under VK_LAYER_KHRONOS_validation by default (VKVAL=off|gpuav|bestpractices to change);
+# the "vkval" column is the error count from build.gradle's vkvalCheck ("-" = suite does not use lavapipe).
 # Run ./build.sh first (bridgeLinkTest). After ./gradlew clean, customEvalTest needs the Navidson packHarness dump: rerun it last.
 WT="$1"; OUT="$2"; shift 2
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
@@ -41,8 +43,9 @@ else
 fi
 for r in "${runs[@]}"; do
   name="${r%%|*}"; cmd="${r#*|}"
-  timeout 900 ./gradlew -q $cmd > "$OUT/$name.log" 2>&1; rc=$?
-  last=$(grep -E '^#|PASS|FAIL|SKIP|golden|diff' "$OUT/$name.log" | grep -v '^\s*at ' | tail -1 | cut -c1-160)
+  timeout 1800 ./gradlew -q $cmd ${VKVAL:+-Pvalidate=$VKVAL} > "$OUT/$name.log" 2>&1; rc=$?
   g=$(grep -oE "golden (ok|MISMATCH|FAIL|updated)[^ ]* ?[0-9a-f]{0,12}|SKIP[^\n]{0,60}" "$OUT/$name.log" | head -1)
-  printf "%-22s rc=%-3s %s %s\n" "$name" "$rc" "$last" "$g" | tee -a "$OUT/summary.txt"
+  v=$(grep -oP '^# vkval \S+ mode=\S+ messages=\d+ errors=\K\d+' "$OUT/$name.log" | awk '{s+=$1} END {if (NR) print s}')
+  last=$(grep -E '^#|PASS|FAIL|SKIP|golden|diff' "$OUT/$name.log" | grep -v '^\s*at \|^# vkval\|^#   ' | tail -1 | cut -c1-140)
+  printf "%-22s rc=%-3s vkval=%-4s %s %s\n" "$name" "$rc" "${v:--}" "$last" "$g" | tee -a "$OUT/summary.txt"
 done
