@@ -255,7 +255,7 @@ public final class RtEntityReplay {
         long updBytes = upd.get(0).bytes;
         for (RtAccel.Accel x : upd) gpu.accel.destroy(x);
         gpu.sync();
-        gpu.dev.destroyBuffer(vb);
+        gpu.free(vb);
         double refitMs = tRefit / 1e6 / frames, rebuildMs = tRebuild / 1e6 / frames;
         metric(String.format(Locale.ROOT, "(D) refit fallback, %d free-form mobs (72 tris each, ALLOW_UPDATE BLAS %d B): refit %.2f ms/frame vs rebuild %.2f ms/frame (lavapipe, incl. submit); rigid instances need neither",
                 N, updBytes, refitMs, rebuildMs));

@@ -41,7 +41,9 @@ public final class FsrAdapterReplay {
             System.exit(1);
         }
         StringBuilder rep = new StringBuilder();
-        FsrReplay.init(false, rep);
+        // V-0: the fp16 context below (flag change check) needs int16/float16/16-bit storage ENABLED, as FsrAdapter requires in
+        // game (DeviceCaps); a device without them made VUID-VkShaderModuleCreateInfo-pCode-08740 (Int16) x5. Contexts use NO_FP16 otherwise.
+        FsrReplay.init(true, rep);
         final int rw = 320, rh = 180, dw = 640, dh = 360;
 
         long[] budget = {1L << 20};            // 1 MiB: refused

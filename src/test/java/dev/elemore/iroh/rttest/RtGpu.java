@@ -62,8 +62,20 @@ final class RtGpu implements AutoCloseable {
 
     // ------------------------------------------------------------------------------------------------ helpers
 
+    // V-0: every buffer this harness makes is tracked and freed at close (VUID-vkDestroyDevice-device-05137 before)
+    private final java.util.Set<VkBuf> live = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
     VkBuf buf(long bytes) {
-        return accel.inputBuffer(Math.max(16, bytes));
+        return track(accel.inputBuffer(Math.max(16, bytes)));
+    }
+
+    VkBuf track(VkBuf b) {
+        live.add(b);
+        return b;
+    }
+
+    void free(VkBuf b) {
+        if (b != null && live.remove(b)) dev.destroyBuffer(b);
     }
 
     void up(VkBuf b, long off, ByteBuffer heap) {
@@ -171,13 +183,13 @@ final class RtGpu implements AutoCloseable {
         for (int p = 0; p < parts; p++) in.putInt(firstVertexPart[p]).putInt(0).putInt(2).putInt(0);   // customIndex sectionCount*2 + p
         if (parts > 0) {
             poses = buf(MAX_ENT_INSTANCES * 96L);
-            entCmds = dev.rawBuffer(MAX_ENT_INSTANCES * 20L, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            entCmds = track(dev.rawBuffer(MAX_ENT_INSTANCES * 20L, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
         }
         inst = buf(in.capacity());
         up(inst, 0, in.flip());
         origins = buf(or.capacity());
         up(origins, 0, or.flip());
-        cmds = dev.rawBuffer(cm.capacity(), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        cmds = track(dev.rawBuffer(cm.capacity(), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
         up(cmds, 0, cm.flip());
 
         ByteBuffer at = le(scene.atlas.length * 4);
@@ -228,7 +240,7 @@ final class RtGpu implements AutoCloseable {
             lb.putFloat(l.n()[0]).putFloat(l.n()[1]).putFloat(l.n()[2]).putFloat(0);
             lb.putFloat(l.radiance()[0]).putFloat(l.radiance()[1]).putFloat(l.radiance()[2]).putFloat(0);
         }
-        if (lights == null || lightsBytes < lb.capacity()) { lights = buf(Math.max(lb.capacity(), 80L * 256)); lightsBytes = Math.max(lb.capacity(), 80 * 256); }
+        if (lights == null || lightsBytes < lb.capacity()) { free(lights); lights = buf(Math.max(lb.capacity(), 80L * 256)); lightsBytes = Math.max(lb.capacity(), 80 * 256); }
         up(lights, 0, lb.flip());
         uploadBarrier();
         fd.lightCount = ls.size();
@@ -260,7 +272,7 @@ final class RtGpu implements AutoCloseable {
         for (int i = 0; i < grid.entLight.length; i++) eb.putInt(grid.entLight[i]).putFloat(grid.entCdf[i]);
         cb.position(0).limit(cb.capacity());
         eb.position(0).limit(eb.capacity());
-        if (gridCells != null) { dev.destroyBuffer(gridCells); dev.destroyBuffer(gridEnts); }
+        if (gridCells != null) { free(gridCells); free(gridEnts); }
         gridCells = buf(cb.capacity());
         gridEnts = buf(eb.capacity());
         up(gridCells, 0, cb);
@@ -569,7 +581,7 @@ final class RtGpu implements AutoCloseable {
         });
         MemoryUtil.memFree(push);
         float[] r = readVec4(out, count);
-        for (VkBuf b : new VkBuf[]{in, out, g}) dev.destroyBuffer(b);
+        for (VkBuf b : new VkBuf[]{in, out, g}) free(b);
         return r;
     }
 
@@ -609,6 +621,9 @@ final class RtGpu implements AutoCloseable {
             if (p != null) comp.destroy(p);
         comp.close();
         dev.destroyPipeline(raster);
+        for (VkBuf b : new java.util.ArrayList<>(live)) free(b);
+        if (gImage != null) dev.destroyImage(gImage);
+        if (dImage != null) dev.destroyImage(dImage);
         dev.close();
     }
 }

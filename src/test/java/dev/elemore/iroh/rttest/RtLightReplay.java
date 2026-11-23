@@ -188,7 +188,7 @@ public final class RtLightReplay {
             seq[k] = acc;
         }
         gpu.raysPerPixel = gpu.readCounters()[2] / (double) (counted * gpu.N);
-        gpu.dev.destroyBuffer(out);
+        gpu.free(out);
         light.look = null;
         return seq;
     }
