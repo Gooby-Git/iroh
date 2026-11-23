@@ -874,6 +874,17 @@ tasks.register('vkStackRepro', JavaExec) {
 
 // int-2b-v3 (td-5cbe77): a texture allocated without data is valid at once in GL. Lavapipe + validation layer: the old (no init)
 // path must be flagged at vkQueueSubmit, FreshImage must make it clean. ./gradlew freshTexRepro ; last line "# freshtex PASS|FAIL"
+// V-3 (td-fe54e9): layout tracker vs executed command buffers (dropped frame, attachment marking, the card's
+// fresh->sample->attach->sample sequences). ./gradlew attachLayoutRepro ; last line "# attachlayout PASS|FAIL"
+tasks.register('attachLayoutRepro', JavaExec) {
+	group = 'verification'
+	description = 'GL-shim layout tracker invariants on lavapipe with the Vulkan validation layer (old paths flagged, V-3 clean)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.AttachLayoutRepro'
+	doFirst { useLavapipe(it) }
+}
+
 tasks.register('freshTexRepro', JavaExec) {
 	group = 'verification'
 	description = 'Fresh GL texture layout on lavapipe with the Vulkan validation layer (old path flagged, FreshImage clean)'

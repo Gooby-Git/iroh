@@ -115,9 +115,9 @@ public class DefaultMainPass implements MainPass {
         RenderPass renderPass;
 
         if (!this.frameOpen) {
-            // Frame start: contents are cleared by the render pass, so the old layout does not matter.
-            // Declaring UNDEFINED keeps the barrier valid even when the previous frame was recorded but never
-            // submitted (Renderer.submitFrame skips the submit when a swapchain update is pending).
+            // Frame start: contents are cleared by the render pass, so the old layout does not matter (UNDEFINED as the
+            // old layout is always valid). V-3: frames are never dropped any more (Renderer.submitFrame); this stays
+            // because the clear makes the previous contents dead anyway.
             this.sceneTarget.getColorAttachment().setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
             this.sceneTarget.getDepthAttachment().setCurrentLayout(VK_IMAGE_LAYOUT_UNDEFINED);
             this.frameOpen = true;
