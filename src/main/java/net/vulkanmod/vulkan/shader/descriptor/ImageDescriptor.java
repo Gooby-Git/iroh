@@ -84,18 +84,20 @@ public class ImageDescriptor implements Descriptor {
 
     public static class State {
         long imageView, sampler;
+        int layout; // V-3b: the layout written into the descriptor (GENERAL for a feedback target)
 
         public State(long imageView, long sampler) {
-            set(imageView, sampler);
+            set(imageView, sampler, 0);
         }
 
-        public void set(long imageView, long sampler) {
+        public void set(long imageView, long sampler, int layout) {
             this.imageView = imageView;
             this.sampler = sampler;
+            this.layout = layout;
         }
 
-        public boolean isCurrentState(long imageView, long sampler) {
-            return this.imageView == imageView && this.sampler == sampler;
+        public boolean isCurrentState(long imageView, long sampler, int layout) {
+            return this.imageView == imageView && this.sampler == sampler && this.layout == layout;
         }
 
     }

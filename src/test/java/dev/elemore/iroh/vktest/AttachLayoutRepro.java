@@ -29,6 +29,9 @@ import static org.lwjgl.vulkan.VK12.*;
  *   expects SHADER_READ_ONLY current UNDEFINED), the exact rc14 pair: confirms the diagnosis.</li>
  * <li>case attach-then-upload: a depth attachment whose layout already matched (no barrier) was not marked "used this
  *   frame", so a later upload went to U and executed before the pass. OLD = error, NEW (begin marks attachments) = 0.</li>
+ * <li>case feedback-colour / feedback-depth (V-3b): attach colour + depth, then a draw of the SAME pass samples one of them
+ *   (real pipeline, descriptor, draws). OLD = transition into U + descriptor READ while attached = layout errors; NEW =
+ *   end pass, GENERAL in F, restart on a GENERAL pass variant, descriptor GENERAL = 0 errors.</li>
  * </ul>
  * OLD objects are named "v0-negative-control" (V-0's vkvalCheck allowlist on branches that have it). Last line
  * "# attachlayout PASS|FAIL ...".
@@ -99,6 +102,17 @@ public final class AttachLayoutRepro {
                 boolean flagged = o > 0 && ERRORS.subList(before, ERRORS.size()).stream().anyMatch(e -> e.contains("DEPTH_STENCIL_ATTACHMENT_OPTIMAL")
                         && e.contains("current layout is VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL"));
                 int nw = runCase(s, env, c, true);
+                boolean ok = flagged && nw == 0;
+                pass &= ok;
+                line(sum, c, o, nw, ok);
+            }
+            for (String c : new String[]{"feedback-colour", "feedback-depth"}) {
+                int before2 = ERRORS.size();
+                int o = runCase(s, env, c, false);
+                boolean flagged = o > 0 && ERRORS.subList(before2, ERRORS.size()).stream().anyMatch(e -> e.contains("layout"));
+                int b3 = ERRORS.size();
+                int nw = runCase(s, env, c, true);
+                if (nw > 0) for (String e : ERRORS.subList(b3, ERRORS.size())) System.out.println("  NEW ERROR: " + e);
                 boolean ok = flagged && nw == 0;
                 pass &= ok;
                 line(sum, c, o, nw, ok);
@@ -333,6 +347,19 @@ public final class AttachLayoutRepro {
                     r.uploadInto(s, depth);
                     r.endFrame(s, false);
                 }
+                case "feedback-colour", "feedback-depth" -> {
+                    // V-3b: an attached texture sampled by a draw of the SAME pass (GL feedback loop), two frames, two draws per pass
+                    Img t = kase.equals("feedback-colour") ? color : depth;
+                    Feedback fbk = new Feedback(s, env, rp, color, depth, fb);
+                    for (int frame = 0; frame < 2; frame++) {
+                        r.beginFrame(s);
+                        if (frame == 0) { r.fresh(s, color); r.fresh(s, depth); }
+                        fbk.pass(s, r, t);
+                        r.endFrame(s, false);
+                    }
+                    vkQueueWaitIdle(env.q);
+                    fbk.destroy();
+                }
                 default -> throw new IllegalArgumentException(kase);
             }
             vkQueueWaitIdle(env.q);
@@ -341,6 +368,157 @@ public final class AttachLayoutRepro {
         }
         return ERRORS.size() - before;
     }
+
+    /**
+     * V-3b model of the feedback path: a pass with draws that sample an attachment. OLD = the transition for the sample is
+     * recorded into the upload buffer U and the descriptor says SHADER_READ_ONLY while the pass has the image attached; NEW =
+     * VulkanImage.feedbackSample: end the pass, GENERAL in F, restart on a pass variant whose layouts for that image are
+     * GENERAL, descriptor GENERAL, a second sample in the same pass costs nothing.
+     */
+    static final class Feedback {
+        final Env env;
+        final Img color, depth;
+        final long rpNormal, fbo, dsl, pl, pipe, pool, sampler, setRead, setGeneral;
+        final long[] variants = new long[4];
+        final java.util.Set<Long> written = new java.util.HashSet<>();
+
+        Feedback(MemoryStack outer, Env env, long rpNormal, Img color, Img depth, long fbo) {
+            this.env = env; this.color = color; this.depth = depth; this.rpNormal = rpNormal; this.fbo = fbo;
+            try (MemoryStack s = outer.push()) {
+                LongBuffer lb = s.mallocLong(1);
+                VkDescriptorSetLayoutBinding.Buffer bd = VkDescriptorSetLayoutBinding.calloc(1, s)
+                        .binding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT);
+                FreshTextureLayoutRepro.ck(vkCreateDescriptorSetLayout(env.dev, VkDescriptorSetLayoutCreateInfo.calloc(s).sType$Default().pBindings(bd), null, lb), "dsl");
+                dsl = lb.get(0);
+                FreshTextureLayoutRepro.ck(vkCreatePipelineLayout(env.dev, VkPipelineLayoutCreateInfo.calloc(s).sType$Default().pSetLayouts(s.longs(dsl)), null, lb), "pl");
+                pl = lb.get(0);
+                FreshTextureLayoutRepro.ck(vkCreateSampler(env.dev, VkSamplerCreateInfo.calloc(s).sType$Default().magFilter(VK_FILTER_NEAREST).minFilter(VK_FILTER_NEAREST)
+                        .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE), null, lb), "sampler");
+                sampler = lb.get(0);
+                VkDescriptorPoolSize.Buffer ps = VkDescriptorPoolSize.calloc(1, s).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
+                FreshTextureLayoutRepro.ck(vkCreateDescriptorPool(env.dev, VkDescriptorPoolCreateInfo.calloc(s).sType$Default().maxSets(2).pPoolSizes(ps), null, lb), "pool");
+                pool = lb.get(0);
+                LongBuffer sets = s.mallocLong(2);
+                FreshTextureLayoutRepro.ck(vkAllocateDescriptorSets(env.dev, VkDescriptorSetAllocateInfo.calloc(s).sType$Default().descriptorPool(pool).pSetLayouts(s.longs(dsl, dsl)), sets), "sets");
+                setRead = sets.get(0);
+                setGeneral = sets.get(1);
+                long vs = module(s, env.dev, V), fs = module(s, env.dev, F);
+                VkPipelineShaderStageCreateInfo.Buffer st = VkPipelineShaderStageCreateInfo.calloc(2, s);
+                st.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vs).pName(s.UTF8("main"));
+                st.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fs).pName(s.UTF8("main"));
+                VkViewport.Buffer vp = VkViewport.calloc(1, s).width(1280).height(720).maxDepth(1f);
+                VkRect2D.Buffer sc = VkRect2D.calloc(1, s);
+                sc.extent().set(1280, 720);
+                VkPipelineColorBlendAttachmentState.Buffer cba = VkPipelineColorBlendAttachmentState.calloc(1, s).colorWriteMask(0xF);
+                VkGraphicsPipelineCreateInfo.Buffer gp = VkGraphicsPipelineCreateInfo.calloc(1, s).sType$Default().pStages(st)
+                        .pVertexInputState(VkPipelineVertexInputStateCreateInfo.calloc(s).sType$Default())
+                        .pInputAssemblyState(VkPipelineInputAssemblyStateCreateInfo.calloc(s).sType$Default().topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST))
+                        .pViewportState(VkPipelineViewportStateCreateInfo.calloc(s).sType$Default().viewportCount(1).pViewports(vp).scissorCount(1).pScissors(sc))
+                        .pRasterizationState(VkPipelineRasterizationStateCreateInfo.calloc(s).sType$Default().polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).lineWidth(1f))
+                        .pMultisampleState(VkPipelineMultisampleStateCreateInfo.calloc(s).sType$Default().rasterizationSamples(1))
+                        .pDepthStencilState(VkPipelineDepthStencilStateCreateInfo.calloc(s).sType$Default().depthTestEnable(true).depthWriteEnable(true).depthCompareOp(VK_COMPARE_OP_ALWAYS))
+                        .pColorBlendState(VkPipelineColorBlendStateCreateInfo.calloc(s).sType$Default().pAttachments(cba))
+                        .layout(pl).renderPass(rpNormal);
+                FreshTextureLayoutRepro.ck(vkCreateGraphicsPipelines(env.dev, 0L, gp, null, lb), "pipeline");
+                pipe = lb.get(0);
+                vkDestroyShaderModule(env.dev, vs, null);
+                vkDestroyShaderModule(env.dev, fs, null);
+                variants[0] = rpNormal;
+            }
+        }
+
+        static long module(MemoryStack s, VkDevice dev, String b64) {
+            byte[] spv = java.util.Base64.getDecoder().decode(b64);
+            java.nio.ByteBuffer bb = s.malloc(spv.length);
+            bb.put(spv).flip();
+            LongBuffer lb = s.mallocLong(1);
+            FreshTextureLayoutRepro.ck(vkCreateShaderModule(dev, VkShaderModuleCreateInfo.calloc(s).sType$Default().pCode(bb), null, lb), "shader");
+            return lb.get(0);
+        }
+
+        /** the render pass for a feedback mask (1 colour GENERAL, 2 depth GENERAL): same formats, so framebuffer compatible */
+        long variant(MemoryStack outer, int mask) {
+            if (variants[mask] != 0L) return variants[mask];
+            try (MemoryStack s = outer.push()) {
+                int cl = (mask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : COLOR, dl = (mask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : DEPTH;
+                VkAttachmentDescription.Buffer at = VkAttachmentDescription.calloc(2, s);
+                at.get(0).format(VK_FORMAT_R8G8B8A8_UNORM).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
+                        .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(cl).finalLayout(READ);
+                at.get(1).format(VK_FORMAT_D32_SFLOAT).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
+                        .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(dl).finalLayout(DEPTH);
+                VkAttachmentReference.Buffer cref = VkAttachmentReference.calloc(1, s).attachment(0).layout(cl);
+                VkAttachmentReference dref = VkAttachmentReference.calloc(s).attachment(1).layout(dl);
+                VkSubpassDescription.Buffer sp = VkSubpassDescription.calloc(1, s).pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS)
+                        .colorAttachmentCount(1).pColorAttachments(cref).pDepthStencilAttachment(dref);
+                VkSubpassDependency.Buffer dep = VkSubpassDependency.calloc(1, s);
+                dep.get(0).srcSubpass(0).dstSubpass(VK_SUBPASS_EXTERNAL).srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)
+                        .dstStageMask(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT).srcAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
+                LongBuffer lb = s.mallocLong(1);
+                FreshTextureLayoutRepro.ck(vkCreateRenderPass(env.dev, VkRenderPassCreateInfo.calloc(s).sType$Default().pAttachments(at).pSubpasses(sp).pDependencies(dep), null, lb), "rp variant");
+                return variants[mask] = lb.get(0);
+            }
+        }
+
+        void begin(MemoryStack s, VkCommandBuffer f, long rp) {
+            VkRenderPassBeginInfo rb = VkRenderPassBeginInfo.calloc(s).sType$Default().renderPass(rp).framebuffer(fbo);
+            rb.renderArea().extent().set(1280, 720);
+            vkCmdBeginRenderPass(f, rb, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(f, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        }
+
+        void draw(MemoryStack s, VkCommandBuffer f, Img t, boolean general) {
+            try (MemoryStack fr = s.push()) {
+                // write each set once (a set updated after it was bound in a recording buffer invalidates that buffer)
+                if (written.add(t.view * 2 + (general ? 1 : 0))) {
+                VkDescriptorImageInfo.Buffer ii = VkDescriptorImageInfo.calloc(1, fr).sampler(sampler).imageView(t.view).imageLayout(general ? VK_IMAGE_LAYOUT_GENERAL : READ);
+                VkWriteDescriptorSet.Buffer w = VkWriteDescriptorSet.calloc(1, fr).sType$Default().dstSet(general ? setGeneral : setRead).dstBinding(0).descriptorCount(1)
+                        .descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(ii);
+                vkUpdateDescriptorSets(env.dev, w, null);
+                }
+                vkCmdBindDescriptorSets(f, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, fr.longs(general ? setGeneral : setRead), null);
+                vkCmdDraw(f, 3, 1, 0, 0);
+            }
+        }
+
+        void pass(MemoryStack s, Run r, Img t) {
+            VkCommandBuffer f = r.f;
+            r.transition(s, f, color, COLOR);
+            r.transition(s, f, depth, DEPTH);
+            if (r.fixed) { color.frameUse = r.serial; color.uploadOwned = false; depth.frameUse = r.serial; depth.uploadOwned = false; }
+            begin(s, f, rpNormal);
+            if (!r.fixed) {
+                // OLD readOnlyLayout: attachment of the bound pass -> the transition goes to the upload buffer (runs before the frame)
+                r.transition(s, r.upload(s), t, READ);
+                draw(s, f, t, false);
+                draw(s, f, t, false);
+            } else {
+                // NEW VulkanImage.feedbackSample: end pass (tracker = final layouts), GENERAL in F, restart on the variant
+                vkCmdEndRenderPass(f);
+                color.layout = READ;
+                depth.layout = DEPTH;
+                int mask = t == color ? 1 : 2;
+                r.transition(s, f, t, VK_IMAGE_LAYOUT_GENERAL);
+                if (t != color) r.transition(s, f, color, COLOR); else r.transition(s, f, depth, DEPTH);
+                begin(s, f, variant(s, mask));
+                draw(s, f, t, true);
+                draw(s, f, t, true); // second sample, same pass instance: GENERAL already, nothing recorded
+            }
+            vkCmdEndRenderPass(f);
+            color.layout = READ;
+            depth.layout = DEPTH;
+        }
+
+        void destroy() {
+            vkDestroyPipeline(env.dev, pipe, null);
+            vkDestroyPipelineLayout(env.dev, pl, null);
+            vkDestroyDescriptorPool(env.dev, pool, null);
+            vkDestroyDescriptorSetLayout(env.dev, dsl, null);
+            vkDestroySampler(env.dev, sampler, null);
+            for (int i = 1; i < 4; i++) if (variants[i] != 0L) vkDestroyRenderPass(env.dev, variants[i], null);
+        }
+    }
+
+    static final String V = "AwIjBwAAAQALAA0AKwAAAAAAAAARAAIAAQAAAAsABgABAAAAR0xTTC5zdGQuNDUwAAAAAA4AAwAAAAAAAQAAAA8ABwAAAAAABAAAAG1haW4AAAAADAAAAB0AAAADAAMAAgAAAMIBAAAEAAoAR0xfR09PR0xFX2NwcF9zdHlsZV9saW5lX2RpcmVjdGl2ZQAABAAIAEdMX0dPT0dMRV9pbmNsdWRlX2RpcmVjdGl2ZQAFAAQABAAAAG1haW4AAAAABQADAAkAAABwAAAABQAGAAwAAABnbF9WZXJ0ZXhJbmRleAAABQAGABsAAABnbF9QZXJWZXJ0ZXgAAAAABgAGABsAAAAAAAAAZ2xfUG9zaXRpb24ABgAHABsAAAABAAAAZ2xfUG9pbnRTaXplAAAAAAYABwAbAAAAAgAAAGdsX0NsaXBEaXN0YW5jZQAGAAcAGwAAAAMAAABnbF9DdWxsRGlzdGFuY2UABQADAB0AAAAAAAAARwAEAAwAAAALAAAAKgAAAEcAAwAbAAAAAgAAAEgABQAbAAAAAAAAAAsAAAAAAAAASAAFABsAAAABAAAACwAAAAEAAABIAAUAGwAAAAIAAAALAAAAAwAAAEgABQAbAAAAAwAAAAsAAAAEAAAAEwACAAIAAAAhAAMAAwAAAAIAAAAWAAMABgAAACAAAAAXAAQABwAAAAYAAAACAAAAIAAEAAgAAAAHAAAABwAAABUABAAKAAAAIAAAAAEAAAAgAAQACwAAAAEAAAAKAAAAOwAEAAsAAAAMAAAAAQAAACsABAAKAAAADgAAAAEAAAArAAQACgAAABAAAAACAAAAFwAEABcAAAAGAAAABAAAABUABAAYAAAAIAAAAAAAAAArAAQAGAAAABkAAAABAAAAHAAEABoAAAAGAAAAGQAAAB4ABgAbAAAAFwAAAAYAAAAaAAAAGgAAACAABAAcAAAAAwAAABsAAAA7AAQAHAAAAB0AAAADAAAAKwAEAAoAAAAeAAAAAAAAACsABAAGAAAAIAAAAAAAAEArAAQABgAAACIAAAAAAIA/KwAEAAYAAAAlAAAAAAAAPyAABAApAAAAAwAAABcAAAA2AAUAAgAAAAQAAAAAAAAAAwAAAPgAAgAFAAAAOwAEAAgAAAAJAAAABwAAAD0ABAAKAAAADQAAAAwAAADEAAUACgAAAA8AAAANAAAADgAAAMcABQAKAAAAEQAAAA8AAAAQAAAAbwAEAAYAAAASAAAAEQAAAD0ABAAKAAAAEwAAAAwAAADHAAUACgAAABQAAAATAAAAEAAAAG8ABAAGAAAAFQAAABQAAABQAAUABwAAABYAAAASAAAAFQAAAD4AAwAJAAAAFgAAAD0ABAAHAAAAHwAAAAkAAACOAAUABwAAACEAAAAfAAAAIAAAAFAABQAHAAAAIwAAACIAAAAiAAAAgwAFAAcAAAAkAAAAIQAAACMAAABRAAUABgAAACYAAAAkAAAAAAAAAFEABQAGAAAAJwAAACQAAAABAAAAUAAHABcAAAAoAAAAJgAAACcAAAAlAAAAIgAAAEEABQApAAAAKgAAAB0AAAAeAAAAPgADACoAAAAoAAAA/QABADgAAQA=", F = "AwIjBwAAAQALAA0AHQAAAAAAAAARAAIAAQAAAAsABgABAAAAR0xTTC5zdGQuNDUwAAAAAA4AAwAAAAAAAQAAAA8ABwAEAAAABAAAAG1haW4AAAAACQAAABAAAAAQAAMABAAAAAcAAAADAAMAAgAAAMIBAAAEAAoAR0xfR09PR0xFX2NwcF9zdHlsZV9saW5lX2RpcmVjdGl2ZQAABAAIAEdMX0dPT0dMRV9pbmNsdWRlX2RpcmVjdGl2ZQAFAAQABAAAAG1haW4AAAAABQADAAkAAABvAAAABQADAA0AAAB0AAAABQAGABAAAABnbF9GcmFnQ29vcmQAAAAARwAEAAkAAAAeAAAAAAAAAEcABAANAAAAIQAAAAAAAABHAAQADQAAACIAAAAAAAAARwAEABAAAAALAAAADwAAABMAAgACAAAAIQADAAMAAAACAAAAFgADAAYAAAAgAAAAFwAEAAcAAAAGAAAABAAAACAABAAIAAAAAwAAAAcAAAA7AAQACAAAAAkAAAADAAAAGQAJAAoAAAAGAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAGwADAAsAAAAKAAAAIAAEAAwAAAAAAAAACwAAADsABAAMAAAADQAAAAAAAAAgAAQADwAAAAEAAAAHAAAAOwAEAA8AAAAQAAAAAQAAABcABAARAAAABgAAAAIAAAArAAQABgAAABQAAAAAAKBEKwAEAAYAAAAVAAAAAAA0RCwABQARAAAAFgAAABQAAAAVAAAAFQAEABkAAAAgAAAAAAAAACsABAAZAAAAGgAAAAAAAAA2AAUAAgAAAAQAAAAAAAAAAwAAAPgAAgAFAAAAPQAEAAsAAAAOAAAADQAAAD0ABAAHAAAAEgAAABAAAABPAAcAEQAAABMAAAASAAAAEgAAAAAAAAABAAAAiAAFABEAAAAXAAAAEwAAABYAAABXAAUABwAAABgAAAAOAAAAFwAAAFEABQAGAAAAGwAAABgAAAAAAAAAUAAHAAcAAAAcAAAAGwAAABsAAAAbAAAAGwAAAD4AAwAJAAAAHAAAAP0AAQA4AAEA";
 
     /** Same masks as VulkanImage.transitionImageLayout after V-3. */
     static void barrier(MemoryStack s, VkCommandBuffer cb, long image, int aspect, int oldL, int newL) {
@@ -361,6 +539,7 @@ public final class AttachLayoutRepro {
             case READ -> new int[]{VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0};
             case COLOR -> new int[]{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
             case DEPTH -> new int[]{VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+            case VK_IMAGE_LAYOUT_GENERAL -> new int[]{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
             default -> throw new IllegalArgumentException("layout " + l);
         };
     }
@@ -372,6 +551,7 @@ public final class AttachLayoutRepro {
             case COLOR -> new int[]{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
             case DEPTH -> new int[]{VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                     VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+            case VK_IMAGE_LAYOUT_GENERAL -> new int[]{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
             default -> throw new IllegalArgumentException("layout " + l);
         };
     }
