@@ -1161,3 +1161,15 @@ tasks.register('dynStateVkReplay', JavaExec) {
 	workingDir = projectDir
 	doFirst { useLavapipe(it) }
 }
+
+// int-2b-v1b: instance creation under a deliberately small MemoryStack. ./gradlew vkStackRepro -Pmode=old|new [-PstackKb=8]; last line "# vkstack PASS|FAIL mode"
+tasks.register('vkStackRepro', JavaExec) {
+	group = 'verification'
+	description = 'Create a Vulkan instance on lavapipe with a small LWJGL stack (old pattern fails, Iroh path passes)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.VkInstanceStackRepro'
+	jvmArgs "-Dorg.lwjgl.system.stackSize=${project.hasProperty('stackKb') ? project.property('stackKb') : '8'}", '-Diroh.validation=true', '-Dtrace=1'
+	args(project.hasProperty('mode') ? project.property('mode') : 'new')
+	doFirst { useLavapipe(it) }
+}

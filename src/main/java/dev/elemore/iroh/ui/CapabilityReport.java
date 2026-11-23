@@ -67,13 +67,8 @@ public final class CapabilityReport {
     private static CapabilityReport probe() {
         Device dev = Vulkan.getDevice();
         VkPhysicalDevice pd = DeviceManager.physicalDevice;
-        Set<String> ext = new HashSet<>();
+        Set<String> ext = net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(pd);
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer n = stack.ints(0);
-            vkEnumerateDeviceExtensionProperties(pd, (String) null, n, null);
-            VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(n.get(0), stack);
-            vkEnumerateDeviceExtensionProperties(pd, (String) null, n, props);
-            props.forEach(p -> ext.add(p.extensionNameString()));
 
             VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(stack).sType$Default();
             VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtp = null;
