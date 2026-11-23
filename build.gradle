@@ -197,6 +197,22 @@ tasks.register('slowFramesTest', JavaExec) {
 // VK_LAYER_KHRONOS_validation through a generated build/vkval/<label>/vk_layer_settings.txt; every implicit layer is
 // disabled; messages go to build/vkval/<label>/validation.jsonl; the task FAILS on any validation error not in
 // tools/vkval-allowlist.txt (see vkvalCheck below). gpuav and bestpractices are opt-in passes, never combined with sync.
+// V-0: the layer writes pretty JSON blocks ("{" ... "}" on lines of their own) to stdout; this moves them into the
+// task's validation.jsonl and passes every other line through. (log_filename is opened with truncation by EVERY
+// VkInstance, so harnesses with several instances overwrote each other's messages: measured in rtReplay.)
+class VkvalSplitter extends OutputStream {
+	final OutputStream pass; final File log; final ByteArrayOutputStream line = new ByteArrayOutputStream(); boolean inBlock
+	VkvalSplitter(OutputStream pass, File log) { this.pass = pass; this.log = log }
+	void write(int b) { line.write(b); if (b == 10) flushLine() }
+	void flushLine() {
+		def bytes = line.toByteArray(); line.reset()
+		def t = new String(bytes, 'UTF-8')
+		if (!inBlock && t == '{\n') inBlock = true
+		if (inBlock) { log.append(t, 'UTF-8'); if (t == '}\n') inBlock = false } else pass.write(bytes)
+	}
+	void flush() { pass.flush() }
+	void close() { if (line.size()) flushLine(); pass.flush() }
+}
 def vkvalLayerJson = new File('/usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json')
 def vkvalMode = {
 	def p = project.findProperty('validate')
@@ -258,7 +274,7 @@ def useLavapipe = { JavaExec t, String label = null ->
 			gpuav_buffers_validation: mode == 'gpuav',
 			validate_best_practices: mode == 'bestpractices', validate_best_practices_amd: mode == 'bestpractices',
 			printf_enable: false,
-			debug_action: 'VK_DBG_LAYER_ACTION_LOG_MSG', log_filename: log.absolutePath,
+			debug_action: 'VK_DBG_LAYER_ACTION_LOG_MSG', log_filename: 'stdout', // a file is reopened (truncated) per VkInstance: see VkvalSplitter
 			report_flags: mode == 'bestpractices' ? 'error,warn,perf' : 'error,warn',
 			enable_message_limit: true, duplicate_message_limit: 10000,
 			message_format_json: true, message_format_display_application_name: false,
@@ -269,6 +285,7 @@ def useLavapipe = { JavaExec t, String label = null ->
 		t.environment 'VK_LOADER_LAYERS_ENABLE', 'VK_LAYER_KHRONOS_validation'
 		t.environment 'VK_LAYER_SETTINGS_PATH', settings.absolutePath
 		t.ext.vkvalLog = log
+		t.standardOutput = new VkvalSplitter(System.out, log)
 		t.ext.vkvalMode = mode
 		t.ext.vkvalLabel = label ?: t.name
 		t.ignoreExitValue = true   // vkvalCheck prints the validation digest even when the harness itself failed, then fails the task
@@ -1054,14 +1071,17 @@ tasks.register('worldPassTest', JavaExec) {
 def vkvalParse = { File f ->
 	def out = []
 	if (!f.exists()) return out
-	def s = f.getText('UTF-8'); int depth = 0, start = -1; boolean str = false, esc = false
-	for (int i = 0; i < s.length(); i++) {
-		char c = s.charAt(i)
-		if (str) { if (esc) esc = false else if (c == '\\') esc = true else if (c == '"') str = false; continue }
-		if (c == '"') str = true
-		else if (c == '{') { if (depth++ == 0) start = i }
-		else if (c == '}') { if (--depth == 0) out << new groovy.json.JsonSlurper().parseText(s.substring(start, i + 1)) }
+	def cur = null
+	f.eachLine('UTF-8') { l ->
+		if (l == '{') cur = new StringBuilder()
+		if (cur != null) cur.append(l).append('\n')
+		if (l == '}' && cur != null) {
+			try { out << new groovy.json.JsonSlurper().parseText(cur.toString()) }
+			catch (e) { out << [Severity: 'Error', VUID: 'V0-UNPARSED-MESSAGE', MainMessage: cur.toString().take(300)] } // never under-report
+			cur = null
+		}
 	}
+	if (cur != null) out << [Severity: 'Error', VUID: 'V0-UNPARSED-MESSAGE', MainMessage: cur.toString().take(300)]
 	out
 }
 def vkvalAllow = {
