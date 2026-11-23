@@ -152,6 +152,9 @@ public class VkGlTexture {
 
         VTextureSelector.bindTexture(activeTexture, boundTexture.vulkanImage);
 
+        if (pixels == 0L && VkGlBuffer.getPixelUnpackBufferBound() == null)
+            boundTexture.vulkanImage.initFresh(); // td-5cbe77: GL storage is valid at once
+
         texSubImage2D(target, level, 0, 0, width, height, format, type, pixels);
     }
 
@@ -165,6 +168,9 @@ public class VkGlTexture {
             return; // rc9: refused (runaway owner)
 
         VTextureSelector.bindTexture(activeTexture, boundTexture.vulkanImage);
+
+        if (pixels == null && VkGlBuffer.getPixelUnpackBufferBound() == null)
+            boundTexture.vulkanImage.initFresh(); // td-5cbe77: GL storage is valid at once
 
         texSubImage2D(target, level, 0, 0, width, height, format, type, pixels);
     }

@@ -508,6 +508,23 @@ public class VulkanImage {
                || layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
+    /**
+     * int-2b-v3 (td-5cbe77): a freshly allocated image GL treats as valid (glTexImage2D without data). Recorded in the upload
+     * command buffer (runs before the frame; no per-frame cost): cleared to zero and left in SHADER_READ_ONLY, so the tracker
+     * matches the image from its first use. No-op unless the image is still UNDEFINED and can be cleared and sampled.
+     */
+    public void initFresh() {
+        if (this.id == 0L || this.currentLayout != VK_IMAGE_LAYOUT_UNDEFINED
+                || (this.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 || (this.usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0)
+            return;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkCommandBuffer cb = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
+            dev.elemore.iroh.glshim.FreshImage.record(stack, cb, this.id, this.aspect, isDepthFormat(this.format), this.mipLevels);
+            this.currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            noteRecordedIn(this, cb);
+        }
+    }
+
     public void readOnlyLayout(MemoryStack stack, VkCommandBuffer commandBuffer) {
         transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
