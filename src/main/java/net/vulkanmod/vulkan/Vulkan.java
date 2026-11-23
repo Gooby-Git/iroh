@@ -377,24 +377,35 @@ public class Vulkan {
         }
     }
 
+    /**
+     * V-1: layers such as the Gamescope WSI layer force VK_EXT_swapchain_maintenance1 on at vkCreateDevice
+     * ("[Gamescope WSI] Forcing on VK_EXT_swapchain_maintenance1"); the spec then needs VK_EXT_surface_maintenance1
+     * (and VK_KHR_get_surface_capabilities2) at instance level, or validation reports VUID-vkCreateDevice-ppEnabledExtensionNames-01387.
+     * Enable both whenever the loader advertises them; they change nothing for Iroh itself.
+     */
     private static PointerBuffer getRequiredInstanceExtensions() {
 
         PointerBuffer glfwExtensions = glfwGetRequiredInstanceExtensions();
+        MemoryStack stack = stackGet();
 
-        if (ENABLE_VALIDATION_LAYERS) {
+        List<String> names = new ArrayList<>();
+        for (int i = 0; i < glfwExtensions.capacity(); i++) names.add(org.lwjgl.system.MemoryUtil.memUTF8(glfwExtensions.get(i)));
+        if (ENABLE_VALIDATION_LAYERS) names.add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
-            MemoryStack stack = stackGet();
-
-            PointerBuffer extensions = stack.mallocPointer(glfwExtensions.capacity() + 1);
-
-            extensions.put(glfwExtensions);
-            extensions.put(stack.UTF8(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
-
-            // Rewind the buffer before returning it to reset its position back to 0
-            return extensions.rewind();
+        Set<String> available = new HashSet<>();
+        IntBuffer cnt = stack.ints(0);
+        if (vkEnumerateInstanceExtensionProperties((String) null, cnt, null) == VK_SUCCESS && cnt.get(0) > 0) {
+            VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(cnt.get(0), stack);
+            if (vkEnumerateInstanceExtensionProperties((String) null, cnt, props) == VK_SUCCESS)
+                props.forEach(p -> available.add(p.extensionNameString()));
         }
+        for (String n : List.of("VK_KHR_get_surface_capabilities2", "VK_EXT_surface_maintenance1"))
+            if (available.contains(n) && !names.contains(n)) names.add(n);
 
-        return glfwExtensions;
+        if (names.size() == glfwExtensions.capacity()) return glfwExtensions;
+        PointerBuffer extensions = stack.mallocPointer(names.size());
+        for (String n : names) extensions.put(stack.UTF8(n));
+        return extensions.rewind();
     }
 
     public static void checkResult(int result, String errorMessage) {
