@@ -81,6 +81,18 @@ public class VulkanImage {
         this.frameUse = frameSerial;
     }
 
+    /**
+     * V-3 (td-fe54e9): RenderPass.beginRenderPass, for each attachment, after its (compare-and-skip) transition. The frame
+     * command buffer uses the image even when no barrier was needed (tracked layout already the attachment layout), so
+     * later uploads / transitions / host reads this frame must follow it in the frame buffer, never the upload buffer
+     * (which executes before the frame): without this a depth attachment kept in DEPTH_STENCIL_ATTACHMENT across frames
+     * looked "unused" and an upload went to the upload buffer ahead of the pass. Two field writes per attachment.
+     */
+    public void markAttachmentUse() {
+        this.frameUse = frameSerial;
+        this.uploadOwned = false;
+    }
+
     public boolean isUploadOwned() {
         return this.uploadOwned;
     }
@@ -571,16 +583,23 @@ public class VulkanImage {
                 sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
             }
             case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> {
-                srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                // V-3: write-after-read needs an execution dependency only (vulkan-spec.md section 3); vertex too (rare)
+                srcAccessMask = 0;
+                sourceStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             }
             case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> {
                 srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                 sourceStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             }
             case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> {
-                srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+                // V-3: depth is written in EARLY or LATE fragment tests (early-Z); the base waited on LATE only
+                srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                sourceStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            }
+            case VK_IMAGE_LAYOUT_GENERAL -> {
+                // V-3: api 4 / pack-runtime images (storage, compute, any use): conservative full dependency
+                srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                sourceStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
             }
             default -> throw new RuntimeException("Unexpected value:" + image.currentLayout);
         }
@@ -604,7 +623,11 @@ public class VulkanImage {
             }
             case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> {
                 dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+                destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT; // V-3
+            }
+            case VK_IMAGE_LAYOUT_GENERAL -> {
+                dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                destinationStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
             }
             case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR -> {
                 destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
