@@ -2,3 +2,4 @@
 # One line per accepted message: VUID | substring of MainMessage, or * | written reason (lavapipe quirk or vendor SDK, with evidence).
 # Nothing goes here without a reason; Iroh and harness bugs are fixed, not listed.
 VUID-vkCmdDraw-None-08608 | [v0-negative-control] | intentional negative control in dynStateVkReplay: rc14 raw sequence (td-0cc003 class) must be flagged by the layer; the harness asserts it fired
+VUID-vkCmdDispatch-None-08114 | variable "r_counters" | vendor: AMD FidelityFX SDK 1.1.4 frame interpolation reads its internal FI_Counters buffer SRV (r_counters, binding 8) whose descriptor the SDK VK backend never writes (ffx_vk.cpp srvBuffers loop); root cause inside the SDK UNVERIFIED; FG is default off; retro-queue V-0-FG must fix (build-time patch) before FG runs on a real GPU
