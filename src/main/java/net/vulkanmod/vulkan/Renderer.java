@@ -312,7 +312,9 @@ public class Renderer {
             swapChainUpdate = true;
         }
 
-        if (swapChainUpdate) {
+        // V-3: never recreate while a frame command buffer is recording (recreateSwapChain resets it unexecuted, and the
+        // layout tracker would keep what it recorded); the update runs at the next beginFrame after endFrame submitted.
+        if (swapChainUpdate && !recordingCmds) {
             recreateSwapChain();
             swapChainUpdate = false;
 
@@ -493,8 +495,13 @@ public class Renderer {
     }
 
     private void submitFrame() {
-        if (swapChainUpdate)
-            return;
+        // V-3 (td-fe54e9): a recorded frame command buffer is ALWAYS submitted. The base returned here when a swapchain
+        // update was pending (Minecraft.resizeDisplay mid-frame, e.g. a GUI-scale change on a screen open): the upload
+        // buffer was already submitted, the frame buffer was reset unexecuted by recreateSwapChain, but every layout
+        // change it recorded stayed in the VulkanImage tracker (and its in-frame uploads were lost). The next frame then
+        // skipped barriers the GPU never ran: gate-create "GlTexture 292 depth expects DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        // current SHADER_READ_ONLY" (rc14: "... current UNDEFINED"). Submitting and presenting is valid: the swapchain is
+        // only recreated at the next beginFrame; a present that returns OUT_OF_DATE / SUBOPTIMAL is handled below.
 
         try (MemoryStack stack = stackPush()) {
             int vkResult;

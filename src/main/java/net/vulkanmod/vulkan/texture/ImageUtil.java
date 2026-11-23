@@ -58,7 +58,7 @@ public abstract class ImageUtil {
 
             copyImageToBufferCmd(stack, commandBuffer.getHandle(), pStagingBuffer.get(0), image.getId(), 0, image.width,
                               image.height, 0, 0, 0, 0, 0);
-            image.transitionImageLayout(stack, commandBuffer.getHandle(), prevLayout);
+            image.transitionImageLayout(stack, commandBuffer.getHandle(), restorable(image, prevLayout)); // V-3
 
             long fence = DeviceManager.getGraphicsQueue().submitCommands(commandBuffer);
             vkWaitForFences(DeviceManager.vkDevice, fence, true, VUtil.UINT64_MAX);
@@ -82,7 +82,7 @@ public abstract class ImageUtil {
 
             copyImageToBufferCmd(stack, commandBuffer.getHandle(), buffer.getId(), image.getId(), mipLevel, width,
                                  height, xOffset, yOffset, bufferOffset, bufferRowLength, bufferImageHeight);
-            image.transitionImageLayout(stack, commandBuffer.getHandle(), prevLayout);
+            image.transitionImageLayout(stack, commandBuffer.getHandle(), restorable(image, prevLayout)); // V-3
 
             long fence = DeviceManager.getGraphicsQueue().submitCommands(commandBuffer);
             vkWaitForFences(DeviceManager.vkDevice, fence, true, VUtil.UINT64_MAX);
@@ -233,6 +233,16 @@ public abstract class ImageUtil {
         blit.srcOffsets(1).set(clamp(srcX1, 0, src.width), clamp(src.height - srcY1, 0, src.height), 1);
         blit.dstOffsets(0).set(clamp(dstX0, 0, dst.width), clamp(dst.height - dstY0, 0, dst.height), 0);
         blit.dstOffsets(1).set(clamp(dstX1, 0, dst.width), clamp(dst.height - dstY1, 0, dst.height), 1);
+    }
+
+    /**
+     * V-3: the layout a one-shot read restores. UNDEFINED cannot be a transition target (the helper threw "Unexpected
+     * value: 0"): a sampled image goes to SHADER_READ_ONLY (what every draw expects), others stay TRANSFER_SRC (as Readback).
+     */
+    private static int restorable(VulkanImage image, int prev) {
+        if (prev != VK_IMAGE_LAYOUT_UNDEFINED)
+            return prev;
+        return (image.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     }
 
     private static void restoreLayout(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int layout) {

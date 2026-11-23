@@ -4,6 +4,7 @@ import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.VRenderSystem;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.memory.MemoryManager;
+import net.vulkanmod.vulkan.texture.VulkanImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
@@ -134,14 +135,26 @@ public class RenderPass {
         }
     }
 
-    public void beginRenderPass(VkCommandBuffer commandBuffer, long framebufferId, MemoryStack stack) {
+    /**
+     * V-3 (td-fe54e9) invariant: the pass's initialLayout is the attachment layout, so each attachment goes from its TRACKED
+     * layout to it here, in the buffer that records the pass (compare and skip: no barrier when already there), and is
+     * marked used by the frame (see VulkanImage.markAttachmentUse). endRenderPass sets the tracker to finalLayout.
+     */
+    private void prepareAttachments(VkCommandBuffer commandBuffer, MemoryStack stack) {
+        if (colorAttachmentInfo != null) {
+            VulkanImage color = framebuffer.getColorAttachment();
+            color.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            color.markAttachmentUse();
+        }
+        if (depthAttachmentInfo != null) {
+            VulkanImage depth = framebuffer.getDepthAttachment();
+            depth.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            depth.markAttachmentUse();
+        }
+    }
 
-        if (colorAttachmentInfo != null
-                && framebuffer.getColorAttachment().getCurrentLayout() != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-            framebuffer.getColorAttachment().transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        if (depthAttachmentInfo != null
-                && framebuffer.getDepthAttachment().getCurrentLayout() != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-            framebuffer.getDepthAttachment().transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    public void beginRenderPass(VkCommandBuffer commandBuffer, long framebufferId, MemoryStack stack) {
+        prepareAttachments(commandBuffer, stack);
 
         VkRenderPassBeginInfo renderPassInfo = VkRenderPassBeginInfo.calloc(stack);
         renderPassInfo.sType$Default();
@@ -177,6 +190,7 @@ public class RenderPass {
     }
 
     public void beginDynamicRendering(VkCommandBuffer commandBuffer, MemoryStack stack) {
+        prepareAttachments(commandBuffer, stack); // V-3: same invariant (layouts stay the attachment ones after the end)
         VkRect2D renderArea = VkRect2D.malloc(stack);
         renderArea.offset().set(0, 0);
         renderArea.extent().set(framebuffer.getWidth(), framebuffer.getHeight());
