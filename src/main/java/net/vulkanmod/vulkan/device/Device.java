@@ -76,7 +76,7 @@ public class Device {
     private static String decodeVendor(int i) {
         return switch (i) {
             case (0x10DE) -> "Nvidia";
-            case (0x1022) -> "AMD";
+            case (0x1022), (0x1002) -> "AMD"; // upstream 62a5106: 0x1002 is the PCI id RADV / AMDVLK report
             case (0x8086) -> "Intel";
             default -> "undef"; //Either AMD or Unknown Driver version/vendor and.or Encoding Scheme
         };
@@ -94,7 +94,7 @@ public class Device {
     private static String decodeDvrVersion(int v, int i) {
         return switch (i) {
             case (0x10DE) -> decodeNvidia(v); //Nvidia
-            case (0x1022) -> decDefVersion(v); //AMD
+            case (0x1022), (0x1002) -> decDefVersion(v); //AMD
             case (0x8086) -> decIntelVersion(v); //Intel
             default -> decDefVersion(v); //Either AMD or Unknown Driver Encoding Scheme
         };
@@ -138,7 +138,7 @@ public class Device {
     // Added these to allow detecting GPU vendor, to allow handling vendor specific circumstances:
     // (e.g. such as in case we encounter a vendor specific driver bug)
     public boolean isAMD() {
-        return vendorId == 0x1022;
+        return vendorId == 0x1022 || vendorId == 0x1002;
     }
 
     public boolean isNvidia() {
