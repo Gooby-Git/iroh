@@ -1237,7 +1237,7 @@ tasks.register('hwCapsRepro', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.vktest.HwCapsRepro'
-	jvmArgs '-Xmx2g'
+	jvmArgs '-Diroh.rt=true', '-Diroh.rt.look=RAY_TRACED', '-Xmx2g'
 	doFirst {
 		if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
 		useLavapipe(it)

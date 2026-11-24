@@ -60,6 +60,19 @@ public final class RtReplay {
         return String.format(Locale.ROOT, "%.4f", v);
     }
 
+    /** H1B (RQ-H1-b): a device without AS / ray query / BDA cannot run this harness: SKIP with a stable line (exit 0), never FAIL. */
+    static RtGpu newGpuOrSkip(RtScene scene, int W, int H) {
+        try {
+            return new RtGpu(scene, W, H);
+        } catch (IllegalStateException e) {
+            if (e.getMessage() != null && e.getMessage().startsWith("CPU Vulkan device lacks")) {
+                System.out.println("# rtreplay SKIP " + e.getMessage());
+                System.exit(0);
+            }
+            throw e;
+        }
+    }
+
     public static void main(String[] args) throws IOException {
         String step = System.getProperty("rt.step", "all");
         boolean quick = System.getProperty("rt.quick") != null;
@@ -78,7 +91,7 @@ public final class RtReplay {
         for (RtScene.SectionMesh m : scene.sections) quads += m.totalQuads();
         metric("scene: " + scene.sections.size() + " sections, " + quads + " quads, " + scene.lights.size() + " emissive quads, " + W + "x" + H + ", frames " + frames);
 
-        try (RtGpu gpu = new RtGpu(scene, W, H)) {
+        try (RtGpu gpu = newGpuOrSkip(scene, W, H)) {
             metric("device: " + gpu.dev.deviceName + "  (lavapipe: CPU Vulkan; timings below are RELATIVE, never GPU performance)");
             metric("AS vertex formats: R16G16B16A16_SNORM " + gpu.accel.vertexFormatSupported(org.lwjgl.vulkan.VK10.VK_FORMAT_R16G16B16A16_SNORM)
                     + ", R32G32B32_SFLOAT " + gpu.accel.vertexFormatSupported(org.lwjgl.vulkan.VK10.VK_FORMAT_R32G32B32_SFLOAT)

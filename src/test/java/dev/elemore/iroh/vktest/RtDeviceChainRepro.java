@@ -26,6 +26,11 @@ public final class RtDeviceChainRepro {
         boolean rtOn;
         try (MemoryStack s = MemoryStack.stackPush()) {
             Float16Repro.init(s);
+            String absent = HwCapsRepro.rtAbsent(s, Float16Repro.phys);
+            if (absent != null) { // H1B (RQ-H1-b): a device without RT cannot run this harness; hwCapsRepro covers the production fallback
+                System.out.println("# rtdevchain SKIP device lacks " + absent);
+                System.exit(0);
+            }
             r[0] = run(s, false);
             RtDeviceFeatures.enabled = false;
             r[1] = run(s, true);

@@ -247,7 +247,7 @@ public abstract class DeviceManager {
             deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(stack, physicalDevice, deviceVulkan12Features, deviceVulkan12Features.pNext()));
             enabledFeatures += dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits(); // empty unless RT was requested
             // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
-            java.util.List<java.nio.Buffer> extAllocs = new ArrayList<>();
+            java.util.List<Runnable> extAllocs = new ArrayList<>();
             createInfo.ppEnabledExtensionNames(heapNames(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION), extAllocs));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
@@ -271,7 +271,7 @@ public abstract class DeviceManager {
 
                 vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
             } finally {
-                extAllocs.forEach(org.lwjgl.system.MemoryUtil::memFree);
+                extAllocs.forEach(Runnable::run);
             }
             dev.elemore.iroh.rt.game.RtDeviceFeatures.deviceCreated(); // P5-2: no-op unless the RT features were chained
 
@@ -282,13 +282,13 @@ public abstract class DeviceManager {
         }
     }
 
-    /** H1A: heap pointer array + UTF-8 strings for extension names; every allocation is added to {@code allocs} for the caller to free. */
-    private static PointerBuffer heapNames(java.util.Collection<String> names, java.util.List<java.nio.Buffer> allocs) {
+    /** H1A: heap pointer array + UTF-8 strings for extension names; every allocation is added to {@code allocs} (as a free action) for the caller to run. */
+    private static PointerBuffer heapNames(java.util.Collection<String> names, java.util.List<Runnable> allocs) {
         PointerBuffer pb = org.lwjgl.system.MemoryUtil.memAllocPointer(names.size());
-        allocs.add(pb);
+        allocs.add(() -> org.lwjgl.system.MemoryUtil.memFree(pb));
         for (String n : names) {
             java.nio.ByteBuffer b = org.lwjgl.system.MemoryUtil.memUTF8(n);
-            allocs.add(b);
+            allocs.add(() -> org.lwjgl.system.MemoryUtil.memFree(b));
             pb.put(b);
         }
         return pb.rewind();

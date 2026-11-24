@@ -1,5 +1,6 @@
 package dev.elemore.iroh.vktest;
 
+import dev.elemore.iroh.rt.game.RtDeviceFeatures;
 import dev.elemore.iroh.temporal.DeviceCaps;
 import dev.elemore.iroh.upscale.fsr.FsrUpscaler;
 import net.vulkanmod.vulkan.util.VkEnum;
@@ -14,7 +15,7 @@ import java.util.Set;
 import static org.lwjgl.vulkan.VK12.*;
 
 /**
- * H1B (RQ-H1-c): the PRODUCTION capability decision (DeviceCaps.apply -> linkFeatureChain -> vkCreateDevice -> the tier getters) run once per
+ * H1B (RQ-H1-c): the PRODUCTION capability decision (DeviceCaps.apply -> linkFeatureChain -> RtDeviceFeatures.chain -> vkCreateDevice -> the tier getters) run once per
  * device, so the hardware matrix (tools/hw-matrix.sh, Khronos profiles on lavapipe) exercises it per GPU tier. For each device it:
  * (1) creates the rc14 device (upscale features off) and checks nothing is enabled; (2) creates the upscale device with the real chain and checks
  * every enabled bit is offered, and that DeviceCaps' fsr / velocity / fp16 answers equal an independent derivation from raw Vulkan queries;
@@ -89,8 +90,47 @@ public final class HwCapsRepro {
         System.exit(ok ? 0 : 1);
     }
 
-    /** RT tier hook: the 2b branch has no RT core. */
-    static String rtTier(MemoryStack s, VkPhysicalDevice phys, Set<String> exts) { return " rt=n/a(branch has no RT)"; }
+    /**
+     * RT tier: the production RtDeviceFeatures decision (made inside the last create()) against an independent raw derivation:
+     * all three extensions + accelerationStructure + rayQuery + bufferDeviceAddress + R16G16B16A16_SNORM as an AS vertex format.
+     */
+    static String rtTier(MemoryStack outer, VkPhysicalDevice phys, Set<String> exts) {
+        try (MemoryStack s = outer.push()) {
+            boolean ext = true;
+            for (String e : RtDeviceFeatures.EXTENSIONS) ext &= exts.contains(e);
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR as = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default();
+            VkPhysicalDeviceRayQueryFeaturesKHR rq = VkPhysicalDeviceRayQueryFeaturesKHR.calloc(s).sType$Default().pNext(as.address());
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default().pNext(rq.address());
+            vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a12.address()));
+            VkFormatProperties fp = VkFormatProperties.calloc(s);
+            vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_R16G16B16A16_SNORM, fp);
+            boolean snorm = (fp.bufferFeatures() & KHRAccelerationStructure.VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR) != 0;
+            boolean expect = ext && as.accelerationStructure() && rq.rayQuery() && a12.bufferDeviceAddress() && snorm;
+            check(RtDeviceFeatures.enabled == expect, "RT enabled=" + RtDeviceFeatures.enabled + " but raw capabilities say " + expect + " (ext=" + ext + " as=" + as.accelerationStructure()
+                + " rq=" + rq.rayQuery() + " bda=" + a12.bufferDeviceAddress() + " snorm=" + snorm + ")");
+            check(RtDeviceFeatures.enabled == (RtDeviceFeatures.unavailable == null), "RT enabled=" + RtDeviceFeatures.enabled + " vs unavailable reason " + RtDeviceFeatures.unavailable);
+            check(!RtDeviceFeatures.enabled || RtDeviceFeatures.caps.supported(), "RT enabled but RtCapabilities.supported() is false");
+            if (RtDeviceFeatures.enabled) return " rt=on(AS+rayQuery+BDA, snormAsVertex)";
+            return " rt=unavailable(" + (RtDeviceFeatures.unavailable == null ? "?" : RtDeviceFeatures.unavailable.replace(' ', '_')) + ")";
+        }
+    }
+
+    /** H1B (RQ-H1-b): why the RT harnesses cannot run on this device (they SKIP with it), or null. Raw queries only. */
+    static String rtAbsent(MemoryStack outer, VkPhysicalDevice phys) {
+        try (MemoryStack s = outer.push()) {
+            Set<String> exts = VkEnum.deviceExtensions(phys);
+            boolean ext = true;
+            for (String e : RtDeviceFeatures.EXTENSIONS) ext &= exts.contains(e);
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR as = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default();
+            VkPhysicalDeviceRayQueryFeaturesKHR rq = VkPhysicalDeviceRayQueryFeaturesKHR.calloc(s).sType$Default().pNext(as.address());
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default().pNext(rq.address());
+            vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a12.address()));
+            VkFormatProperties fp = VkFormatProperties.calloc(s);
+            vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_R16G16B16A16_SNORM, fp);
+            boolean snorm = (fp.bufferFeatures() & KHRAccelerationStructure.VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR) != 0;
+            return RtDeviceFeatures.unavailableReason(ext, new dev.elemore.iroh.rt.RtCapabilities(as.accelerationStructure(), rq.rayQuery(), a12.bufferDeviceAddress(), false, false, 0), snorm);
+        }
+    }
 
     static void check(boolean ok, String msg) { if (!ok) PROBLEMS.add(msg); }
 
@@ -153,9 +193,18 @@ public final class HwCapsRepro {
         }
     }
 
-    /** Branch hook: extra feature structs the branch's own device code chains behind the 1.2 struct (none on 2b). */
-    static void extendChain(MemoryStack s, VkPhysicalDevice phys, VkPhysicalDeviceVulkan12Features e12) {}
+    /** Branch hook: extra feature structs the branch's own device code chains behind the 1.2 struct (RT structs on 4c). */
+    static void extendChain(MemoryStack s, VkPhysicalDevice phys, VkPhysicalDeviceVulkan12Features e12) {
+        RtDeviceFeatures.enabled = false;
+        RtDeviceFeatures.unavailable = null;
+        e12.pNext(RtDeviceFeatures.chain(s, phys, e12, e12.pNext())); // DeviceManager order: RT structs in front of the 1.2 struct's tail
+    }
 
-    /** Branch hook: device extensions the branch's own device code enables (none on 2b). */
-    static void deviceExtensions(MemoryStack s, VkDeviceCreateInfo dci) {}
+    /** Branch hook: device extensions the branch's own device code enables (RT structs on 4c). */
+    static void deviceExtensions(MemoryStack s, VkDeviceCreateInfo dci) {
+        if (!RtDeviceFeatures.enabled) return;
+        PointerBuffer ext = s.mallocPointer(RtDeviceFeatures.EXTENSIONS.length);
+        for (String e : RtDeviceFeatures.EXTENSIONS) ext.put(s.UTF8(e));
+        dci.ppEnabledExtensionNames(ext.flip());
+    }
 }
