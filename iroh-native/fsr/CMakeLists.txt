@@ -49,7 +49,7 @@ target_compile_definitions(iroh_fsr PRIVATE FFX_BUILD_AS_DLL FFX_FSR3UPSCALER FF
 if(WIN32)
   target_include_directories(iroh_fsr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shim/win32 ${IROH_VK_INCLUDE})
   target_compile_options(iroh_fsr PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/ffx_mingw_shim.h -fpermissive -w)
-  target_link_options(iroh_fsr PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--unresolved-symbols=report-all)
+  target_link_options(iroh_fsr PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp -Wl,--unresolved-symbols=report-all)
   target_link_libraries(iroh_fsr PRIVATE ${IROH_VULKAN_IMPORT_LIB})
 else()
   find_package(Vulkan REQUIRED)
