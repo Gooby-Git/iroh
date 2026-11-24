@@ -7,7 +7,7 @@
 set -uo pipefail
 WT=$(readlink -f "${1:?worktree}"); LABEL=${2:-$(basename "$WT")}; GLOB=${3:-*}; TFILTER=${4:-.}
 HERE=$(cd "$(dirname "$0")" && pwd); PROF=$HERE/hw-profiles
-OUT=$HERE/../build-hw/$LABEL; mkdir -p "$OUT"; : > "$OUT/tiers.txt"
+OUT=$HERE/../build-hw/$LABEL; mkdir -p "$OUT"; 
 export JAVA_HOME=${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}; export PATH=$JAVA_HOME/bin:$PATH
 LAYER_DIR=${VK_PROFILES_LAYER_DIR:-$HOME/.local/share/vulkan/explicit_layer.d}
 [ -f "$LAYER_DIR/VkLayer_khronos_profiles.json" ] || { echo "profiles layer missing in $LAYER_DIR"; exit 2; }
@@ -43,6 +43,7 @@ run_cell() { # profile(or BASE) task-args -> prints "VERDICT|harness|valerr|note
 }
 
 tasks=(); for t in "${TASKS[@]}"; do have "${t%% *}" && [[ "${t%% *}" =~ $TFILTER ]] && tasks+=("$t"); done
+[[ " ${tasks[*]} " == *hwCapsRepro* ]] && : > "$OUT/tiers.txt"  # only a run that includes hwCapsRepro rewrites the tier table
 echo "worktree $WT ($(git -C "$WT" rev-parse --short HEAD)) tasks: ${tasks[*]}" | tee "$OUT/matrix.txt"
 declare -A BH BV
 for t in "${tasks[@]}"; do r=$(run_cell BASE "$t"); BH[$t]=${r%%|*}; rest=${r#*|}; BV[$t]=${rest%%|*}; echo "BASE  ${t%% *}: $r" | tee -a "$OUT/matrix.txt"; done
@@ -52,7 +53,7 @@ for pf in "$PROF"/$GLOB.json; do
   for t in "${tasks[@]}"; do
     r=$(run_cell "$p" "$t"); h=${r%%|*}; rest=${r#*|}; v=${rest%%|*}; n=${rest#*|}
     # PASS: same harness verdict as BASE, no crash, validation errors not above BASE
-    if [[ "$n" == *CRASH* ]]; then c="FAIL(crash)"; elif [ "$h" = SKIP ]; then c="SKIP"; elif [ "$h" != "${BH[$t]}" ]; then c="FAIL($h)"; elif [ "${v:-0}" -gt "${BV[$t]:-0}" ]; then c="FAIL(val+$((v-${BV[$t]:-0})))"; else c="PASS(v$v)"; fi
+    if [[ "$n" == *CRASH* ]]; then c="FAIL(crash)"; elif [ "$h" = SKIP ] && [[ "$n" != *rc=* ]] && [ "${v:-0}" -le "${BV[$t]:-0}" ]; then c="SKIP"; elif [ "$h" = SKIP ]; then c="FAIL(skip-with-errors)"; elif [ "$h" != "${BH[$t]}" ]; then c="FAIL($h)"; elif [ "${v:-0}" -gt "${BV[$t]:-0}" ]; then c="FAIL(val+$((v-${BV[$t]:-0})))"; else c="PASS(v$v)"; fi
     [[ "$n" == *layer-error* ]] && c="$c*"
     line+=$(printf ' %-16s' "$c")
     # H1B: the production tier line of hwCapsRepro goes to tiers.txt (one row per profile)
