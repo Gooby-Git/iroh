@@ -642,8 +642,22 @@ final class PackRuntimeImpl {
         importedColour = importedDepth = null;
     }
 
+    /** PACK-FULL: Vulkan.cleanUp (device idle; the frame command buffer may be gone): release everything, record nothing */
+    void shutdown() {
+        if (world != null)
+            world.dropForShutdown();
+        disable();
+    }
+
     void disable() {
-        unload();
+        try {
+            unload();
+        } finally { // review #1: a failing unload must not skip the executor and backend release
+            disableRest();
+        }
+    }
+
+    private void disableRest() {
         if (lc != null)
             lc.disable();
         if (gpu != null)

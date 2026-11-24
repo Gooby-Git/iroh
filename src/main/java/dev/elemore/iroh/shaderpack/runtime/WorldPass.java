@@ -264,9 +264,12 @@ public final class WorldPass {
         // PACK-FULL (T-2 I-9: descriptors naming TRANSFER_DST, VUID 04150 / 09600 / submit layout): a renderer texture
         // uploaded this frame is still in its transfer layout. Move it to SHADER_READ_ONLY as the renderer would, and
         // never inside a render pass: close our attachments for it (rare: once per freshly uploaded texture).
-        if (texHandle >= 0 && !noSamplePrepForTest && !gpu.sampleReady(texHandle)) {
-            suspend();
-            gpu.prepareSample(texHandle);
+        if (texHandle >= 0 && !noSamplePrepForTest) {
+            if (!gpu.sampleReady(texHandle)) {
+                suspend();
+                gpu.prepareSample(texHandle);
+            } else
+                gpu.noteSampled(texHandle);
         }
         if (open != pendSp)
             enter(pendSp); // a foreign recording closed the attachments between the bind and this draw
@@ -309,6 +312,17 @@ public final class WorldPass {
             textures.put(tex, t);
         }
         return (int) t[0];
+    }
+
+    /**
+     * PACK-FULL (review #1): game shutdown (Vulkan.cleanUp, possibly after an exception mid-frame, the frame command
+     * buffer already freed): forget the open attachments and the pass state WITHOUT recording anything.
+     */
+    public void dropForShutdown() {
+        open = null;
+        irohEnded = false;
+        pendSp = null;
+        phase = Phase.OFF;
     }
 
     /** PACK-FULL negative controls (packFullVkRepro -Pmode=old): the pre-fix bind order / no sample preparation */
