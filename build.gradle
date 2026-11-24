@@ -258,6 +258,19 @@ def useLavapipe = { JavaExec t ->
 	}
 }
 
+// UPLOAD-SYNC (RQ-R1-a): api-4 upload order per consumer type on lavapipe. ./gradlew uploadSyncRepro ; "# uploadsync PASS n/n".
+// -Pmode=legacy = the pre-UPLOAD-SYNC path (negative control: wrong values + hazards; the harness line still says PASS when reproduced)
+tasks.register('uploadSyncRepro', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.apitest.UploadSyncRepro'
+	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	if (project.findProperty('mode') == 'legacy') jvmArgs '-Diroh.api4.upload=preframe'
+	ext.syncval = true // F-2b settings; the layer is forced on (HeadlessGpuDevice does not load it): messages on stdout "Validation Error"
+	doFirst { useLavapipe(it); it.environment 'VK_LOADER_LAYERS_ENABLE', 'VK_LAYER_KHRONOS_validation' }
+}
+
 // api 4 (card V-M1): GPU api exerciser on lavapipe (CPU Vulkan only, 1 GiB cap). ./gradlew apiReplay [-Pgolden=sha]
 // lavapipe from the system ICD or, until vulkan-swrast is installed, the flatpak GL runtime through an ICD file under
 // build/lvp (same approach as the pack replay in iroh-wt-p3; nothing is installed).

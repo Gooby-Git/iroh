@@ -75,7 +75,11 @@ public final class GpuLifecycle {
 
     public static void frameStart(int slot) {
         IrohGpuDevice d = device;
-        if (d != null) d.frameStart(slot);
+        if (d != null) {
+            d.frameStart(slot);
+            GpuCore c = GpuCore.orNull(); // UPLOAD-SYNC: frame serials (which frames may still be in flight)
+            if (c != null) c.frameStart();
+        }
     }
 
     public static void resize(int w, int h) {

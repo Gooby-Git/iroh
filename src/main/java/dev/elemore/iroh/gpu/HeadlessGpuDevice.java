@@ -28,13 +28,21 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private final VkDevice device;
     private final VkQueue queue;
     private final long cmdPool, fence, descPool, sampler;
-    private final VkCommandBuffer cmd;
+    private final VkCommandBuffer cmd, uploadCmd;
     private final VkPhysicalDeviceMemoryProperties memProps;
     private final boolean drawIndirectCount;
     public final String deviceName;
     public final long cap;
     private long allocated;
-    private boolean recording;
+    private boolean recording, uploadRecording;
+    private final java.util.Set<Long> uploadDsts = new java.util.HashSet<>(); // buffers written by the open upload batch
+
+    /**
+     * UPLOAD-SYNC test switches. {@code betweenFrames}: no frame is recording (game: a client tick, AFTER_PRESENT; GpuCore
+     * then uses the pre-frame path or defers). {@code mainPassBound}: emulates the game's main pass being bound (no
+     * in-frame copy possible; api 4.0 has no pass break).
+     */
+    public boolean betweenFrames, mainPassBound;
     private final List<Runnable> later = new ArrayList<>();
     private final List<VkBuf> staging = new ArrayList<>();
 
@@ -108,6 +116,9 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(s).sType$Default().commandPool(cmdPool)
                     .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), pp), "cmd");
             cmd = new VkCommandBuffer(pp.get(0), device);
+            check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(s).sType$Default().commandPool(cmdPool)
+                    .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), pp), "upload cmd");
+            uploadCmd = new VkCommandBuffer(pp.get(0), device);
             check(vkCreateFence(device, VkFenceCreateInfo.calloc(s).sType$Default(), null, lb), "fence");
             fence = lb.get(0);
             VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, s);
@@ -125,7 +136,24 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     @Override public String name() { return "headless:" + deviceName; }
     @Override public boolean supportsDrawIndirectCount() { return drawIndirectCount; }
     @Override public long capBytes() { return cap; }
-    @Override public boolean canRecordOutsideMainPass() { return !inRendering; }
+    @Override public boolean canRecordOutsideMainPass() { return !inRendering && !mainPassBound; }
+    @Override public boolean inFrameCopyPossible() { return !inRendering && !mainPassBound && !betweenFrames; }
+    @Override public boolean frameRecording() { return !betweenFrames; }
+
+    /**
+     * UPLOAD-SYNC: PRE-FRAME uploads go into a separate command buffer submitted BEFORE the frame's (see {@link #flush}),
+     * the game's order (UploadManager's batch is submitted at endFrame ahead of the frame, which waits on it).
+     */
+    private VkCommandBuffer uploadCmd() {
+        if (!uploadRecording) {
+            try (MemoryStack s = stackPush()) {
+                vkResetCommandBuffer(uploadCmd, 0);
+                vkBeginCommandBuffer(uploadCmd, VkCommandBufferBeginInfo.calloc(s).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT));
+            }
+            uploadRecording = true;
+        }
+        return uploadCmd;
+    }
     @Override protected VkDevice device() { return device; }
     @Override protected long pipelineCache() { return VK_NULL_HANDLE; }
     @Override protected long sampler() { return sampler; }
@@ -211,6 +239,29 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             vkMapMemory(device, ((Mem) st.alloc()).memory(), 0, len, 0, pp);
             MemoryUtil.memCopy(MemoryUtil.memAddress(src), pp.get(0), len);
             vkUnmapMemory(device, ((Mem) st.alloc()).memory());
+            VkCommandBuffer uc = uploadCmd(); // UPLOAD-SYNC: was cmd() (in-stream), not the game's order
+            long dst = ((VkBuf) buffer).buffer();
+            if (!uploadDsts.add(dst)) { // a second write to one buffer in a batch, as UploadManager.dstBuffers
+                vkCmdPipelineBarrier(uc, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                        VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT), null, null);
+                uploadDsts.clear();
+                uploadDsts.add(dst);
+            }
+            vkCmdCopyBuffer(uc, st.buffer(), dst, VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
+        }
+        staging.add(st);
+    }
+
+    /** UPLOAD-SYNC: host staging (freed at {@link #flush} after the wait) copied in the frame command buffer */
+    @Override
+    public void uploadInFrame(Object buffer, long offset, ByteBuffer src) {
+        int len = src.remaining();
+        VkBuf st = buffer(len, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        try (MemoryStack s = stackPush()) {
+            PointerBuffer pp = s.mallocPointer(1);
+            vkMapMemory(device, ((Mem) st.alloc()).memory(), 0, len, 0, pp);
+            MemoryUtil.memCopy(MemoryUtil.memAddress(src), pp.get(0), len);
+            vkUnmapMemory(device, ((Mem) st.alloc()).memory());
             vkCmdCopyBuffer(cmd(), st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
         }
         staging.add(st);
@@ -257,12 +308,20 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
 
     @Override
     public void flush() {
-        if (recording) {
+        if (recording || uploadRecording) {
             try (MemoryStack s = stackPush()) {
+                cmd(); // a frame with uploads only still submits an (empty) frame buffer after them
                 vkEndCommandBuffer(cmd);
                 recording = false;
+                PointerBuffer bufs = s.pointers(cmd);
+                if (uploadRecording) { // the frame's pre-frame uploads first (the game's order)
+                    vkEndCommandBuffer(uploadCmd);
+                    uploadRecording = false;
+                    uploadDsts.clear();
+                    bufs = s.pointers(uploadCmd, cmd);
+                }
                 vkResetFences(device, fence);
-                check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(cmd)), fence), "vkQueueSubmit");
+                check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(bufs), fence), "vkQueueSubmit");
                 int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
                 if (r != VK_SUCCESS) throw new IllegalStateException("headless work did not finish in 120 s (VkResult " + r + ")");
             }

@@ -21,6 +21,21 @@ public interface GpuDevice {
     /** True where compute and off-screen passes may be recorded now (outside the main render pass). */
     boolean canRecordOutsideMainPass();
 
+    /** UPLOAD-SYNC: true while a frame command buffer is recording (game: between beginFrame and endFrame). Default true. */
+    default boolean frameRecording() { return true; }
+
+    /** UPLOAD-SYNC: frames the device keeps in flight (game: the frame slots). Default 1 (offline: every flush waits). */
+    default int framesInFlight() { return 1; }
+
+    /**
+     * UPLOAD-SYNC: true when a copy can be recorded into the frame command buffer NOW (a frame records, no render pass
+     * bound). No side effects. Default false: the pre-frame path only.
+     */
+    default boolean inFrameCopyPossible() { return false; }
+
+    /** UPLOAD-SYNC IN-STREAM upload: the copy recorded into the frame command buffer here (only where inFrameCopyPossible). */
+    default void uploadInFrame(Object buffer, long offset, java.nio.ByteBuffer src) { throw new UnsupportedOperationException("in-frame upload"); }
+
     Object createBuffer(long bytes, int usage);
 
     long bufferSize(Object buffer);
@@ -29,6 +44,11 @@ public interface GpuDevice {
     void destroyBuffer(Object buffer);
 
     /** Copies {@code src} (position..limit) to {@code buffer} at {@code offset}; visible to later recorded work. */
+    /**
+     * PRE-FRAME upload: a batch that runs BEFORE all GPU work of the next frame submit (game: UploadManager, submitted at
+     * endFrame on the transfer family, the frame waits on it). Not ordered against work already recorded in the frame nor
+     * against frames in flight: {@link GpuCore#upload} picks it only where neither can see it (UPLOAD-SYNC).
+     */
     void upload(Object buffer, long offset, ByteBuffer src);
 
     Object createComputePipeline(String name, ByteBuffer spirv, int storageBuffers, int pushBytes);

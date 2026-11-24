@@ -407,6 +407,7 @@ public class Renderer {
         net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
         // api 4 (card V-M1): BEFORE_MAIN_PASS: the frame command buffer records, no render pass is bound (mod compute,
         // uploads, own passes). Fires every frame, also on menus.
+        { var gc = dev.elemore.iroh.gpu.GpuCore.orNull(); if (gc != null) gc.frameRecordingStarted(); } // UPLOAD-SYNC: deferred api-4 uploads land first
         dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.BEFORE_MAIN_PASS);
         mainPass.begin(commandBuffer, stack);
 
@@ -1068,6 +1069,12 @@ public class Renderer {
         if (LOGGED_NOT_RECORDING.add(what))
             Initializer.LOGGER.warn("Iroh: {} outside a recording frame ignored (logged once)", what, new Throwable("called from"));
         return null;
+    }
+
+    /** UPLOAD-SYNC: a frame command buffer is recording (no log, no renderer = false) */
+    public static boolean isRecordingSafe() {
+        Renderer r = INSTANCE;
+        return r != null && r.recordingCmds && r.currentCmdBuffer != null;
     }
 
     public static boolean isRecording() {
