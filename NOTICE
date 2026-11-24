@@ -29,3 +29,6 @@ Upstream VulkanMod changes after the fork point (LGPL-3.0, same project, xCollat
 card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh commit per upstream commit, adapted to 1.21.1):
   7a1e520 "Add int index type for lines render type": vulkan/memory/buffer/index/AutoIndexBuffer.java (genIntLinesIndices),
           vulkan/Drawer.java (capacity in vertices).
+  babff0c "Fix memory leak on section upload": render/vertex/TerrainBuilder.java (index realloc field, free),
+          render/vertex/TerrainBufferBuilder.java, render/chunk/build/thread/{ThreadBuilderPack,BuilderResources}.java,
+          render/chunk/build/task/{TaskDispatcher,SortTransparencyTask}.java.

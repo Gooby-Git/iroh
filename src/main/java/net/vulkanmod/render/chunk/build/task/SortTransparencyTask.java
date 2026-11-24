@@ -49,6 +49,7 @@ public class SortTransparencyTask extends ChunkTask {
         bufferBuilder.reset();
 
         if (this.cancelled.get()) {
+            uploadBuffer.release(); // upstream VulkanMod babff0c: the base leaked the staged / cloned index data here
             return Result.CANCELLED;
         }
 

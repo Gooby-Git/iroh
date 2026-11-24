@@ -68,10 +68,14 @@ public class TaskDispatcher {
 
         this.stopThreads = false;
 
+        // Upstream VulkanMod babff0c: the old threads were joined by stopThreads() above (or earlier, when the world was
+        // unloaded), so their builders are free to release. The base only cleared them, leaking every builder's native
+        // index and vertex blocks (tens of MB of address space per thread) on each allChanged / builder-count change.
         if(this.resources != null) {
             for (BuilderResources resources : this.resources) {
-                resources.clear();
+                resources.free();
             }
+            this.resources = null;
         }
 
         // perf/hitches: count from physical cores (ThreadPolicy), configured count = the base; adaptive extra builders

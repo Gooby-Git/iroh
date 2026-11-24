@@ -481,6 +481,16 @@ tasks.register('chunkDeferTest', JavaExec) {
 	mainClass = 'net.vulkanmod.render.chunk.build.task.ChunkDeferTest'
 }
 
+// P2-13 upstream VulkanMod back-ports that run headless (babff0c terrain index growth, 7a1e520 32-bit line indices).
+// ./gradlew upstreamBackportTest ; last line "# backport PASS n/n"
+tasks.register('upstreamBackportTest', JavaExec) {
+	group = 'verification'
+	description = 'Check the headless parts of the P2-13 upstream VulkanMod back-ports'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.vertex.UpstreamBackportTest'
+}
+
 // P4-1a upscaler-input maths: render sizes, SDK jitter, projection jitter + Y sign, motion vectors. ./gradlew temporalMathTest
 // last line "# temporalmath PASS n/n"
 tasks.register('temporalMathTest', JavaExec) {

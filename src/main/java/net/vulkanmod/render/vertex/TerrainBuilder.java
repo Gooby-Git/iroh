@@ -17,7 +17,6 @@ public class TerrainBuilder {
     protected long indexBufferPtr;
 
     private int indexBufferCapacity;
-    protected long bufferPtr;
 
     private final VertexFormat format;
 
@@ -64,9 +63,11 @@ public class TerrainBuilder {
     }
 
     private void resizeIndexBuffer(int i) {
-        this.bufferPtr = ALLOCATOR.realloc(this.bufferPtr, i);
+        // Upstream VulkanMod babff0c: the base reallocated an unused `bufferPtr` field here, so the index buffer kept its
+        // old size while the capacity grew (sorted indices then overran it) and the new block leaked.
+        this.indexBufferPtr = ALLOCATOR.realloc(this.indexBufferPtr, i);
         LOGGER.debug("Needed to grow index buffer: Old size {} bytes, new size {} bytes.", this.indexBufferCapacity, i);
-        if (this.bufferPtr == 0L) {
+        if (this.indexBufferPtr == 0L) {
             throw new OutOfMemoryError("Failed to resize buffer from " + this.indexBufferCapacity + " bytes to " + i + " bytes");
         } else {
             this.indexBufferCapacity = i;
@@ -160,6 +161,17 @@ public class TerrainBuilder {
 
         for (TerrainBufferBuilder bufferBuilder : this.bufferBuilders) {
             bufferBuilder.clear();
+        }
+    }
+
+    /** Upstream VulkanMod babff0c: frees the native index and vertex blocks. The builder must not be used afterwards. */
+    public void free() {
+        ALLOCATOR.free(this.indexBufferPtr);
+        this.indexBufferPtr = 0L;
+        this.indexBufferCapacity = 0;
+
+        for (TerrainBufferBuilder bufferBuilder : this.bufferBuilders) {
+            bufferBuilder.free();
         }
     }
 
