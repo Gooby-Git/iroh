@@ -132,6 +132,23 @@ public final class PackRuntime {
         return "ok";
     }
 
+    /**
+     * PACK-FULL (T-2 I-7/I-9: 62-227 objects leaked at vkDestroyDevice in full mode): Vulkan.cleanUp, render thread,
+     * device idle, BEFORE Iroh runs its frame ops and frees leftovers: the pack's images, pipelines, render passes,
+     * framebuffers, samplers, buffers, descriptor pools and query pool are released (nothing called disable at exit).
+     */
+    public static synchronized void shutdown() {
+        active = false;
+        PackRuntimeImpl i = impl;
+        if (i == null)
+            return;
+        try {
+            i.disable();
+        } catch (RuntimeException e) {
+            net.vulkanmod.Initializer.LOGGER.warn("Iroh pack: shutdown release failed: {}", e.toString());
+        }
+    }
+
     /** called by PackRuntimeImpl when the path failed for the session */
     static void deactivate() {
         active = false;

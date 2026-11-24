@@ -344,6 +344,7 @@ final class PackRuntimeImpl {
                     };
                 else
                     lc.executor().afterInputs = () -> startCapture(cap, f, false);
+            prepImported();
             ok[0] = lc.frame(inputs, f, present, skip);
             if (lc.executor() != null) {
                 lc.executor().afterInputs = null;
@@ -401,30 +402,54 @@ final class PackRuntimeImpl {
         inputs.geometryVersion++;
         inputs.depthTo = DebugSwitches.on(PackSwitches.FULL_DEPTH_BACK) ? hDepth : -1;
         fillSkip(true, f);
-        FrameExecutor ex = lc.begin(inputs, f, DebugSwitches.on(PackSwitches.PRESENT) ? hColour : -1, skip);
-        if (ex == null) {
+        // PACK-FULL (T-2 I-9: barriers + clears + buffer->image copies inside Iroh's render pass at every resize): lc.begin
+        // REBUILDS the executor on a size / folder change, and prepare() creates every pack image (creation barrier +
+        // zeroing clear) and uploads its textures into the frame command buffer. It ran here with Iroh's main pass bound.
+        // Now the rebuild, the world pass (re)creation and segment 0 share ONE endPassRunResume (no extra pass break).
+        int present = DebugSwitches.on(PackSwitches.PRESENT) ? hColour : -1;
+        boolean subst = DebugSwitches.on(PackSwitches.WORLD_SUBSTITUTE);
+        int[] res = {0}; // 0 ok, 1 lifecycle refused, 2 world pass failed (reason in why[0]), 3 segment failed
+        String[] why = {null};
+        VulkanImage.endPassRunResume(() -> {
+            FrameExecutor ex = lc.begin(inputs, f, present, skip);
+            if (ex == null) {
+                res[0] = 1;
+                return;
+            }
+            if (world == null || world.executor() != ex || subst != worldSubst) {
+                try {
+                    dev.elemore.iroh.diag.FeatureFailures.inject("worldPass"); // INT-3 test seam
+                    if (worldGame == null)
+                        worldGame = new WorldPassGame(gpu);
+                    if (world != null) // PACK-FULL: the old world pass's imported draw textures are forgotten, not kept per rebuild
+                        world.forgetTextures();
+                    world = new WorldPass(ex, gpu, worldGame, worldGame, SubstitutionHook.rasterMods(), subst);
+                } catch (RuntimeException e) {
+                    res[0] = 2;
+                    why[0] = e.getClass().getSimpleName() + ": " + e.getMessage();
+                    return;
+                }
+                worldSubst = subst;
+            }
+            ex.rasterOver = hColour;
+            WorldPass w0 = world;
+            if (!lc.segment(() -> {
+                prepImported();
+                w0.begin(inputs);
+            }))
+                res[0] = 3;
+        });
+        if (res[0] == 1) {
             if (lc.state() == PackLifecycle.State.FAILED)
                 fail(lc.failure);
             return false;
         }
-        boolean subst = DebugSwitches.on(PackSwitches.WORLD_SUBSTITUTE);
-        if (world == null || world.executor() != ex || subst != worldSubst) {
-            try {
-                dev.elemore.iroh.diag.FeatureFailures.inject("worldPass"); // INT-3 test seam
-                if (worldGame == null)
-                    worldGame = new WorldPassGame(gpu);
-                world = new WorldPass(ex, gpu, worldGame, worldGame, SubstitutionHook.rasterMods(), subst);
-            } catch (RuntimeException e) {
-                failWorld(e.getClass().getSimpleName() + ": " + e.getMessage());
-                return false;
-            }
-            worldSubst = subst;
+        if (res[0] == 2) {
+            failWorld(why[0]);
+            return false;
         }
-        ex.rasterOver = hColour;
         WorldPass w = world;
-        boolean[] ok = {false};
-        VulkanImage.endPassRunResume(() -> ok[0] = lc.segment(() -> w.begin(inputs)));
-        if (!ok[0]) {
+        if (res[0] == 3) {
             failWorld(lc.failure != null ? lc.failure : "begin failed");
             return false;
         }
@@ -446,6 +471,7 @@ final class PackRuntimeImpl {
         WorldPass w = world;
         boolean skySubst = w.perClass.containsKey("sky_basic") && w.perClass.get("sky_basic")[0] > 0;
         VulkanImage.endPassRunResume(() -> lc.segment(() -> {
+            prepImported();
             w.afterSky();
             if (!skySubst && DebugSwitches.on(PackSwitches.FULL_RASTER_SKY))
                 w.executor().blitIn(hColour, "colortex0");
@@ -461,6 +487,7 @@ final class PackRuntimeImpl {
         WorldPass w = world;
         boolean back = DebugSwitches.on(PackSwitches.FULL_DEPTH_BACK);
         VulkanImage.endPassRunResume(() -> lc.segment(() -> {
+            prepImported();
             w.opaque(inputs);
             if (back)
                 w.executor().blitOut("depthtex0", hDepth); // raster remainder draws occlude against terrain
@@ -473,7 +500,10 @@ final class PackRuntimeImpl {
         if (!worldFrame || world.phase() != WorldPass.Phase.OPAQUE)
             return;
         WorldPass w = world;
-        VulkanImage.endPassRunResume(() -> lc.segment(() -> w.translucent(inputs)));
+        VulkanImage.endPassRunResume(() -> lc.segment(() -> {
+            prepImported();
+            w.translucent(inputs);
+        }));
         checkLc();
     }
 
@@ -482,7 +512,10 @@ final class PackRuntimeImpl {
         if (!worldFrame)
             return;
         WorldPass w = world;
-        VulkanImage.endPassRunResume(() -> lc.segment(() -> w.end(inputs)));
+        VulkanImage.endPassRunResume(() -> lc.segment(() -> {
+            prepImported();
+            w.end(inputs);
+        }));
         worldFrame = false;
         SubstitutionHook.active = null;
         Substitution.setBit(Substitution.WORLD, false);
@@ -566,6 +599,17 @@ final class PackRuntimeImpl {
         }
     }
 
+    /**
+     * PACK-FULL: the block atlas (imported, sampled by the pack's terrain and substituted programs) in a sampling
+     * layout before a segment records descriptors naming it: an atlas upload earlier in the frame leaves it in
+     * TRANSFER_DST (compare-and-skip when it is already SHADER_READ_ONLY). Segments run inside endPassRunResume with the
+     * world pass's attachments closed: outside every render pass.
+     */
+    private void prepImported() {
+        if (gpu != null && hAtlas >= 0)
+            gpu.prepareSample(hAtlas);
+    }
+
     private void fail(String why) {
         failed = true;
         worldFrame = false;
@@ -607,6 +651,11 @@ final class PackRuntimeImpl {
         dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = null;
         gpu = null;
         lc = null;
+        // PACK-FULL: handles of the closed backend: a reload made a new backend but kept the atlas handle (no re-import:
+        // same VulkanImage) and WorldPassGame imported draw textures into the OLD backend
+        hAtlas = -1;
+        importedAtlas = null;
+        worldGame = null;
         lastFolder = null;
         log("disabled: pack images, pipelines and buffers freed (deferred)");
         if (dev.elemore.iroh.diag.ImageTrace.ON) // the frees land when the frame slots come round: report then
