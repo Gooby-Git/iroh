@@ -33,3 +33,5 @@ card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh co
           render/vertex/TerrainBufferBuilder.java, render/chunk/build/thread/{ThreadBuilderPack,BuilderResources}.java,
           render/chunk/build/task/{TaskDispatcher,SortTransparencyTask}.java.
   e5dad79 "Fix sort task thread race condition bug": render/chunk/build/task/SortTransparencyTask.java (null sort state).
+  45b97c3 "Mitigate translucency sorting issue": render/chunk/WorldRenderer.java (sortTranslucentSections counts only
+          scheduled sorts; Iroh keeps vanilla's limit of 15 instead of upstream's 200 non-empty sections).

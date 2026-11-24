@@ -632,12 +632,16 @@ public class WorldRenderer {
 
             Iterator<RenderSection> iterator = this.sectionGraph.getSectionQueue().iterator(false);
 
+            // Upstream VulkanMod 45b97c3 ("Mitigate translucency sorting issue"): the base counted every visited section,
+            // empty air included, so only the nearest 15 sections of any kind were resorted and translucent sections a
+            // few sections away (water seen from above, glass) kept a stale order. Upstream counts non-empty sections up
+            // to 200; Iroh follows vanilla 1.21.1 (LevelRenderer.renderSectionLayer): count only the sections that got a
+            // sort task, at most 15, nearest first.
             while (iterator.hasNext() && j < 15) {
                 RenderSection section = iterator.next();
 
-                section.resortTransparency(this.taskDispatcher);
-
-                ++j;
+                if (section.resortTransparency(this.taskDispatcher))
+                    ++j;
             }
             if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SORTED, j);
         }
