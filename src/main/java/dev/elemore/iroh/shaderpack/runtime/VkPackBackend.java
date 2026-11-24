@@ -626,9 +626,19 @@ public abstract class VkPackBackend implements GpuBackend {
                     && !(formatHas(a.format, VK_FORMAT_FEATURE_BLIT_SRC_BIT) && formatHas(b.format, VK_FORMAT_FEATURE_BLIT_DST_BIT))) {
                 // V6AB (RQ-V6-a): the device cannot blit this colour pair (VUID-vkCmdBlitImage-dstImage-02000, e.g. B10G11R11 on
                 // lavapipe): convert with a compute pass instead; leave the transfer layouts first, the pass samples and stores
-                leaveTransfer(a, la, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                // review 5a0778f #1: an imported source (the scene colour, kept in COLOR_ATTACHMENT_OPTIMAL by its owner) is sampled
+                // by the draw, so it goes TRANSFER_SRC -> SHADER_READ_ONLY (the layout the descriptor then names) and back to its own layout
+                if (a.imported != null) {
+                    layout(cmd(), a.image, barrierAspect(a.format, a.aspect), 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    a.imported.set(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                }
                 leaveTransfer(b, lb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                computeBlit(a, b, src, dst);
+                try {
+                    computeBlit(a, b, src, dst);
+                } finally {
+                    if (a.imported != null)
+                        leaveTransfer(a, la, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                }
                 return;
             } else if (a.aspect == VK_IMAGE_ASPECT_COLOR_BIT && b.aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
                 VkImageBlit.Buffer r = VkImageBlit.calloc(1, s);
@@ -636,7 +646,9 @@ public abstract class VkPackBackend implements GpuBackend {
                 r.srcOffsets(1).set(a.d.width(), a.d.height(), 1);
                 r.dstSubresource().aspectMask(b.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
                 r.dstOffsets(1).set(b.d.width(), b.d.height(), 1);
-                vkCmdBlitImage(cmd(), a.image, sa, b.image, sb, r, VK_FILTER_LINEAR);
+                // review 5a0778f #2: LINEAR needs SAMPLED_IMAGE_FILTER_LINEAR on the source format (VUID-vkCmdBlitImage-filter-02001)
+                vkCmdBlitImage(cmd(), a.image, sa, b.image, sb, r,
+                        formatHas(a.format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
             } else if (a.format == b.format && a.aspect == VK_IMAGE_ASPECT_DEPTH_BIT && depthBlit(a.format)) {
                 // P3-7: depth resized for passes after the upscale cut: NEAREST is the only filter allowed for depth
                 VkImageBlit.Buffer r = VkImageBlit.calloc(1, s);
@@ -701,14 +713,18 @@ public abstract class VkPackBackend implements GpuBackend {
         u.putFloat(0, b.d.width()).putFloat(4, b.d.height());
         fence();
         draw(new Draw("engine:blit", pipe, new int[]{dst}, new int[]{0, 0, b.d.width(), b.d.height()},
-                Map.of(1, Bind.image(src, "LINEAR_NOMIP")), Map.of(), u.array()));
+                Map.of(1, Bind.image(src, formatHas(a.format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? "LINEAR_NOMIP" : "NEAREST")), Map.of(), u.array()));
         fence();
     }
 
     private static byte[] spirv(java.nio.ByteBuffer sp) {
-        byte[] bytes = new byte[sp.remaining()];
-        sp.duplicate().get(bytes);
-        return bytes;
+        try {
+            byte[] bytes = new byte[sp.remaining()];
+            sp.duplicate().get(bytes);
+            return bytes;
+        } finally {
+            org.lwjgl.system.MemoryUtil.memFree(sp); // Glsl.compile hands the caller a memAlloc'd buffer (review 5a0778f #3)
+        }
     }
 
     /** full memory barrier around the compute blit (the executor's access tracking only knows transfers here) */
@@ -1152,6 +1168,7 @@ public abstract class VkPackBackend implements GpuBackend {
                 freeHostBuffer(q);
         });
         pipes.clear();
+        blitPipes.clear(); // review 5a0778f #3: indices into pipes
         samplers.clear();
         renderPasses.clear();
         bufs.clear();
