@@ -392,8 +392,12 @@ public final class WorldPass {
             open = null;
         }
         if (irohEnded) {
-            host.resumeIrohPass();
+            // 3B-REG (td-d7b902): clear BEFORE the resume. The real host's resume re-enters closeForForeign
+            // (WorldPassGame.resumeIrohPass -> DefaultMainPass.rebindMainTarget -> Renderer.endRenderPass ->
+            // SubstitutionHook.closeForForeign -> leave); with open == null and irohEnded still true PACK-FULL's guard
+            // let it through again: unbounded recursion (StackOverflowError in the Navidson world).
             irohEnded = false;
+            host.resumeIrohPass();
         }
         host.invalidateBoundState();
         host.reapplyDynamicState();

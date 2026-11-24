@@ -55,7 +55,17 @@ public final class WorldPassTest {
 
         public boolean irohPassBound() { return bound; }
         public void endIrohPass() { if (!bound) log.add("BAD end unbound"); bound = false; ends++; log.add("iroh end"); }
-        public void resumeIrohPass() { if (bound) log.add("BAD resume bound"); bound = true; begins++; log.add("iroh resume"); }
+        /** 3B-REG: the real host re-enters the world pass from inside the resume (Renderer.endRenderPass -> SubstitutionHook.closeForForeign) */
+        WorldPass reenter;
+        int depth, maxDepth;
+        public void resumeIrohPass() {
+            if (bound) log.add("BAD resume bound");
+            bound = true; begins++; log.add("iroh resume");
+            if (reenter != null && depth < 40) { // 40: stand-in for the StackOverflowError
+                depth++; maxDepth = Math.max(maxDepth, depth);
+                try { reenter.closeForForeign(); } finally { depth--; }
+            }
+        }
         public void invalidateBoundState() { cachedPipeline = 0; log.add("invalidate"); }
         public void reapplyDynamicState() { dynValid = true; log.add("reapply"); }
 
@@ -333,6 +343,32 @@ public final class WorldPassTest {
                     break;
                 }
         check("segmented: no violations " + recB.violations, recB.violations.isEmpty());
+
+        // ---------------------------------------------------------------- 3B-REG (td-d7b902): the resume re-enters closeForForeign
+        {
+            RecordingBackend recR = new RecordingBackend();
+            FrameExecutor exR = new FrameExecutor(data, plan, folder, recR, FrameExecutor.cap(1L << 30));
+            FakeIroh irohR = new FakeIroh();
+            WorldPass wr = new WorldPass(exR, recR, irohR, new FakeSource(recR), Set.of(), true);
+            Phased inR = new Phased(scene);
+            inR.geo = terrain;
+            irohR.outside(wr, () -> wr.begin(inR));
+            wr.warm();
+            check("reentry: bind", bind(wr, entKey, "rendertype_entity_solid", NEW_ENTITY, true, false) && wr.beforeDraw());
+            irohR.reenter = wr;
+            irohR.log.clear();
+            wr.closeForForeign(); // the renderer's endPassRunResume / beginRendering hook
+            check("reentry: resume ran once, no nested closeForForeign (max depth " + irohR.maxDepth + ")",
+                    irohR.maxDepth <= 1 && count(irohR.log, "iroh resume") == 1);
+            check("reentry: Iroh pass bound again after the foreign close", irohR.bound);
+            // suspend() path (Iroh pass ended, no attachments open) then a foreign close
+            irohR.maxDepth = 0;
+            irohR.log.clear();
+            wr.closeForForeign();
+            irohR.reenter = null;
+            irohR.outside(wr, () -> wr.end(inR));
+            check("reentry: world pass ends balanced (max depth " + irohR.maxDepth + ")", recR.openAttachments == null && irohR.bound && irohR.maxDepth <= 1);
+        }
 
         // ---------------------------------------------------------------- degraded mode: a refused permutation
         RecordingBackend recF = new RecordingBackend();

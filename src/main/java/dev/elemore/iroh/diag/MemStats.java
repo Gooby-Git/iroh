@@ -61,6 +61,8 @@ public final class MemStats {
         sb.append("\n  memory guard: ").append(dev.elemore.iroh.memory.MemoryGuard.statsLine());
         sb.append("\n  iroh objects: ").append(net.vulkanmod.vulkan.memory.MemoryManager.liveSummary());
         if (ImageTrace.ON) sb.append("\n  ").append(ImageTrace.report()); // rc13
+        var gpuCore = dev.elemore.iroh.gpu.GpuCore.orNull(); // td-033cca: api 4 upload routing / pass breaks / hazards (same 30 s limit)
+        if (gpuCore != null) sb.append("\n  ").append(gpuCore.summary());
         var wr = net.vulkanmod.render.chunk.WorldRenderer.getInstance();
         if (wr != null && wr.getChunkAreaManager() != null)
             sb.append("\n  chunk areas: ").append(String.join(", ", wr.getChunkAreaManager().getStats()));
