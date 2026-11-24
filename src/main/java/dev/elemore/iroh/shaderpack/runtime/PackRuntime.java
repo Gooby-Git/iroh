@@ -160,7 +160,7 @@ public final class PackRuntime {
         if (i == null)
             return;
         try {
-            i.disable();
+            i.shutdown();
         } catch (RuntimeException e) {
             net.vulkanmod.Initializer.LOGGER.warn("Iroh pack: shutdown release failed: {}", e.toString());
         }
