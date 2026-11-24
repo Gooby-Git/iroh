@@ -1254,6 +1254,8 @@ tasks.register('packThreadRepro', JavaExec) {
 // V-7 (review 698ba7c finding 1): pack frames with 2 frames in flight (HeadlessVkBackend inFlight 2 = IrohVkBackend's
 // contract on VulkanMod's renderer: per-slot command buffers, submit without waiting) on lavapipe + sync validation.
 // ./gradlew packFlightRepro [-Pmode=old|new|both]; last line "# packflight PASS|FAIL" (old hazards > 0, new 0).
+// int-4c: default mode new (vkval must be clean); -Pmode=old|both is the negative control (old hazards + a deliberate
+// cross-submission hazard) under its own vkval label packFlightRepro-<mode>, meant to fail that label only (like -PoldCreate).
 tasks.register('packFlightRepro', JavaExec) {
 	group = 'verification'
 	description = 'Cross-frame pack image hazards with 2 frames in flight on lavapipe + sync validation (old flagged, V-7 clean)'
@@ -1264,8 +1266,9 @@ tasks.register('packFlightRepro', JavaExec) {
 	workingDir = projectDir
 	ext.syncval = true
 	doFirst {
-		systemProperty 'pf.mode', project.findProperty('mode') ?: 'both'
+		def m = project.findProperty('mode') ?: 'new'
+		systemProperty 'pf.mode', m
 		if (project.hasProperty('trace')) systemProperty 'pf.trace', 'true'
-		useLavapipe(it)
+		useLavapipe(it, m == 'new' ? null : 'packFlightRepro-' + m)
 	}
 }
