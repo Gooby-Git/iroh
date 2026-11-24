@@ -347,7 +347,7 @@ public abstract class Pipeline {
         private final Pipeline pipeline;
         private int poolSize = 10;
         private long descriptorPool;
-        private LongBuffer sets;
+        private long[] sets; // upstream VulkanMod 00f3013: heap array (the native buffer leaked on every pool growth)
         private long currentSet;
         private int currentIdx = -1;
 
@@ -463,7 +463,7 @@ public abstract class Pipeline {
             //Check pool size
             checkPoolSize(stack);
 
-            this.currentSet = this.sets.get(this.currentIdx);
+            this.currentSet = this.sets[this.currentIdx];
 
             VkWriteDescriptorSet.Buffer descriptorWrites = VkWriteDescriptorSet.calloc(pipeline.buffers.size() + pipeline.imageDescriptors.size(), stack);
             VkDescriptorBufferInfo.Buffer[] bufferInfos = new VkDescriptorBufferInfo.Buffer[pipeline.buffers.size()];
@@ -541,7 +541,9 @@ public abstract class Pipeline {
             allocInfo.descriptorPool(descriptorPool);
             allocInfo.pSetLayouts(layout);
 
-            this.sets = MemoryUtil.memAllocLong(this.poolSize);
+            // Not hot: only on pool creation / growth. The base allocated a native LongBuffer here and never freed it
+            // (not on growth, not in cleanUp).
+            this.sets = new long[this.poolSize];
 
             int result = dev.elemore.iroh.memory.MemoryGuard.check(vkAllocateDescriptorSets(DEVICE, allocInfo, this.sets), "vkAllocateDescriptorSets");
             if (result != VK_SUCCESS) {

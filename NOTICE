@@ -45,3 +45,4 @@ card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh co
           do not draw).
   e55e432 "Port to 1.21.2" (VRenderSystem.initRenderer hunk only): vulkan/VRenderSystem.java (initial shader colour).
   1e6db2d "Use device's Vulkan version": vulkan/device/Device.java.
+  00f3013 "Fix 1 leak" (Icyllis Milica): vulkan/shader/Pipeline.java (descriptor set handles in a heap array).
