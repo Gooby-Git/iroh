@@ -382,7 +382,10 @@ public class VulkanImage {
                 for (int i = 0, n = IF_IMAGES.size(); i < n; i++) {
                     VulkanImage img = IF_IMAGES.get(i);
                     if (img.id == 0L) continue;
+                    // P2-12 (RQ-P213-a, upstream 94d137a): a second copy into an image this flush already copied into is a WAW
+                    boolean copiedBefore = img.currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                     img.transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    if (copiedBefore) dev.elemore.iroh.glshim.ImageSync.transferWriteToTransferWrite(cb);
                     int o = i * 8;
                     ImageUtil.copyBufferToImageCmd(stack, cb, IF_DATA.getLong(o), img.id, (int) IF_DATA.getLong(o + 2),
                             (int) IF_DATA.getLong(o + 3), (int) IF_DATA.getLong(o + 4), (int) IF_DATA.getLong(o + 5),
@@ -640,7 +643,7 @@ public class VulkanImage {
             }
             case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> {
                 dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                destinationStage = dev.elemore.iroh.glshim.ImageSync.SAMPLED_STAGES; // P2-12 (RQ-P213-a): the lightmap is sampled in vertex shaders
             }
             case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> {
                 dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
@@ -718,7 +721,7 @@ public class VulkanImage {
         if (this.currentLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
             throw new IllegalStateException("batched read-only transition expects TRANSFER_DST, layout " + this.currentLayout);
         batch.add(this.getId(), this.aspect, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, dev.elemore.iroh.glshim.ImageSync.SAMPLED_STAGES, VK_ACCESS_SHADER_READ_BIT);
         this.currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         noteRecordedIn(this, commandBuffer);
     }

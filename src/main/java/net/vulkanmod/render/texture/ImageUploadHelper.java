@@ -46,13 +46,23 @@ public class ImageUploadHelper {
      * upload buffer ({@link #getOrStartCommandBuffer}) and at submit, so command order is unchanged.
      */
     public void queueCopy(VulkanImage image, long buffer, long bufferOffset, int mipLevel, int width, int height, int x, int y, int rowLength) {
+        if (image == this.pendingImage && buffer == this.pendingBuffer && overlapsPending(mipLevel, width, height, x, y)) {
+            // P2-12: two regions of ONE vkCmdCopyBufferToImage must not overlap (VUID-vkCmdCopyBufferToImage-pRegions-00173):
+            // record what is pending, then the second copy follows behind a TRANSFER -> TRANSFER barrier (below)
+            flushPendingCopies();
+        }
         if (image != this.pendingImage || buffer != this.pendingBuffer) {
             flushPendingCopies();
             this.pendingImage = image;
             this.pendingBuffer = buffer;
+            // P2-12 (RQ-P213-a, upstream 94d137a): the image is already TRANSFER_DST = an earlier copy into it is in this command
+            // buffer (before another image's copy, from another staging buffer, or an overlapping region): WAW without a barrier
+            boolean copiedBefore = image.getCurrentLayout() == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             // layout change recorded now, before this image's first pending region
             try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
-                image.transitionImageLayout(stack, startCommandBuffer().getHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                var cbh = startCommandBuffer().getHandle();
+                image.transitionImageLayout(stack, cbh, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                if (copiedBefore) dev.elemore.iroh.glshim.ImageSync.transferWriteToTransferWrite(cbh);
             }
         }
         if (this.pendingCount == this.regions.capacity()) {
@@ -66,6 +76,17 @@ public class ImageUploadHelper {
         r.imageSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, 0, 1);
         r.imageOffset().set(x, y, 0);
         r.imageExtent().set(width, height, 1);
+    }
+
+    /** P2-12: does a new region overlap a pending region of the same mip level (same image, same command)? */
+    private boolean overlapsPending(int mipLevel, int width, int height, int x, int y) {
+        for (int i = 0, n = this.pendingCount; i < n; i++) {
+            var r = this.regions.get(i);
+            if (r.imageSubresource().mipLevel() != mipLevel) continue;
+            int rx = r.imageOffset().x(), ry = r.imageOffset().y();
+            if (x < rx + r.imageExtent().width() && rx < x + width && y < ry + r.imageExtent().height() && ry < y + height) return true;
+        }
+        return false;
     }
 
     /** Records the pending regions (one copy command). */
