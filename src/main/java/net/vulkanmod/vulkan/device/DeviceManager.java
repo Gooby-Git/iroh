@@ -242,25 +242,43 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
             }
 
-            createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));
+            // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
+            java.util.List<Runnable> extAllocs = new ArrayList<>();
+            try {
+                createInfo.ppEnabledExtensionNames(heapNames(Vulkan.REQUIRED_EXTENSION, extAllocs));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
-            // Iroh (P1-1): device layers are deprecated since Vulkan 1.0 (VUID-VkDeviceCreateInfo-enabledLayerCount-12384).
-            createInfo.ppEnabledLayerNames(null);
+                // Iroh (P1-1): device layers are deprecated since Vulkan 1.0 (VUID-VkDeviceCreateInfo-enabledLayerCount-12384).
+                createInfo.ppEnabledLayerNames(null);
 
-            PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
+                PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
 
-            int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
-            Vulkan.checkResult(res, "Failed to create logical device");
+                int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
+                Vulkan.checkResult(res, "Failed to create logical device");
 
-            vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+                vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+            } finally {
+                extAllocs.forEach(Runnable::run);
+            }
 
             graphicsQueue = new GraphicsQueue(stack, indices.graphicsFamily);
             transferQueue = new TransferQueue(stack, indices.transferFamily);
             presentQueue = new PresentQueue(stack, indices.presentFamily);
             computeQueue = new ComputeQueue(stack, indices.computeFamily);
         }
+    }
+
+    /** H1A: heap pointer array + UTF-8 strings for extension names; every allocation adds its free action to {@code allocs} for the caller to run. */
+    private static PointerBuffer heapNames(java.util.Collection<String> names, java.util.List<Runnable> allocs) {
+        PointerBuffer pb = org.lwjgl.system.MemoryUtil.memAllocPointer(names.size());
+        allocs.add(() -> org.lwjgl.system.MemoryUtil.memFree(pb));
+        for (String n : names) {
+            java.nio.ByteBuffer b = org.lwjgl.system.MemoryUtil.memUTF8(n);
+            allocs.add(() -> org.lwjgl.system.MemoryUtil.memFree(b));
+            pb.put(b);
+        }
+        return pb.rewind();
     }
 
     private static PointerBuffer getRequiredExtensions() {

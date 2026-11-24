@@ -42,6 +42,12 @@ public final class Float16Repro {
         int[] r = new int[8];
         try (MemoryStack s = MemoryStack.stackPush()) {
             init(s);
+            VkPhysicalDeviceVulkan12Features have12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
+            vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(have12.address()));
+            if (!have12.shaderFloat16()) { // H1B (RQ-H1-b): the harness forces enableFloat16; a device without the feature cannot run it
+                System.out.println("# float16 SKIP device lacks shaderFloat16 (production decision covered by hwCapsRepro)");
+                System.exit(0);
+            }
             ByteBuffer spv = compile();
             boolean natives = dev.elemore.iroh.upscale.fsr.NativeLoader.load();
             System.out.println("natives=" + natives);
@@ -120,7 +126,9 @@ public final class Float16Repro {
                 .ppEnabledExtensionNames(s.pointers(s.UTF8("VK_EXT_debug_utils")));
         PointerBuffer pp = s.mallocPointer(1);
         ck(vkCreateInstance(ici, null, pp));
-        instance = new VkInstance(pp.get(0), ici);
+        final long ih = pp.get(0);
+        final VkInstanceCreateInfo fici = ici;
+        instance = net.vulkanmod.vulkan.util.WideStack.call(() -> new VkInstance(ih, fici)); // H1A: LWJGL's per-device extension enumeration (228 on the Blackwell profile) must not eat this harness' own 64 KB stack
         VkDebugUtilsMessengerCallbackEXT cb = VkDebugUtilsMessengerCallbackEXT.create((sev, type, data, user) -> {
             if ((sev & EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) ERRORS.add(VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString());
             return VK_FALSE;
