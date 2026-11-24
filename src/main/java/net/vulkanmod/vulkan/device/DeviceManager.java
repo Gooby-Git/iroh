@@ -176,10 +176,13 @@ public abstract class DeviceManager {
             deviceVulkan12Features.sType$Default();
             drawIndirectCountEnabled = device.availableFeatures12.drawIndirectCount();
             deviceVulkan12Features.drawIndirectCount(drawIndirectCountEnabled);
-            deviceVulkan11Features.pNext(deviceVulkan12Features.address());
 
             VkPhysicalDeviceFeatures2 deviceFeatures = VkPhysicalDeviceFeatures2.calloc(stack);
             deviceFeatures.sType$Default();
+            // V-4 (td-0fa7b8): the Vulkan 1.1/1.2 feature structs hang off VkPhysicalDeviceFeatures2 (pEnabledFeatures stays NULL).
+            // Root cause of the Float16 validation errors: createInfo.pNext(deviceVulkan11Features) is LWJGL's typed overload and
+            // OVERWRITES the struct's own pNext, so the 1.2 struct (shaderFloat16, drawIndirectCount) was never in the device chain.
+            dev.elemore.iroh.temporal.DeviceCaps.linkFeatureChain(deviceFeatures, deviceVulkan11Features, deviceVulkan12Features);
             deviceFeatures.features().samplerAnisotropy(device.availableFeatures.features().samplerAnisotropy());
             deviceFeatures.features().logicOp(device.availableFeatures.features().logicOp());
             // TODO: Disable indirect draw option if unsupported.
@@ -219,8 +222,7 @@ public abstract class DeviceManager {
             createInfo.sType$Default();
             createInfo.sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
             createInfo.pQueueCreateInfos(queueCreateInfos);
-            createInfo.pEnabledFeatures(deviceFeatures.features());
-            createInfo.pNext(deviceVulkan11Features);
+            createInfo.pNext(deviceFeatures.address()); // .address(): the typed pNext(struct) overload OVERWRITES the struct's own pNext (V-4 trap)
 
             if (Vulkan.DYNAMIC_RENDERING) {
                 VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeaturesKHR = VkPhysicalDeviceDynamicRenderingFeaturesKHR.calloc(stack);
