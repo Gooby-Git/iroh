@@ -295,7 +295,15 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         return allocate(req, flags, what, false);
     }
 
+    /**
+     * R1-REV test switch: when > 0, counts down per device allocation and the allocation that reaches 0 fails as if the
+     * memory cap were hit (fault injection for exception-safety repros; rtHangRepro C/D).
+     */
+    public int failAllocationIn;
+
     private long allocate(VkMemoryRequirements req, int flags, String what, boolean deviceAddress) {
+        if (failAllocationIn > 0 && --failAllocationIn == 0)
+            throw new IllegalStateException("headless device: injected allocation failure (" + what + ")");
         if (allocated + req.size() > cap)
             throw new IllegalStateException("headless device memory cap " + (cap >> 20) + " MiB reached allocating " + what);
         try (MemoryStack s = stackPush()) {
@@ -319,7 +327,13 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             long b = lb.get(0);
             VkMemoryRequirements req = VkMemoryRequirements.calloc(s);
             vkGetBufferMemoryRequirements(device, b, req);
-            long mem = allocate(req, memFlags, "buffer", bda);
+            long mem;
+            try {
+                mem = allocate(req, memFlags, "buffer", bda);
+            } catch (RuntimeException e) {   // R1-REV: a refused allocation (cap, injected) does not leak the VkBuffer
+                vkDestroyBuffer(device, b, null);
+                throw e;
+            }
             vkBindBufferMemory(device, b, mem, 0);
             return new VkBuf(b, bytes, new Mem(mem, req.size()));
         }

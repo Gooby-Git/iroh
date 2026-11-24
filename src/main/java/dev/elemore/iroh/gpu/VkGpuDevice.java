@@ -130,6 +130,14 @@ public abstract class VkGpuDevice implements GpuDevice {
         return allocBuffer(bytes, vkUsage);
     }
 
+    /**
+     * R1-REV: true while commands would land inside a render pass (dynamic rendering here; the game device also counts the
+     * main pass), where transfer commands and non-subpass barriers are invalid (VUID-vkCmdUpdateBuffer-renderpass). Pure.
+     */
+    public boolean insideRenderPass() {
+        return inRendering;
+    }
+
     /** Run {@code r} once the GPU no longer uses what it frees (the device's deferred-free rule). */
     public final void deferRelease(Runnable r) {
         deferFree(r);

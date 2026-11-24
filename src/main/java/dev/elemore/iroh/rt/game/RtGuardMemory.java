@@ -52,4 +52,9 @@ public final class RtGuardMemory implements RtMemory {
     public synchronized void release(long bytes) {
         used = Math.max(0, used - bytes);
     }
+
+    @Override
+    public synchronized void charge(long bytes) {
+        used += Math.max(0, bytes);
+    }
 }

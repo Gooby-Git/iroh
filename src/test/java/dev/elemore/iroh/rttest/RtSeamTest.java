@@ -161,9 +161,75 @@ public final class RtSeamTest {
         check("R1-HANG alignUp on a sign-extended (negative) RADV address rounds up by < align",
                 dev.elemore.iroh.rt.vk.RtAccel.alignUp(neg, 256) == 0xffff800101a7e000L && dev.elemore.iroh.rt.vk.RtAccel.alignUp(0xffff800101a7e000L, 256) == 0xffff800101a7e000L
                         && dev.elemore.iroh.rt.vk.RtAccel.rangeInside(neg, 404, 0xffff800101a7e000L, 148) && !dev.elemore.iroh.rt.vk.RtAccel.rangeInside(neg, 404, 0xffff800101a7e100L, 148));
+        reviewChecks();
         RtEntityBudgetTest.run();
         System.out.println("# rtseam " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
+    }
+
+    /** R1-REV: device-free checks for the Gemini review of R1-HANG (docs/reviews/5cb221b-verdicts.md). */
+    static void reviewChecks() throws IOException {
+        RtMemoryModel model = RtMemoryModel.radvAssumed();
+        // #1: residents beyond residency + margin are evicted when the camera moves, their memory released, and they are
+        // rebuilt when the camera returns; the resident count stays inside maxResident
+        RtMemory.Counter m = new RtMemory.Counter(1L << 30);
+        BlasBuildQueue q = new BlasBuildQueue(m, model);
+        q.radius = 2;
+        q.maxBuilds = 32;
+        q.maxTriangles = 1_000_000;
+        int maxRes = 0;
+        for (int x = -40; x <= 40; x++) for (int y = -1; y <= 1; y++) q.sectionBuilt(sec(x, y, 0, 100, 1));
+        for (int cam = -30; cam <= 30; cam++) {
+            q.camera(cam, 0, 0);
+            q.drainFrees();
+            while (!q.take().isEmpty()) { }
+            maxRes = Math.max(maxRes, q.residentCount());
+        }
+        boolean farGone = !q.isResident(-30, 0, 0) && !q.isResident(0, 0, 0) && q.isResident(30, 0, 0) && q.isResident(28, 0, 0);
+        check("R1-REV #1: moving the camera evicts residents past radius + " + BlasBuildQueue.EVICT_MARGIN + " (max resident " + maxRes + ", owner "
+                + (m.usedBytes() / model.blasBytes(100)) + " BLASes)", farGone && maxRes <= 7 * 3 && m.usedBytes() == (long) q.residentCount() * model.blasBytes(100));
+        q.camera(0, 0, 0);
+        q.drainFrees();
+        while (!q.take().isEmpty()) { }
+        check("R1-REV #1: an evicted section is rebuilt when the camera returns", q.isResident(0, 0, 0) && q.isResident(-2, 1, 0) && !q.isResident(30, 0, 0));
+        check("R1-REV #1: the hard TLAS instance cap covers 2 BLAS x maxResident(16)", RtLimits.HARD_MAX_INSTANCES >= 2 * BlasBuildQueue.maxResident(RtLimits.HARD_MAX_RESIDENCY));
+        // #7: reconcile follows the real BLAS size, past the cap if need be; release then returns the real bytes
+        RtMemory.Counter small = new RtMemory.Counter(model.blasBytes(100) + 10);
+        BlasBuildQueue q2 = new BlasBuildQueue(small, model);
+        q2.camera(0, 0, 0);
+        q2.sectionBuilt(sec(0, 0, 0, 100, 1));
+        BlasBuildQueue.Pending p = q2.take().get(0);
+        BlasBuildQueue.Resident r = q2.reconcile(new BlasBuildQueue.Resident(p.g().key(), p.bytes(), 1), model.blasBytes(100) * 2);
+        long after = small.usedBytes();
+        q2.sectionReset(0, 0, 0);
+        q2.drainFrees();
+        check("R1-REV #7: reconcile charges the real BLAS size (" + after + " B) and the reset releases all of it", after == model.blasBytes(100) * 2
+                && r.bytes() == after && small.usedBytes() == 0);
+        // #8: the RT cap is clamped and the share table reads it live
+        String keepCap = System.getProperty("iroh.rt.capMiB"), keepSafe = System.getProperty("iroh.rt.safe");
+        System.setProperty("iroh.rt.capMiB", "0");
+        boolean lo = RtLimits.capMiB() == dev.elemore.iroh.memory.MemoryShares.RT_CAP_MIN_MIB;
+        System.setProperty("iroh.rt.capMiB", "9000000000000");
+        boolean hi = RtLimits.capMiB() == dev.elemore.iroh.memory.MemoryShares.RT_CAP_MAX_MIB;
+        System.clearProperty("iroh.rt.capMiB");
+        System.setProperty("iroh.rt.safe", "true");
+        boolean live = dev.elemore.iroh.memory.MemoryShares.Owner.RT.ceiling(16L << 30) == 256L << 20 && RtLimits.capMiB() == 256;
+        if (keepCap == null) System.clearProperty("iroh.rt.capMiB"); else System.setProperty("iroh.rt.capMiB", keepCap);
+        if (keepSafe == null) System.clearProperty("iroh.rt.safe"); else System.setProperty("iroh.rt.safe", keepSafe);
+        check("R1-REV #8: iroh.rt.capMiB clamped (0 -> 64, huge -> 16384) and the share table's RT ceiling follows safe mode live", lo && hi && live);
+        // #10: alignUp to a non-power-of-two on a sign-extended address
+        boolean refused;
+        try {
+            refused = dev.elemore.iroh.rt.vk.RtAccel.alignUp(0xffff800100000000L, 48) == 0xffff800100000000L;   // a computed answer must be right
+        } catch (IllegalArgumentException e) {
+            refused = true;
+        }
+        check("R1-REV #10: alignUp to 48 on 0xffff800100000000 is refused or exact (never the signed-remainder +16)", refused);
+        // #4: Vulkan.cleanUp releases RT before the api-4 device and the leftover sweep
+        String v = Files.readString(Path.of("src/main/java/net/vulkanmod/vulkan/Vulkan.java"));
+        int c0 = v.indexOf("public static void cleanUp()"), rt = v.indexOf("RtFrameHooks.shutdown()", c0), gl = v.indexOf("GpuLifecycle.shutdown()", c0),
+                fl = v.indexOf("freeLeftovers()", c0);
+        check("R1-REV #4: Vulkan.cleanUp calls RtFrameHooks.shutdown() before GpuLifecycle.shutdown() and freeLeftovers()", c0 > 0 && rt > c0 && rt < gl && rt < fl);
     }
 
     /**

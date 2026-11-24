@@ -13,8 +13,12 @@ public final class RtLimits {
     public static final int SAFE_RESIDENCY = 2, SAFE_CAP_MIB = 256, SAFE_MAX_BUILDS = 2, SAFE_MAX_TRIANGLES = 50_000;
     /** hard ceilings no property can lift: one frame never records more than this (a GPU ring timeout is ~2-10 s) */
     public static final int HARD_MAX_BUILDS = 32, HARD_MAX_TRIANGLES = 1_000_000, HARD_MAX_RESIDENCY = 16;
-    /** TLAS instances per frame: (2r+1)^2 columns x (2*max(2,r/2)+1) layers x 2 BLAS per section at r = 16, rounded up */
-    public static final int HARD_MAX_INSTANCES = 40_000;
+    /**
+     * TLAS instances per frame: 2 BLAS per section x the most residents the queue holds at r = 16 (R1-REV: the residency box
+     * plus the eviction margin, {@link BlasBuildQueue#maxResident}: 35 x 35 x 19 = 23,275 sections -> 46,550). The queue
+     * evicts by distance, so this is a bound by construction, not a hope (review 5cb221b #1).
+     */
+    public static final int HARD_MAX_INSTANCES = (int) (2 * BlasBuildQueue.maxResident(HARD_MAX_RESIDENCY));
 
     public static boolean safe() {
         return Boolean.getBoolean("iroh.rt.safe");
@@ -24,8 +28,9 @@ public final class RtLimits {
         return clamp(Integer.getInteger("iroh.rt.residency", safe() ? SAFE_RESIDENCY : 8), 1, HARD_MAX_RESIDENCY);
     }
 
+    /** R1-REV (review #8): the share table's live, clamped value (one reader of iroh.rt.capMiB / iroh.rt.safe) */
     public static long capMiB() {
-        return Long.getLong("iroh.rt.capMiB", safe() ? SAFE_CAP_MIB : 1536);
+        return dev.elemore.iroh.memory.MemoryShares.rtCapMiB();
     }
 
     public static int maxBuilds(RtPreset p) {

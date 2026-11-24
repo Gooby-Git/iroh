@@ -80,6 +80,18 @@ public final class RtAccel {
     private VkBuf quadIndices;
     private int quadIndexCapacity;
     private final java.util.ArrayList<VkBuf> transient_ = new java.util.ArrayList<>();
+    /**
+     * R1-REV (review #6): transform blocks that repeat (the game's sections all use one SNORM transform) live in persistent
+     * buffers written once in a frame, so a BLAS build needs no per-build transfer write and no transfer -> build barrier.
+     * Key = the block's bytes; value = {buffer, 16-aligned offset}. Bounded: past {@link #TRANSFORM_CACHE} entries a
+     * block goes through a transient buffer as before.
+     */
+    private final java.util.HashMap<ByteBuffer, Object[]> transforms = new java.util.HashMap<>();
+    static final int TRANSFORM_CACHE = 16;
+    /** R1-REV: barriers recorded by this object (rtWorldReplay bounds them per frame) */
+    public long barriers;
+    /** R1-REV: acceleration structures created and not yet destroyed (destroy is deferred; counted when requested) */
+    private int liveStructures;
 
     public RtAccel(VkGpuDevice dev) {
         if (!dev.supportsDeviceAddress()) throw new IllegalStateException("device without buffer device address: no RT");
@@ -122,17 +134,24 @@ public final class RtAccel {
         if (quads <= quadIndexCapacity) return quadIndices;
         int cap = Math.max(4096, Integer.highestOneBit(quads) << 1);
         ByteBuffer b = MemoryUtil.memAlloc(cap * 6 * 4).order(ByteOrder.LITTLE_ENDIAN);
-        for (int q = 0; q < cap; q++) {
-            int v = q * 4;
-            b.putInt(v).putInt(v + 1).putInt(v + 2).putInt(v + 2).putInt(v + 3).putInt(v);
+        VkBuf nb = null;
+        try {   // R1-REV (review #3): native memory and the new buffer are released when a step fails
+            for (int q = 0; q < cap; q++) {
+                int v = q * 4;
+                b.putInt(v).putInt(v + 1).putInt(v + 2).putInt(v + 2).putInt(v + 3).putInt(v);
+            }
+            b.flip();
+            nb = inputBuffer(b.remaining());
+            writeInFrame(nb, 0, b);   // R1-HANG: in program order (dev.upload lands before the whole frame: UPLOAD-SYNC)
+            barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                    ACCESS_AS_READ | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT);
+        } catch (RuntimeException | Error e) {
+            if (nb != null) dev.destroyBuffer(nb);
+            throw e;
+        } finally {
+            MemoryUtil.memFree(b);
         }
-        b.flip();
-        VkBuf nb = inputBuffer(b.remaining());
-        writeInFrame(nb, b);   // R1-HANG: in program order (dev.upload lands before the whole frame: UPLOAD-SYNC)
-        MemoryUtil.memFree(b);
-        dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                ACCESS_AS_READ | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT);
         if (quadIndices != null) {
             dev.destroyBuffer(quadIndices);
         }
@@ -141,10 +160,16 @@ public final class RtAccel {
         return nb;
     }
 
-    /** Sizes {acceleration structure bytes, build scratch bytes} for a BLAS over these geometries. */
+    /**
+     * Sizes {acceleration structure bytes, build scratch bytes} for a BLAS over these geometries. R1-REV (review #5): a host
+     * query that records nothing (callable outside a frame or inside a pass): the size query ignores every device address
+     * except whether transformData is null (spec, vkGetAccelerationStructureBuildSizesKHR), so no index buffer is grown and
+     * a placeholder non-null transform stands for geometries that carry one.
+     */
     public long[] blasSizes(List<Geometry> geoms, boolean compactable) {
         try (MemoryStack s = stackPush()) {
-            VkAccelerationStructureBuildGeometryInfoKHR info = blasInfo(s, geoms, compactable, 0);
+            VkAccelerationStructureBuildGeometryInfoKHR info = blasInfo(s, geoms, compactable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0,
+                    SIZE_QUERY_TRANSFORM, SIZE_QUERY_INDEX);
             java.nio.IntBuffer counts = counts(s, geoms);
             VkAccelerationStructureBuildSizesInfoKHR sz = VkAccelerationStructureBuildSizesInfoKHR.calloc(s).sType$Default();
             vkGetAccelerationStructureBuildSizesKHR(vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, info, counts, sz);
@@ -158,14 +183,11 @@ public final class RtAccel {
         return c.flip();
     }
 
-    private VkAccelerationStructureBuildGeometryInfoKHR blasInfo(MemoryStack s, List<Geometry> geoms, boolean compactable, long transformBase) {
-        return blasInfo(s, geoms, compactable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0, transformBase);
-    }
+    /** placeholders for the size query (ignored by the driver apart from transform != 0; aligned so the checks pass) */
+    private static final long SIZE_QUERY_TRANSFORM = 16, SIZE_QUERY_INDEX = 16;
 
-    private VkAccelerationStructureBuildGeometryInfoKHR blasInfo(MemoryStack s, List<Geometry> geoms, int extraFlags, long transformBase) {
-        int maxQuads = 0;
-        for (Geometry g : geoms) maxQuads = Math.max(maxQuads, g.quadCount);
-        long idx = address(quadIndices(Math.max(1, maxQuads)));
+    /** {@code idx}: the quad index buffer's address (grown by the caller, outside any render pass) */
+    private VkAccelerationStructureBuildGeometryInfoKHR blasInfo(MemoryStack s, List<Geometry> geoms, int extraFlags, long transformBase, long idx) {
         VkAccelerationStructureGeometryKHR.Buffer gb = VkAccelerationStructureGeometryKHR.calloc(geoms.size(), s);
         for (int i = 0; i < geoms.size(); i++) {
             Geometry g = geoms.get(i);
@@ -195,9 +217,12 @@ public final class RtAccel {
     private Accel create(MemoryStack s, int type, long bytes, long scratch) {
         VkBuf storage = dev.rawBuffer(bytes, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
         LongBuffer lb = s.mallocLong(1);
-        VkGpuDevice.check(vkCreateAccelerationStructureKHR(vk, VkAccelerationStructureCreateInfoKHR.calloc(s).sType$Default()
-                .buffer(storage.buffer()).offset(0).size(bytes).type(type), null, lb), "vkCreateAccelerationStructureKHR");
+        int r = vkCreateAccelerationStructureKHR(vk, VkAccelerationStructureCreateInfoKHR.calloc(s).sType$Default()
+                .buffer(storage.buffer()).offset(0).size(bytes).type(type), null, lb);
+        if (r != VK_SUCCESS) dev.destroyBuffer(storage);   // R1-REV: no orphaned storage when the create fails
+        VkGpuDevice.check(r, "vkCreateAccelerationStructureKHR");
         long h = lb.get(0);
+        liveStructures++;
         long addr = vkGetAccelerationStructureDeviceAddressKHR(vk, VkAccelerationStructureDeviceAddressInfoKHR.calloc(s).sType$Default()
                 .accelerationStructure(h));
         return new Accel(h, addr, bytes, storage, scratch);
@@ -231,12 +256,15 @@ public final class RtAccel {
      * sign-extended (0xffff8001..., NEGATIVE as a Java long); the old {@code (a + n - 1) / n * n} rounds toward zero, i.e.
      * up by another n for a negative a, and the build wrote up to n-1 bytes past the scratch buffer (validation: "scratchData
      * .deviceAddress ... has no buffer(s) associated that are valid"; then VK_ERROR_DEVICE_LOST). Never divide addresses.
+     * R1-REV (review 5cb221b #10): powers of two only. The old non-power-of-two branch used Math.floorMod, the SIGNED
+     * remainder, which is wrong for a negative address (alignUp(0xffff800100000000, 48) gave +16 past a multiple of 48);
+     * every alignment on these paths is a power of two (minAccelerationStructureScratchOffsetAlignment by the spec, and the
+     * 2/4/16-byte input rules), so anything else is refused rather than computed with a modulo.
      */
     public static long alignUp(long addr, long align) {
         if (align <= 1) return addr;
-        if ((align & (align - 1)) == 0) return (addr + align - 1) & -align;   // the spec guarantees a power of two here
-        long r = Math.floorMod(addr, align);
-        return r == 0 ? addr : addr + (align - r);
+        if ((align & (align - 1)) != 0) throw new IllegalArgumentException("alignment " + align + " is not a power of two");
+        return (addr + align - 1) & -align;
     }
 
     /**
@@ -246,15 +274,62 @@ public final class RtAccel {
      * still out of program order (lands before every command of the frame) and not ordered against frames in flight, so
      * in-frame writes stay right here. Must be called outside a render pass.
      */
-    void writeInFrame(VkBuf b, ByteBuffer data) {
+    void writeInFrame(VkBuf b, long dstOffset, ByteBuffer data) {
         int len = data.remaining();
-        if ((len & 3) != 0) throw new IllegalArgumentException("in-frame write of " + len + " bytes (needs a multiple of 4)");
+        if ((len & 3) != 0 || (dstOffset & 3) != 0) throw new IllegalArgumentException("in-frame write of " + len + " bytes at " + dstOffset + " (needs multiples of 4)");
+        if (dstOffset < 0 || dstOffset + len > b.size()) throw new IllegalArgumentException("in-frame write past the buffer");
         VkCommandBuffer c = dev.recordingCommandBuffer();
+        // R1-REV (review #5): transfer commands are invalid inside a render pass (VUID-vkCmdUpdateBuffer-renderpass)
+        if (dev.insideRenderPass()) throw new IllegalStateException("RT build input written inside a render pass");
         long src = MemoryUtil.memAddress(data);
         for (int off = 0; off < len; off += 65536) {
             int n = Math.min(65536, len - off);
-            nvkCmdUpdateBuffer(c, b.buffer(), off, n, src + off);
+            nvkCmdUpdateBuffer(c, b.buffer(), dstOffset + off, n, src + off);
         }
+    }
+
+    private void barrier(int srcStages, int srcAccess, int dstStages, int dstAccess) {
+        barriers++;
+        dev.barrier(srcStages, srcAccess, dstStages, dstAccess);
+    }
+
+    /**
+     * R1-REV (review #10): an input buffer of {@code bytes} plus 16 spare, and the offset of the first 16-aligned byte in it.
+     * Vulkan does not promise 16-byte alignment for build-input buffers; transformData (VUID 03810) and instances.data
+     * (VUID 03715) need it. RADV and lavapipe align buffers to 16 or more, so the offset is 0 there.
+     */
+    private Object[] alignedInput(long bytes) {
+        VkBuf b = inputBuffer(bytes + 16);
+        long base = address(b);
+        return new Object[]{b, alignUp(base, 16) - base};
+    }
+
+    /** Transform block address for a build: a cached persistent buffer (no write, no barrier) or a transient one. */
+    private long transformAddress(ByteBuffer tb) {
+        Object[] hit = transforms.get(tb);
+        if (hit != null) return address((VkBuf) hit[0]) + (long) hit[1];
+        Object[] in = alignedInput(tb.remaining());
+        VkBuf buf = (VkBuf) in[0];
+        boolean keep = transforms.size() < TRANSFORM_CACHE;
+        if (!keep) transient_.add(buf);   // tracked at once: released even when a later step fails
+        try {
+            writeInFrame(buf, (long) in[1], tb);
+            barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, STAGE_AS_BUILD, VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
+        } catch (RuntimeException | Error e) {
+            if (keep) dev.destroyBuffer(buf);
+            throw e;
+        }
+        if (keep) {
+            ByteBuffer key = ByteBuffer.allocate(tb.remaining()).order(ByteOrder.LITTLE_ENDIAN);
+            key.put(tb.duplicate()).flip();
+            transforms.put(key, in);
+        }
+        return address(buf) + (long) in[1];
+    }
+
+    /** live (created, destroy not yet requested) acceleration structures; 0 after every structure was destroyed */
+    public int liveStructures() {
+        return liveStructures;
     }
 
     /** Device addresses the builds read must be aligned (VUIDs 03711 vertexData component, 03712 indexData, 03810 transform, 03715 instances). */
@@ -289,31 +364,32 @@ public final class RtAccel {
         try (MemoryStack s = stackPush()) {
             int maxQuads = 0;
             for (Geometry g : geoms) maxQuads = Math.max(maxQuads, g.quadCount);
-            quadIndices(Math.max(1, maxQuads));   // R1-HANG: grow (in-frame write + its barrier) before the inputs below
+            long idx = address(quadIndices(Math.max(1, maxQuads)));   // R1-HANG: grow (in-frame write + its barrier) before the inputs below
+            long ta;
             ByteBuffer tb = MemoryUtil.memAlloc(geoms.size() * 48).order(ByteOrder.LITTLE_ENDIAN);
-            for (Geometry g : geoms) for (int k = 0; k < 12; k++) tb.putFloat(g.transform3x4 == null ? 0 : g.transform3x4[k]);
-            tb.flip();
-            VkBuf tbuf = inputBuffer(tb.remaining());
-            writeInFrame(tbuf, tb);
-            MemoryUtil.memFree(tb);
-            transient_.add(tbuf);
-            dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, STAGE_AS_BUILD, VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
-            VkAccelerationStructureBuildGeometryInfoKHR info = blasInfo(s, geoms, extraFlags, address(tbuf));
+            try {   // R1-REV (review #3): native memory freed on every path
+                for (Geometry g : geoms) for (int k = 0; k < 12; k++) tb.putFloat(g.transform3x4 == null ? 0 : g.transform3x4[k]);
+                tb.flip();
+                ta = transformAddress(tb);
+            } finally {
+                MemoryUtil.memFree(tb);
+            }
+            VkAccelerationStructureBuildGeometryInfoKHR info = blasInfo(s, geoms, extraFlags, ta, idx);
             java.nio.IntBuffer counts = counts(s, geoms);
             VkAccelerationStructureBuildSizesInfoKHR sz = VkAccelerationStructureBuildSizesInfoKHR.calloc(s).sType$Default();
             vkGetAccelerationStructureBuildSizesKHR(vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, info, counts, sz);
+            long need = update == null ? sz.buildScratchSize() : sz.updateScratchSize();
+            VkBuf sc = scratch(need);   // R1-REV (review #3): scratch (tracked as transient) before the structure exists
+            long scAddr = scratchAddress(sc, need);
             Accel a;
-            VkBuf sc;
             if (update == null) {
                 a = create(s, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, sz.accelerationStructureSize(), sz.buildScratchSize());
-                sc = scratch(sz.buildScratchSize());
             } else {
                 a = update;
-                sc = scratch(sz.updateScratchSize());
                 info.mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR).srcAccelerationStructure(a.handle);
-                dev.barrier(STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE, STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE);
+                barrier(STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE, STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE);
             }
-            info.dstAccelerationStructure(a.handle).scratchData().deviceAddress(scratchAddress(sc, update == null ? sz.buildScratchSize() : sz.updateScratchSize()));
+            info.dstAccelerationStructure(a.handle).scratchData().deviceAddress(scAddr);
             VkAccelerationStructureBuildRangeInfoKHR.Buffer ranges = VkAccelerationStructureBuildRangeInfoKHR.calloc(geoms.size(), s);
             for (int i = 0; i < geoms.size(); i++) ranges.get(i).primitiveCount(geoms.get(i).quadCount * 2);
             PointerBuffer pr = s.pointers(ranges.address());
@@ -331,7 +407,7 @@ public final class RtAccel {
             long pool = lb.get(0);
             VkCommandBuffer c = dev.recordingCommandBuffer();
             vkCmdResetQueryPool(c, pool, 0, blas.size());
-            dev.barrier(STAGE_AS_BUILD, ACCESS_AS_WRITE, STAGE_AS_BUILD, ACCESS_AS_READ);
+            barrier(STAGE_AS_BUILD, ACCESS_AS_WRITE, STAGE_AS_BUILD, ACCESS_AS_READ);
             LongBuffer hs = s.mallocLong(blas.size());
             for (Accel a : blas) hs.put(a.handle);
             hs.flip();
@@ -382,51 +458,58 @@ public final class RtAccel {
         try (MemoryStack s = stackPush()) {
             int n = instances.size();
             ByteBuffer ib = MemoryUtil.memCalloc(Math.max(1, n) * 64).order(ByteOrder.LITTLE_ENDIAN);
-            for (int i = 0; i < n; i++) {
-                Instance in = instances.get(i);
-                int o = i * 64;
-                for (int k = 0; k < 12; k++) ib.putFloat(o + k * 4, in.transform3x4[k]);
-                ib.putInt(o + 48, (in.customIndex & 0xFFFFFF) | (in.mask << 24));
-                int flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR | (in.forceOpaque ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR : 0);
-                ib.putInt(o + 52, flags << 24); // sbt offset 0
-                ib.putLong(o + 56, in.blasAddress);
+            long iaddr;
+            try {   // R1-REV (review #3): native memory freed and the instance buffer tracked on every path
+                for (int i = 0; i < n; i++) {
+                    Instance in = instances.get(i);
+                    int o = i * 64;
+                    for (int k = 0; k < 12; k++) ib.putFloat(o + k * 4, in.transform3x4[k]);
+                    ib.putInt(o + 48, (in.customIndex & 0xFFFFFF) | (in.mask << 24));
+                    int flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR | (in.forceOpaque ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR : 0);
+                    ib.putInt(o + 52, flags << 24); // sbt offset 0
+                    ib.putLong(o + 56, in.blasAddress);
+                }
+                Object[] in = alignedInput(Math.max(1, n) * 64L);   // R1-REV (review #10): 16-aligned whatever the buffer alignment
+                VkBuf ibuf = (VkBuf) in[0];
+                transient_.add(ibuf);
+                writeInFrame(ibuf, (long) in[1], ib);   // R1-HANG: in this frame's command buffer, never a late upload
+                iaddr = address(ibuf) + (long) in[1];
+                requireAligned(iaddr, 16, "instances data");
+            } finally {
+                MemoryUtil.memFree(ib);
             }
-            VkBuf ibuf = inputBuffer(Math.max(1, n) * 64L);
-            writeInFrame(ibuf, ib);   // R1-HANG: in this frame's command buffer, never a late upload
-            MemoryUtil.memFree(ib);
-            requireAligned(address(ibuf), 16, "instances data");
-            transient_.add(ibuf);
-            dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT | STAGE_AS_BUILD, VK_ACCESS_TRANSFER_WRITE_BIT | ACCESS_AS_WRITE,
+            barrier(VK_PIPELINE_STAGE_TRANSFER_BIT | STAGE_AS_BUILD, VK_ACCESS_TRANSFER_WRITE_BIT | ACCESS_AS_WRITE,
                     STAGE_AS_BUILD, VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
             VkAccelerationStructureGeometryKHR.Buffer g = VkAccelerationStructureGeometryKHR.calloc(1, s);
             g.get(0).sType$Default().geometryType(VK_GEOMETRY_TYPE_INSTANCES_KHR).flags(0)
-                    .geometry().instances().sType$Default().arrayOfPointers(false).data().deviceAddress(address(ibuf));
+                    .geometry().instances().sType$Default().arrayOfPointers(false).data().deviceAddress(iaddr);
             VkAccelerationStructureBuildGeometryInfoKHR.Buffer info = VkAccelerationStructureBuildGeometryInfoKHR.calloc(1, s);
             info.get(0).sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR)
                     .flags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR).mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR).pGeometries(g)
                     .geometryCount(1);
             VkAccelerationStructureBuildSizesInfoKHR sz = VkAccelerationStructureBuildSizesInfoKHR.calloc(s).sType$Default();
             vkGetAccelerationStructureBuildSizesKHR(vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, info.get(0), s.ints(n), sz);
+            VkBuf sc = scratch(sz.buildScratchSize());   // R1-REV (review #3): scratch checked before the structure exists
+            long scAddr = scratchAddress(sc, sz.buildScratchSize());
             Accel a = create(s, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, sz.accelerationStructureSize(), sz.buildScratchSize());
-            VkBuf sc = scratch(sz.buildScratchSize());
-            info.get(0).dstAccelerationStructure(a.handle).scratchData().deviceAddress(scratchAddress(sc, sz.buildScratchSize()));
+            info.get(0).dstAccelerationStructure(a.handle).scratchData().deviceAddress(scAddr);
             VkAccelerationStructureBuildRangeInfoKHR.Buffer r = VkAccelerationStructureBuildRangeInfoKHR.calloc(1, s);
             r.get(0).primitiveCount(n);
             vkCmdBuildAccelerationStructuresKHR(dev.recordingCommandBuffer(), info, s.pointers(r.address()));
-            dev.barrier(STAGE_AS_BUILD, ACCESS_AS_WRITE, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | STAGE_AS_BUILD, ACCESS_AS_READ | VK_ACCESS_SHADER_READ_BIT);
+            barrier(STAGE_AS_BUILD, ACCESS_AS_WRITE, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | STAGE_AS_BUILD, ACCESS_AS_READ | VK_ACCESS_SHADER_READ_BIT);
             return a;
         }
     }
 
     /** Barrier: buffer uploads (vertex arenas) become visible to the AS builds and shaders. */
     public void barrierInputsToBuild() {
-        dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
     }
 
     /** Barrier: BLAS builds finished before TLAS builds / traversal read them. */
     public void barrierBuildToBuild() {
-        dev.barrier(STAGE_AS_BUILD, ACCESS_AS_WRITE, STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ACCESS_AS_READ);
+        barrier(STAGE_AS_BUILD, ACCESS_AS_WRITE, STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ACCESS_AS_READ);
     }
 
     /** Frees scratch / instance / transform buffers once the GPU finished with them. */
@@ -438,6 +521,7 @@ public final class RtAccel {
     public void destroy(Accel a) {
         if (a.destroyed) throw new IllegalStateException("acceleration structure destroyed twice");
         a.destroyed = true;
+        liveStructures--;
         long h = a.handle;
         dev.deferRelease(() -> vkDestroyAccelerationStructureKHR(vk, h, null));
         dev.destroyBuffer(a.storage);
@@ -447,5 +531,8 @@ public final class RtAccel {
         releaseTransient();
         if (quadIndices != null) dev.destroyBuffer(quadIndices);
         quadIndices = null;
+        quadIndexCapacity = 0;
+        for (Object[] t : transforms.values()) dev.destroyBuffer(t[0]);
+        transforms.clear();
     }
 }

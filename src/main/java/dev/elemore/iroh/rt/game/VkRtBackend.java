@@ -26,8 +26,13 @@ public final class VkRtBackend implements RtSession.Backend {
     private RtAccel.Accel tlas;
     private VkGpuDevice.VkBuf work;
     private int ox, oy, oz;
-    /** R1-HANG: true only between this frame's TLAS build and the next change to the BLAS set (see {@link #tlasForTrace}) */
+    /** R1-HANG: true only between a TLAS build and the next change to the BLAS set (see {@link #tlasForTrace}) */
     private boolean tlasValid;
+    /** R1-REV (review #6): the BLAS set or the rebase origin changed since the last TLAS build (else the TLAS is reused) */
+    private boolean tlasDirty = true;
+    private int tlasCount;
+    /** the per-frame input barrier was recorded (reset by {@link #buildTlas}, which the session calls once per frame) */
+    private boolean inputsOrdered;
     /** builds recorded since construction (rtWorldReplay prints them) */
     public long blasBuilds, tlasBuilds;
 
@@ -52,9 +57,21 @@ public final class VkRtBackend implements RtSession.Backend {
             (r.bucket() == SectionGeometry.TRANSLUCENT ? trans : solid).add(geo);
         }
         if (solid.isEmpty() && trans.isEmpty()) return 0;
+        if (!inputsOrdered) {   // R1-REV: ONE transfer -> build barrier per frame (in-frame arena copies, if any, come first)
+            accel.barrierInputsToBuild();
+            inputsOrdered = true;
+        }
         RtAccel.Accel a = solid.isEmpty() ? null : accel.buildBlas(solid, false);
-        RtAccel.Accel t = trans.isEmpty() ? null : accel.buildBlas(trans, false);
-        accel.barrierBuildToBuild();
+        RtAccel.Accel t;
+        try {
+            t = trans.isEmpty() ? null : accel.buildBlas(trans, false);
+        } catch (RuntimeException | Error e) {   // R1-REV (review #3): the solid BLAS is not leaked when the second build fails
+            if (a != null) accel.destroy(a);
+            throw e;
+        }
+        // R1-REV (review #6): no build -> build barrier per section: section BLASes write disjoint storage and scratch and
+        // read nothing another section's build writes; the TLAS build's barrier orders them all before the TLAS reads them
+        tlasDirty = true;
         blasBuilds += (a == null ? 0 : 1) + (t == null ? 0 : 1);
         long h = next++;
         blas.put(h, new RtAccel.Accel[]{a, t});
@@ -67,6 +84,7 @@ public final class VkRtBackend implements RtSession.Backend {
         RtAccel.Accel[] p = blas.remove(handle);
         if (p == null) return;
         tlasValid = false;   // the current TLAS may name it: no trace until the next TLAS build
+        tlasDirty = true;
         for (RtAccel.Accel a : p)
             if (a != null) {
                 bytes -= a.bytes;
@@ -75,6 +93,7 @@ public final class VkRtBackend implements RtSession.Backend {
     }
 
     public void origin(int sx, int sy, int sz) {
+        if (sx != ox || sy != oy || sz != oz) tlasDirty = true;   // instance translations are relative to it
         ox = sx;
         oy = sy;
         oz = sz;
@@ -82,13 +101,16 @@ public final class VkRtBackend implements RtSession.Backend {
 
     @Override
     public void buildTlas(long[] handles, int[][] sections, int count) {
+        inputsOrdered = false;
+        // R1-REV (review #6): nothing changed since the last build (same BLAS set, same origin): the TLAS built in an earlier
+        // frame stays valid (its trailing build -> trace barrier orders it before every later command on the queue), no
+        // per-frame instance write, allocation or build
+        if (count > 0 && !tlasDirty && count == tlasCount && tlas != null && !tlas.destroyed()) return;
         tlasValid = false;
         if (count == 0) {   // R1-HANG: nothing resident (or world unload / disable, possibly outside a frame): no TLAS, no recording
-            if (tlas != null) {
-                bytes -= tlas.bytes;
-                accel.destroy(tlas);
-                tlas = null;
-            }
+            dropTlas();
+            tlasCount = 0;
+            tlasDirty = true;
             return;
         }
         if (count * 2L > RtLimits.HARD_MAX_INSTANCES)
@@ -103,15 +125,43 @@ public final class VkRtBackend implements RtSession.Backend {
             if (p[0] != null) inst.add(new RtAccel.Instance(tx, ty, tz, i, 1, p[0].address, false));
             if (p[1] != null) inst.add(new RtAccel.Instance(tx, ty, tz, i, 2, p[1].address, false));
         }
-        if (tlas != null) {
-            bytes -= tlas.bytes;
-            accel.destroy(tlas);
+        dropTlas();   // R1-REV (review #2): field cleared BEFORE the build, so a failed build is never destroyed twice
+        try {
+            tlas = accel.buildTlas(inst);
+        } finally {
+            accel.releaseTransient();   // VkGpuDevice frees are deferred past the frames that read them (also after a failure)
         }
-        tlas = accel.buildTlas(inst);
         bytes += tlas.bytes;
         tlasBuilds++;
+        tlasCount = count;
+        tlasDirty = false;
         tlasValid = true;
-        accel.releaseTransient();   // VkGpuDevice frees are deferred past the frames that read them
+    }
+
+    private void dropTlas() {
+        RtAccel.Accel t = tlas;
+        tlas = null;
+        if (t != null) {
+            bytes -= t.bytes;
+            accel.destroy(t);
+        }
+    }
+
+    /** R1-REV (review #7): the storage bytes of a BLAS handle (opaque + translucent), for the owner's reconcile */
+    @Override
+    public long blasBytes(long handle) {
+        RtAccel.Accel[] p = blas.get(handle);
+        if (p == null) return -1;
+        long b = 0;
+        for (RtAccel.Accel a : p) if (a != null) b += a.bytes;
+        return b;
+    }
+
+    /** bytes of all live section BLASes (rtWorldReplay compares the owner's count with it) */
+    public long blasLiveBytes() {
+        long b = 0;
+        for (long h : blas.keySet()) b += blasBytes(h);
+        return b;
     }
 
     /**
@@ -119,7 +169,7 @@ public final class VkRtBackend implements RtSession.Backend {
      * {@link #buildTlas} (recorded earlier in the same command buffer, followed by the build -> compute barrier) and
      * while no BLAS it names was destroyed since. A pass that gets 0 skips tracing (raster stays).
      */
-    public long tlasForTrace() {
+    public long tlasForTrace() {   // R1-REV: "this frame's" = built this frame, or reused unchanged (no BLAS destroyed since)
         return tlasValid && tlas != null && !tlas.destroyed() ? tlas.handle : 0;
     }
 
@@ -155,14 +205,16 @@ public final class VkRtBackend implements RtSession.Backend {
 
     @Override
     public void close() {
-        for (Long h : new ArrayList<>(blas.keySet())) destroyBlas(h);
-        tlasValid = false;
-        if (tlas != null) {
-            accel.destroy(tlas);
-            tlas = null;
+        try {
+            for (Long h : new ArrayList<>(blas.keySet())) destroyBlas(h);
+            tlasValid = false;
+            dropTlas();
+            targets(0, 0);
+        } finally {
+            accel.close();
+            bytes = 0;
+            tlasDirty = true;
+            tlasCount = 0;
         }
-        targets(0, 0);
-        accel.close();
-        bytes = 0;
     }
 }

@@ -27,6 +27,10 @@ public final class RtSession {
         int liveObjects();
         long liveBytes();
         void close();
+        /** R1-REV: the real device bytes of a built BLAS handle (storage), or -1 when unknown (the estimate stays) */
+        default long blasBytes(long handle) {
+            return -1;
+        }
     }
 
     /** Per-frame numbers (the recorded "sections arriving and leaving" run prints them). */
@@ -103,6 +107,7 @@ public final class RtSession {
                 queue.sectionReset(g.sx(), g.sy(), g.sz());
                 continue;
             }
+            res = queue.reconcile(res, backend.blasBytes(hd));   // R1-REV: the owner counts the real BLAS size, not the model's
             handles.put(res, hd);
             where.put(hd, new int[]{g.sx(), g.sy(), g.sz()});
             built++;
@@ -142,14 +147,23 @@ public final class RtSession {
 
     /** RT switched off (Look switch, failure, shutdown): everything is released; the owner returns to 0. */
     public void disable() {
-        worldUnloaded();
-        if (targetBytes > 0) {
-            backend.targets(0, 0);
-            memory.release(targetBytes);
-            targetBytes = 0;
-        }
+        // R1-REV (review 5cb221b #2): each step runs even when an earlier one throws (a failed frame left the backend
+        // half-built); the first failure is rethrown after the rest released what it could
         enabled = false;
-        backend.close();
+        try {
+            worldUnloaded();
+        } finally {
+            try {
+                if (targetBytes > 0) {
+                    long b = targetBytes;
+                    targetBytes = 0;
+                    memory.release(b);
+                    backend.targets(0, 0);
+                }
+            } finally {
+                backend.close();
+            }
+        }
     }
 
     public boolean enabled() {

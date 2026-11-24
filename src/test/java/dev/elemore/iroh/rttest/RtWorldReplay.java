@@ -29,6 +29,10 @@ import java.util.*;
  * Checks: every ray right, the queue's per-frame bound held, the session drained, no live objects / bytes after
  * disable, 0 validation errors (the task runs the layer; sync validation in core mode, -Pvalidate=gpuav for GPU-AV).
  * {@code -Ptrace=false} skips the ray dispatch (lavapipe + GPU-AV instrumentation crash, see vkval-extra-gate.sh).
+ * R1-REV (review 5cb221b): the load ring is decoupled from the residency radius (safe mode: residency 2, sections loaded
+ * out to 8, as in game where render distance is far past the residency); checks per frame: no resident BLAS beyond the
+ * residency box + eviction margin (#1), the owner counts at least the real BLAS bytes (#7), at most a few RT barriers
+ * per frame however many sections are built (#6), and the TLAS is reused while nothing changes (#6).
  * Not covered: frames in flight (HeadlessGpuDevice waits each frame), entities (rtEntities), real RADV timing.
  */
 public final class RtWorldReplay {
@@ -193,7 +197,7 @@ public final class RtWorldReplay {
     }
 
     record Result(int frames, long rays, long wrong, long checked, int maxBuilt, long maxTris, int resident, long tris, double msPer100kTris,
-                  long blasBuilds, long tlasBuilds, boolean settled, int residentParked) {}
+                  long blasBuilds, long tlasBuilds, boolean settled, int residentParked, int maxBarriers, long parkedTlasBuilds, int parkedFrames) {}
 
     static Result phase(HeadlessGpuDevice dev, RtCompute comp, RtCompute.Pass pass, String name, int frames, boolean trace, StringBuilder log) {
         edits.clear();
@@ -203,7 +207,10 @@ public final class RtWorldReplay {
         VkRtBackend backend = new VkRtBackend(dev, VERTEX);
         RtSession s = new RtSession(RtSettings.DEFAULT, mem, RtMemoryModel.radvAssumed(), w, backend);
         RtGameBridge bridge = new RtGameBridge(s.queue, w);
-        int R = s.queue.radius, load = R + 2;
+        int R = s.queue.radius, load = Math.max(R + 2, 8);   // R1-REV: loaded (render distance) far past the residency in safe mode
+        RtAccel accel = RtHangRepro.accelOf(backend);
+        int maxBarriers = 0, parkedFrames = 0;
+        long parkedTlas = 0;
         dev.flush();
         if (!s.enable(160, 90)) throw new IllegalStateException("targets refused");
         int n = GRID * GRID;
@@ -258,10 +265,35 @@ public final class RtWorldReplay {
             dev.flush();   // the beginFrame submit: uploads, the frame waits on them
             // ---- the frame: RT at WORLD_START (builds + TLAS), then the trace
             long t0 = System.nanoTime();
+            long bar0 = accel.barriers, tlas0 = backend.tlasBuilds;
             backend.origin(camX, camY, camZ);   // as RtFrameHooks.worldStart: the rebase origin first, then the frame
             RtSession.FrameStats st = s.frame(camX, camY, camZ);
+            int bars = (int) (accel.barriers - bar0);
+            maxBarriers = Math.max(maxBarriers, bars);
+            if (f > 0 && bars > 6) {   // 1 input barrier + index grow + 2 transform-cache fills + TLAS (2): never one per section
+                log.append("FAIL ").append(name).append(" frame ").append(f).append(": ").append(bars).append(" RT barriers for ").append(st.built()).append(" sections\n");
+                wrong++;
+            }
+            if (f < parked && settled) { parkedFrames++; parkedTlas += backend.tlasBuilds - tlas0; }
+            // R1-REV #1: no resident beyond the residency box + margin; #7: the owner counts the real BLAS bytes
+            int far = 0;
+            for (Long k : want) {
+                int[] c = unkey(k);
+                if (s.queue.isResident(c[0], c[1], c[2]) && (Math.max(Math.abs(c[0] - camX), Math.abs(c[2] - camZ)) > R + BlasBuildQueue.EVICT_MARGIN
+                        || Math.abs(c[1] - camY) > Math.max(2, R / 2) + BlasBuildQueue.EVICT_MARGIN)) far++;
+            }
+            if (far > 0) {
+                log.append("FAIL ").append(name).append(" frame ").append(f).append(": ").append(far).append(" resident BLASes outside the residency box\n");
+                wrong++;
+            }
+            long counted = mem.usedBytes() - RtSession.targetBytes(160, 90), real = backend.blasLiveBytes();
+            if (counted < real) {
+                if (wrong < 50) log.append("FAIL ").append(name).append(" frame ").append(f).append(": owner counts ").append(counted)
+                        .append(" B of BLAS, the device holds ").append(real).append(" B\n");
+                wrong++;
+            }
             maxBuilt = Math.max(maxBuilt, st.built());
-            if (!settled && f > 0 && st.built() == 0) { settled = true; residentParked = st.resident(); parked = f + 1; }   // all in range built
+            if (!settled && f > 0 && st.built() == 0) { settled = true; residentParked = st.resident(); parked = f + 16; }   // all in range built; 15 idle parked frames
             maxTris = Math.max(maxTris, st.triangles());
             trisTot += st.triangles();
             if (st.built() > s.queue.maxBuilds || (st.built() > 1 && st.triangles() > s.queue.maxTriangles)) {
@@ -298,6 +330,10 @@ public final class RtWorldReplay {
             if (trace && tlas != 0) {
                 // a second submit traces against this frame's TLAS (still valid: no BLAS changed since)
                 if (backend.tlasForTrace() != tlas) throw new IllegalStateException("tlas changed");
+                // R1-REV (review #11): the ray upload (transfer write, earlier submit) made visible to the compute read; a fence
+                // wait between submits only makes device writes visible to the HOST
+                dev.barrier(org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, org.lwjgl.vulkan.VK10.VK_ACCESS_TRANSFER_WRITE_BIT,
+                        org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, org.lwjgl.vulkan.VK10.VK_ACCESS_SHADER_READ_BIT);
                 comp.dispatch(pass, tlas, new VkBuf[]{rays, out}, null, (n + 63) / 64, 1, 1);
                 ByteBuffer r = dev.readBuffer(out, 0, n * 4).order(ByteOrder.LITTLE_ENDIAN);
                 comp.resetSets();
@@ -332,7 +368,7 @@ public final class RtWorldReplay {
         helper.close();
         dev.flush();
         return new Result(f, raysTot, wrong, checked, maxBuilt, maxTris, resident, trisTot,
-                trisTimed == 0 ? 0 : nsBuilds / 1e6 / trisTimed * 100_000, blasB, tlasB, settled, residentParked);
+                trisTimed == 0 ? 0 : nsBuilds / 1e6 / trisTimed * 100_000, blasB, tlasB, settled, residentParked, maxBarriers, parkedTlas, parkedFrames);
     }
 
     /** Inverse of SectionGeometry.key (22-bit x, 22-bit z, 20-bit y, two's complement). */
@@ -360,12 +396,15 @@ public final class RtWorldReplay {
                 log.setLength(0);
                 total++;
                 boolean residentOk = r.settled() && (ph[1] == null ? r.residentParked() > 400 : r.residentParked() > 20);
-                boolean ok = r.wrong() == 0 && residentOk && (!trace || r.checked() > 0);
+                // R1-REV #6: parked with nothing changing, the TLAS is built once, not every frame
+                boolean reuseOk = r.parkedFrames() >= 10 && r.parkedTlasBuilds() <= 1;
+                boolean ok = r.wrong() == 0 && residentOk && reuseOk && (!trace || r.checked() > 0);
                 if (ok) pass++;
                 System.out.println((ok ? "ok   " : "FAIL ") + ph[0] + " [" + limits + "]: " + r.frames() + " frames, rays " + r.rays() + " wrong " + r.wrong()
                         + ", max builds/frame " + r.maxBuilt() + " max tris/frame " + r.maxTris() + ", resident parked " + r.residentParked()
                         + (r.settled() ? " (settled)" : " (NOT settled)") + " / at end " + r.resident()
-                        + ", BLAS builds " + r.blasBuilds() + " TLAS builds " + r.tlasBuilds() + ", tris built " + r.tris()
+                        + ", BLAS builds " + r.blasBuilds() + " TLAS builds " + r.tlasBuilds() + " (" + r.parkedTlasBuilds() + " in " + r.parkedFrames() + " idle parked frames)"
+                        + ", max RT barriers/frame " + r.maxBarriers() + ", tris built " + r.tris()
                         + String.format(", lavapipe %.1f ms per 100k tris (CPU Vulkan; RADV is far faster: UNVERIFIED there)", r.msPer100kTris()));
             }
             System.clearProperty("iroh.rt.safe");
