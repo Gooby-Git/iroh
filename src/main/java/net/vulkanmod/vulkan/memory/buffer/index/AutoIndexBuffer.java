@@ -27,13 +27,7 @@ public class AutoIndexBuffer {
         this.vertexCount = vertexCount;
         ByteBuffer buffer;
 
-        IndexBuffer.IndexType indexType = IndexBuffer.IndexType.UINT16;
-
-        if (vertexCount > U16_MAX_VERTEX_COUNT &&
-            (this.drawType == DrawType.QUADS || this.drawType == DrawType.LINES))
-        {
-            indexType = IndexBuffer.IndexType.UINT32;
-        }
+        IndexBuffer.IndexType indexType = indexTypeFor(this.drawType, vertexCount);
 
         buffer = generate(this.drawType, indexType, vertexCount);
 
@@ -42,6 +36,12 @@ public class AutoIndexBuffer {
         this.indexBuffer.copyBuffer(buffer, buffer.remaining());
 
         MemoryUtil.memFree(buffer);
+    }
+
+    /** Index width of an auto buffer sized for {@code vertexCount} vertices: QUADS and LINES go 32-bit past 16 bits. */
+    public static IndexBuffer.IndexType indexTypeFor(DrawType drawType, int vertexCount) {
+        return vertexCount > U16_MAX_VERTEX_COUNT && (drawType == DrawType.QUADS || drawType == DrawType.LINES)
+                ? IndexBuffer.IndexType.UINT32 : IndexBuffer.IndexType.UINT16;
     }
 
     /**

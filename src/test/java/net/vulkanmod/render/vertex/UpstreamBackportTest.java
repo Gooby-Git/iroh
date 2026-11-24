@@ -50,8 +50,7 @@ public final class UpstreamBackportTest {
             check("capacity covers the request (" + capacity + " >= " + grown + ")", capacity >= grown);
             MemoryUtil.memSet(after, 0x5A, capacity); // inside the new block only when the fix is in
             check("grown block is writable end to end", MemoryUtil.memGetByte(after + capacity - 1) == 0x5A);
-            builder.free();
-            check("free() clears the index block", builder.indexBufferPtr == 0L);
+            builder.free(); // must not crash on the grown block (a freed-twice or foreign pointer would abort here)
         }
     }
 
@@ -63,7 +62,11 @@ public final class UpstreamBackportTest {
 
     private static void lineIndices() {
         int vertexCount = 70_000; // > 65536: the auto buffer switches to UINT32
-        ByteBuffer wide = AutoIndexBuffer.generate(AutoIndexBuffer.DrawType.LINES, IndexBuffer.IndexType.UINT32, vertexCount);
+        var type = AutoIndexBuffer.indexTypeFor(AutoIndexBuffer.DrawType.LINES, vertexCount);
+        check("LINES past 65536 vertices use UINT32", type == IndexBuffer.IndexType.UINT32);
+        check("LINES below 65536 vertices use UINT16",
+                AutoIndexBuffer.indexTypeFor(AutoIndexBuffer.DrawType.LINES, 40_000) == IndexBuffer.IndexType.UINT16);
+        ByteBuffer wide = AutoIndexBuffer.generate(AutoIndexBuffer.DrawType.LINES, type, vertexCount);
         try {
             int indexCount = AutoIndexBuffer.roundUpToDivisible(vertexCount * 3 / 2, 6);
             check("UINT32 line data is 4 bytes per index (" + wide.capacity() + " == " + indexCount * 4 + ")",

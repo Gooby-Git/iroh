@@ -55,23 +55,25 @@ public class VkGlTexture {
     private static final it.unimi.dsi.fastutil.ints.IntOpenHashSet LOGGED_INVALID_IDS = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
 
     public static void bindTexture(int id) {
-        boundTextureId = id;
-        boundTexture = map.get(id);
-        if (activeTexture >= 0 && activeTexture < unitBinding.length)
-            unitBinding[activeTexture] = id;
-
-        if (id <= 0)
-            return;
+        VkGlTexture texture = map.get(id);
 
         // Upstream VulkanMod 2eabf9a: a name that was never generated (or already deleted) is a GL error, not a crash.
-        // As upstream: the unit keeps its previous image for sampling and texture calls on this binding become no-ops
-        // (they check boundTexture), so a stale id from a mod cannot write into another texture.
-        if (boundTexture == null) {
+        // Like GL's GL_INVALID_OPERATION (core profile), the call changes nothing: the unit's previous binding, and the
+        // texture later calls target, stay as they were (review P2-13: upstream records the bad id first).
+        if (id > 0 && texture == null) {
             if (LOGGED_INVALID_IDS.add(id))
                 net.vulkanmod.Initializer.LOGGER.error("Iroh: glBindTexture with unknown texture id {} ignored (logged once per id)", id,
                         new Throwable("bound from"));
             return;
         }
+
+        boundTextureId = id;
+        boundTexture = texture;
+        if (activeTexture >= 0 && activeTexture < unitBinding.length)
+            unitBinding[activeTexture] = id;
+
+        if (id <= 0)
+            return;
 
         VulkanImage vulkanImage = boundTexture.vulkanImage;
         if (vulkanImage != null)
