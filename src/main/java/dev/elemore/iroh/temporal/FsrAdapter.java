@@ -81,7 +81,7 @@ public final class FsrAdapter implements UpscalerAdapter {
     @Override
     public void dispatch(VkCommandBuffer cmd, MemoryStack stack, Inputs in) {
         int flags = FsrUpscaler.DEPTH_INFINITE | FsrUpscaler.AUTO_EXPOSURE;
-        int shim = DeviceCaps.shaderFloat16 && DeviceCaps.shaderInt16 && DeviceCaps.storage16Bit ? 0 : FsrUpscaler.NO_FP16;
+        int shim = DeviceCaps.fp16ShadersAllowed() ? 0 : FsrUpscaler.NO_FP16;
         FsrUpscaler up = session.ensure(flags, shim, in.renderW(), in.renderH(), in.displayW(), in.displayH());
         if (up == null) {
             Bilinear.INSTANCE.dispatch(cmd, stack, in);
