@@ -1,5 +1,5 @@
 plugins {
-	id 'fabric-loom' version '1.9.2'
+	id 'fabric-loom' version '1.17.19'
 	id 'maven-publish'
 }
 
@@ -12,6 +12,10 @@ base {
 
 loom {
 	accessWidenerPath = file("src/main/resources/vulkanmod.accesswidener")
+	// Loom 1.17 defaults to no Mixin annotation processor, hence no refmap; the jar needs iroh-refmap.json (Mojang names -> intermediary).
+	mixin {
+		useLegacyMixinAp = true
+	}
 }
 
 // Compile-only signature stubs of other mods' public API (WaterMedia) for Iroh's compat mixins. Never packaged.
@@ -80,7 +84,12 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 21
+	it.options.release = 25
+}
+
+// Gradle 9: the test source set holds harness mains (JavaExec tasks below), no JUnit tests.
+test {
+	failOnNoDiscoveredTests = false
 }
 
 java {
@@ -89,8 +98,8 @@ java {
 	// If you remove this line, sources will not be generated.
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_21
-	targetCompatibility = JavaVersion.VERSION_21
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
 }
 
 // P1-11: a jar hash identifies a commit. No file timestamps, fixed entry order, for every archive task

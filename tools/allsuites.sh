@@ -5,7 +5,7 @@
 # the "vkval" column is the error count from build.gradle's vkvalCheck ("-" = suite does not use lavapipe).
 # Run ./build.sh first (bridgeLinkTest). After ./gradlew clean, customEvalTest needs the Navidson packHarness dump: rerun it last.
 WT="$1"; OUT="$2"; shift 2
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}
 mkdir -p "$OUT"
 cd "$WT" || exit 1
 CAP="$HOME/Projects/proctor/knowledge/perf/p3/capture1.irohframe"

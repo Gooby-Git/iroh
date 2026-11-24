@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # H-1: run Iroh's offline Vulkan harnesses (lavapipe) under the Khronos Profiles layer with real GPU profiles.
 # usage: tools/hw-matrix.sh <worktree> [label] [profile-glob] [task-regex]     e.g. tools/hw-matrix.sh ~/Projects/iroh-wt-hw int2b 'nv-*'
-# Needs: layer installed in ~/.local/share/vulkan/explicit_layer.d (see knowledge/build.md "Profiles layer"), JDK 21, jq.
+# Needs: layer installed in ~/.local/share/vulkan/explicit_layer.d (see knowledge/build.md "Profiles layer"), JDK 25, jq.
 # Output: build-hw/<label>/<profile>/<task>.log + build-hw/<label>/matrix.txt (table) ; exit 0 always (the table is the verdict).
 # Offline only: lavapipe, no game, no Proctor, no GPU. Never touches the worktree except gradle's build/ dir.
 set -uo pipefail
 WT=$(readlink -f "${1:?worktree}"); LABEL=${2:-$(basename "$WT")}; GLOB=${3:-*}; TFILTER=${4:-.}
 HERE=$(cd "$(dirname "$0")" && pwd); PROF=$HERE/hw-profiles
 OUT=$HERE/../build-hw/$LABEL; mkdir -p "$OUT"; 
-export JAVA_HOME=${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}; export PATH=$JAVA_HOME/bin:$PATH
+export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}; export PATH=$JAVA_HOME/bin:$PATH
 LAYER_DIR=${VK_PROFILES_LAYER_DIR:-$HOME/.local/share/vulkan/explicit_layer.d}
 [ -f "$LAYER_DIR/VkLayer_khronos_profiles.json" ] || { echo "profiles layer missing in $LAYER_DIR"; exit 2; }
 # task list: "gradle args" ; tasks absent from the worktree are skipped
