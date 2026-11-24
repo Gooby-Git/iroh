@@ -191,6 +191,12 @@ public abstract class DeviceManager {
             IndirectDrawCaps.apply(device.availableFeatures.features(), device.availableFeatures11, deviceFeatures.features(), deviceVulkan11Features);
             net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", IndirectDrawCaps.report());
 
+            // PACK-FULL (VUID-RuntimeSpirv-NonWritable-06341): shader-pack vertex/fragment image stores (Navidson voxel_img)
+            String packFeatures = dev.elemore.iroh.shaderpack.runtime.PackDeviceFeatures.apply(device.availableFeatures.features(), deviceFeatures.features());
+            dev.elemore.iroh.shaderpack.runtime.PackDeviceFeatures.vertexStores = deviceFeatures.features().vertexPipelineStoresAndAtomics();
+            dev.elemore.iroh.shaderpack.runtime.PackDeviceFeatures.fragmentStores = deviceFeatures.features().fragmentStoresAndAtomics();
+            dev.elemore.iroh.shaderpack.runtime.PackDeviceFeatures.independentBlend = deviceFeatures.features().independentBlend();
+
             // Must not set line width to anything other than 1.0 if this is not supported
             if (device.availableFeatures.features().wideLines()) {
                 deviceFeatures.features().wideLines(true);
@@ -212,6 +218,7 @@ public abstract class DeviceManager {
                     + " wideLines=" + deviceFeatures.features().wideLines()
                     + " shaderDrawParameters=" + deviceVulkan11Features.shaderDrawParameters()
                     + " drawIndirectCount=" + deviceVulkan12Features.drawIndirectCount()
+                    + " " + packFeatures
                     + " upscaleSet=" + (dev.elemore.iroh.temporal.DeviceCaps.requested
                         ? "[storageImageExtendedFormats=" + deviceFeatures.features().shaderStorageImageExtendedFormats()
                           + " writeWithoutFormat=" + deviceFeatures.features().shaderStorageImageWriteWithoutFormat()

@@ -292,6 +292,13 @@ public final class IrohVkBackend extends VkPackBackend {
             public void set(int layout) {
                 vi.setCurrentLayout(layout);
             }
+
+            @Override
+            public void toSampled() {
+                // PACK-FULL: Iroh's own rule (upload buffer when the pending change is there, else the frame buffer); the
+                // caller is outside every render pass, so the frame-buffer branch records between passes
+                vi.readOnlyLayout();
+            }
         });
     }
 
@@ -315,6 +322,21 @@ public final class IrohVkBackend extends VkPackBackend {
                 } catch (IllegalAccessException ignored) {
                 }
         return "UNDEFINED";
+    }
+
+    @Override
+    protected boolean vertexStoresEnabled() {
+        return PackDeviceFeatures.vertexStores;
+    }
+
+    @Override
+    protected boolean fragmentStoresEnabled() {
+        return PackDeviceFeatures.fragmentStores;
+    }
+
+    @Override
+    protected boolean independentBlendEnabled() {
+        return PackDeviceFeatures.independentBlend;
     }
 
     @Override
