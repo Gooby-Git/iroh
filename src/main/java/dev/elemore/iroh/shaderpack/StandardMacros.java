@@ -25,10 +25,29 @@ import java.util.Set;
  */
 public final class StandardMacros {
 
-    /** Iris feature flags Iroh serves (P3 plan). Not served: REVERSED_CULLING, FADE_VARIABLE (no chunk fade yet). */
+    /** Iris feature flags Iroh serves (P3 plan). Not served: see {@link #KNOWN_FEATURES}. */
     public static final Set<String> SERVED_FEATURES = Set.of("SEPARATE_HARDWARE_SAMPLERS", "PER_BUFFER_BLENDING",
             "COMPUTE_SHADERS", "ENTITY_TRANSLUCENT", "SSBO", "CUSTOM_IMAGES", "HIGHER_SHADOWCOLOR",
             "BLOCK_EMISSION_ATTRIBUTE");
+
+    /**
+     * Every flag the public Iris pack-format docs define (I-FLAGS, iris-loader.md section 19), served or not. A required
+     * flag outside SERVED_FEATURES is a hard error either way; the split only changes the message and pack.json
+     * ("unknown" = no such Iris flag, probably a typo). Not served, deliberately: CAN_DISABLE_WEATHER (weather is drawn
+     * by its class program with a fallback walk, a pack cannot switch it off yet; UNVERIFIED what Iris needs here),
+     * REVERSED_CULLING, FADE_VARIABLE (no chunk fade), TEXTURE_FILTERING, TESSELLATION_SHADERS (no tess pipeline).
+     */
+    public static final Set<String> KNOWN_FEATURES = Set.of("BLOCK_EMISSION_ATTRIBUTE", "CAN_DISABLE_WEATHER",
+            "COMPUTE_SHADERS", "ENTITY_TRANSLUCENT", "PER_BUFFER_BLENDING", "REVERSED_CULLING", "CUSTOM_IMAGES",
+            "HIGHER_SHADOWCOLOR", "SEPARATE_HARDWARE_SAMPLERS", "SSBO", "TESSELLATION_SHADERS", "TESSELATION_SHADERS",
+            "FADE_VARIABLE", "TEXTURE_FILTERING");
+
+    /** why a flag is refused: null = served */
+    public static String featureProblem(String f, Set<String> served) {
+        if (served.contains(f))
+            return null;
+        return KNOWN_FEATURES.contains(f) ? "an Iris feature flag Iroh does not serve" : "not an Iris feature flag";
+    }
 
     public static final List<String> RENDER_STAGES = List.of("NONE", "SKY", "SUNSET", "CUSTOM_SKY", "SUN", "MOON",
             "STARS", "VOID", "TERRAIN_SOLID", "TERRAIN_CUTOUT_MIPPED", "TERRAIN_CUTOUT", "ENTITIES", "BLOCK_ENTITIES",
