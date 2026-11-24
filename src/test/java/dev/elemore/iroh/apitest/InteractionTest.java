@@ -196,7 +196,7 @@ public final class InteractionTest {
                 == RtLookArbiter.Active.RASTER && RtLookArbiter.resolve(false, false, true)
                 == RtLookArbiter.Active.PACK);
         String prt = Files.readString(Path.of("src/main/java/dev/elemore/iroh/shaderpack/runtime/PackRuntime.java"));
-        String se = prt.substring(prt.indexOf("public static synchronized String setEnabled("));
+        String se = prt.substring(prt.indexOf("String setEnabled(boolean"));
         check("pack enable asks the Look first (before the pack seam / any pack init) and logs the refusal once",
                 se.indexOf("MainPassArbiter.packRefusal(") >= 0 && se.indexOf("MainPassArbiter.packRefusal(") < se.indexOf("FeatureFailures.inject(\"pack\")")
                         && se.contains("lookRefusalLogged"));
