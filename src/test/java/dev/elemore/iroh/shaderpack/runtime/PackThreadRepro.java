@@ -36,14 +36,20 @@ import java.util.concurrent.TimeUnit;
  * </ul>
  * Cases: "interleaved" (deterministic: C's disable lands while R is inside a frame, at a stage boundary), "random"
  * (N trials, C fires at a random moment of the frame), and "wiring" (PackRuntime.setEnabled/reload from C run on R).
+ * V-6 (RQ-V5-a): sync hazards are counted too and must be 0 in new mode (they were 1 per device: the backend's
+ * creation clear of the dummy shadow-depth image, then FrameExecutor's far-plane upload with no barrier between, since
+ * the executor did not know about the clear). {@code -PoldCreate} = negative control: the pre-V-6 untracked creation
+ * clear ({@link FrameExecutor#untrackedCreateForTest}), new mode only; last line "# packthread-oldcreate HAZARD n" with
+ * n >= 1 expected.
+ * <p>
  * Counted: use-after-free and other exceptions on R or C, validation errors (double vkDestroyFramebuffer etc.).
  * {@code ./gradlew packThreadRepro [-Pmode=old|new|both] [-Ptrials=N]}; both = old in a child JVM (a double free may abort
  * the process) then new here. Last line "# packthread PASS|FAIL ...": PASS = old shows the bug, new is clean.
  */
 public final class PackThreadRepro {
 
-    /** validation = every validation ERROR except sync hazards; hazards counted apart (a pre-existing first-frame clear->upload
-     *  WAW in the pack executor shows once per device in BOTH modes, retro-queue RQ-V5-a; not what this card is about) */
+    /** validation = every validation ERROR except sync hazards; hazards counted apart (the first-frame clear->upload WAW,
+     *  RQ-V5-a, fixed by V-6: CLEAN now also needs 0 hazards) */
     record Result(int uaf, int otherExceptions, int validation, int doubleDestroy, int hazards, List<String> samples) {
         int bugs() {
             return uaf + otherExceptions + validation;
@@ -51,12 +57,14 @@ public final class PackThreadRepro {
 
         String line(String mode, String kase) {
             return "# packthread-" + mode + " " + kase + " uaf " + uaf + " exceptions " + otherExceptions + " validation " + validation
-                    + " framebuffer-destroy " + doubleDestroy + " (sync hazards, not counted: " + hazards + ")";
+                    + " framebuffer-destroy " + doubleDestroy + " sync-hazards " + hazards;
         }
     }
 
     /** validation message kinds over the whole run (printed per mode) */
     static final java.util.Map<String, Integer> KINDS = new java.util.concurrent.ConcurrentSkipListMap<>();
+    /** first sync hazard messages (V-6) */
+    static final List<String> HAZARDS = Collections.synchronizedList(new ArrayList<>());
     static PackData data;
     static PackPlan plan;
     static final String FOLDER = "world0";
@@ -64,6 +72,14 @@ public final class PackThreadRepro {
     public static void main(String[] args) throws Exception {
         String mode = System.getProperty("pt.mode", "both");
         int trials = Integer.getInteger("pt.trials", 40);
+        if (Boolean.getBoolean("pt.oldCreate")) { // V-6 negative control
+            FrameExecutor.untrackedCreateForTest = true;
+            String r = runMode("new", trials);
+            int hz = Integer.parseInt(r.replaceAll(".*sync hazards (\\d+).*", "$1"));
+            System.out.println("# packthread-summary " + r);
+            System.out.println("# packthread-oldcreate HAZARD " + hz + " (expected >= 1: pre-V-6 untracked creation clear)");
+            System.exit(hz >= 1 ? 0 : 1);
+        }
         if (mode.equals("both")) {
             String old = runChild("old", trials);
             String neu = runMode("new", trials);
@@ -126,11 +142,13 @@ public final class PackThreadRepro {
         samples.stream().limit(4).forEach(s -> System.out.println("    " + s));
         rs.add(rand);
         KINDS.forEach((k, n) -> System.out.println("  validation kind x" + n + ": " + k.replace('\n', ' ')));
+        HAZARDS.stream().limit(2).forEach(h -> System.out.println("  sync hazard: " + (h.length() > 300 ? h.substring(0, 300) : h).replace('\n', ' ')));
         boolean wiringOk = old || wiring();
         int bugs = rs.stream().mapToInt(Result::bugs).sum();
-        String verdict = old ? (bugs > 0 ? "BUG" : "no-bug") : (bugs == 0 && wiringOk ? "CLEAN" : "NOT-CLEAN");
+        int hazards = hz + inter.hazards();
+        String verdict = old ? (bugs > 0 ? "BUG" : "no-bug") : (bugs == 0 && hazards == 0 && wiringOk ? "CLEAN" : "NOT-CLEAN");
         return verdict + " " + mode + ": interleaved uaf " + inter.uaf() + " exc " + inter.otherExceptions() + " val " + inter.validation()
-                + "; random uaf " + uaf + " exc " + exc + " val " + val + " (framebuffer destroy errors " + dd + ", sync hazards apart " + (hz + inter.hazards()) + ")"
+                + "; random uaf " + uaf + " exc " + exc + " val " + val + " (framebuffer destroy errors " + dd + "); sync hazards " + hazards
                 + (old ? "" : "; wiring " + (wiringOk ? "ok" : "BROKEN"));
     }
 
@@ -271,6 +289,7 @@ public final class PackThreadRepro {
                 exc++;
         List<String> v = new ArrayList<>(r.gpu.validationErrors);
         int hz = (int) v.stream().filter(s -> s.contains(" hazard detected")).count();
+        v.stream().filter(s -> s.contains(" hazard detected")).limit(2).forEach(HAZARDS::add);
         v.removeIf(s -> s.contains(" hazard detected"));
         int dd = (int) v.stream().filter(s -> s.contains("vkDestroyFramebuffer")).count();
         for (String m : v) { // kinds: the message up to its first period (handles differ per run)
