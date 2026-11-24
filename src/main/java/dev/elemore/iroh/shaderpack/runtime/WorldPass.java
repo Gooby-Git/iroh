@@ -234,7 +234,7 @@ public final class WorldPass {
             // SubstPass resolves its bindings and may CREATE images (dummies, geometry textures: creation barrier +
             // zeroing clear + upload). The first bind of a pass after an executor (re)build came here with Iroh's main
             // pass (or another attachment set) open; close everything first (enter() below would anyway).
-            if (!oldBindOrderForTest)
+            if (!oldBindOrderForTest && !ex.substPassBuilt(pass)) // another decision may already have built (and opened) it
                 suspend();
             sp = ex.substPass(pass, in);
             if (tr)

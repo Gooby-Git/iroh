@@ -2356,6 +2356,11 @@ public final class FrameExecutor {
     }
 
     /** P3-11: attachments, bindings and uniform scratch of a pack geometry pass for substituted draws; null when it cannot serve */
+    /** PACK-FULL: {@link #substPass} would return a cached pass (no images created, nothing recorded) */
+    public boolean substPassBuilt(String passId) {
+        return substPasses.containsKey(passId);
+    }
+
     public SubstPass substPass(String passId, PackFrameInputs in) {
         SubstPass sp = substPasses.get(passId);
         if (sp != null)
