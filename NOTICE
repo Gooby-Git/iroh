@@ -24,3 +24,8 @@ Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (ref
 NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
   this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
   distributed by this project.
+
+Upstream VulkanMod changes after the fork point (LGPL-3.0, same project, xCollateral and contributors), back-ported by
+card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh commit per upstream commit, adapted to 1.21.1):
+  7a1e520 "Add int index type for lines render type": vulkan/memory/buffer/index/AutoIndexBuffer.java (genIntLinesIndices),
+          vulkan/Drawer.java (capacity in vertices).
