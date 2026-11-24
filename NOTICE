@@ -43,3 +43,4 @@ card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh co
           (adapted to the 1.21.1 charTyped signature), iroh.mixins.json.
   5a80b35 "Port to 1.21.11" (WorldRenderer hunk only): render/chunk/WorldRenderer.java (no UBO upload/bind for areas that
           do not draw).
+  e55e432 "Port to 1.21.2" (VRenderSystem.initRenderer hunk only): vulkan/VRenderSystem.java (initial shader colour).
