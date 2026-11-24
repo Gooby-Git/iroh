@@ -183,8 +183,17 @@ public abstract class VkPackBackend implements GpuBackend {
         long viewMip0 = d.mips() == 1 ? viewAll : (a.length > 3 && a[3] != null ? (Long) a[3] : view(image, three, fmt, aspect, 0, 1));
         imgs.add(new Img(d, image, viewAll, viewMip0, fmt, aspect, a[1], null));
         int h = imgs.size() - 1;
-        // GENERAL for its whole life, zeroed (GL drivers hand zeroed memory to packs)
-        layout(cmd(), image, barrierAspect(fmt, aspect), d.mips(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        // GENERAL for its whole life, zeroed (GL drivers hand zeroed memory to packs). B-3B (RQ-APP1-a): a new image has
+        // no earlier access, so the transition waits for nothing (TOP_OF_PIPE, no source access) and only orders the
+        // zeroing clear after it (TRANSFER, TRANSFER_WRITE); the clear itself is ordered before first use by the executor
+        creationBarriers++;
+        try (MemoryStack s = stackPush()) {
+            VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, s).sType$Default().oldLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+                    .newLayout(VK_IMAGE_LAYOUT_GENERAL).srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .image(image).srcAccessMask(0).dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT);
+            b.subresourceRange().aspectMask(barrierAspect(fmt, aspect)).baseMipLevel(0).levelCount(d.mips()).baseArrayLayer(0).layerCount(1);
+            vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, b);
+        }
         clear(h, new float[]{0, 0, 0, 0});
         return h;
     }
@@ -525,12 +534,43 @@ public abstract class VkPackBackend implements GpuBackend {
 
     // ------------------------------------------------------------------------------------------------ commands
 
+    /** B-3B counters (barrier calls recorded by this backend): full fallbacks, compiled (masked) barriers, image creations */
+    public long fullBarriers, maskedBarriers, creationBarriers;
+
     @Override
     public void barrier(int image, String from, String to) {
+        fullBarriers++;
         try (MemoryStack s = stackPush()) {
             VkMemoryBarrier.Buffer b = VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT)
                     .dstAccessMask(VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
             vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, b, null, null);
+        }
+    }
+
+    /**
+     * B-3B: one barrier with the compiled masks (Sync values are the VK10 bit values). Owned images keep GENERAL;
+     * an imported or freed image never appears in a compiled barrier (FrameExecutor tracks owned images only).
+     */
+    @Override
+    public void barrier(Barrier b) {
+        maskedBarriers++;
+        try (MemoryStack s = stackPush()) {
+            int ni = b.images().length, nb = b.buffers().length;
+            VkImageMemoryBarrier.Buffer ib = ni == 0 ? null : VkImageMemoryBarrier.calloc(ni, s);
+            for (int i = 0; i < ni; i++) {
+                Img im = img(b.images()[i]);
+                VkImageMemoryBarrier e = ib.get(i).sType$Default().oldLayout(VK_IMAGE_LAYOUT_GENERAL).newLayout(VK_IMAGE_LAYOUT_GENERAL)
+                        .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).image(im.image)
+                        .srcAccessMask(b.imageSrc()[i]).dstAccessMask(b.imageDst()[i]);
+                e.subresourceRange().aspectMask(barrierAspect(im.format, im.aspect)).baseMipLevel(0).levelCount(im.d.mips())
+                        .baseArrayLayer(0).layerCount(1);
+            }
+            VkBufferMemoryBarrier.Buffer bb = nb == 0 ? null : VkBufferMemoryBarrier.calloc(nb, s);
+            for (int i = 0; i < nb; i++)
+                bb.get(i).sType$Default().srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                        .buffer(bufs.get(b.buffers()[i]).buffer()).offset(0).size(VK_WHOLE_SIZE)
+                        .srcAccessMask(b.bufferSrc()[i]).dstAccessMask(b.bufferDst()[i]);
+            vkCmdPipelineBarrier(cmd(), b.srcStages(), b.dstStages(), 0, null, bb, ib);
         }
     }
 
@@ -581,7 +621,12 @@ public abstract class VkPackBackend implements GpuBackend {
                 b.dstSubresource().aspectMask(im.aspect).mipLevel(m).baseArrayLayer(0).layerCount(1);
                 b.dstOffsets(1).set(nw, nh, 1);
                 vkCmdBlitImage(cmd(), im.image, VK_IMAGE_LAYOUT_GENERAL, im.image, VK_IMAGE_LAYOUT_GENERAL, b, VK_FILTER_LINEAR);
-                barrier(image, "TRANSFER_WRITE", "TRANSFER_READ");
+                // B-3B: level m is read by the next blit: a transfer -> transfer barrier on this image only (was a full barrier)
+                VkImageMemoryBarrier.Buffer mb = VkImageMemoryBarrier.calloc(1, s).sType$Default().oldLayout(VK_IMAGE_LAYOUT_GENERAL)
+                        .newLayout(VK_IMAGE_LAYOUT_GENERAL).srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                        .image(im.image).srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+                mb.subresourceRange().aspectMask(im.aspect).baseMipLevel(0).levelCount(im.d.mips()).baseArrayLayer(0).layerCount(1);
+                vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, mb);
                 w = nw;
                 h = nh;
             }

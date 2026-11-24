@@ -113,6 +113,31 @@ public final class PackExecTest {
                 System.out.println("FAIL negative controls: barrier caught " + caughtBarrier + ", order caught " + caughtOrder);
             }
         }
+        // B-3B negative control: the compiled barriers not emitted from frame 3 on: the recording device and the
+        // executor's debug mode (old tracker in parallel + SyncCheck) must both see the hazards
+        if (Files.isDirectory(nav)) {
+            PackData data = PackData.load(nav);
+            PackPlan plan = PackPlan.build(data);
+            total++;
+            RecordingBackend rec = new RecordingBackend();
+            FrameExecutor ex = new FrameExecutor(data, plan, "world0", rec, FrameExecutor.cap(1L << 30));
+            SyntheticScene scene = new SyntheticScene(data, plan.frames.get("world0"), plan.resources.get("world0"), 64, 36);
+            for (int f = 0; f < 4; f++) {
+                dev.elemore.iroh.shaderpack.runtime.SyncPlan.dropCompiledForTest = f >= 2;
+                ex.frame(scene);
+            }
+            dev.elemore.iroh.shaderpack.runtime.SyncPlan.dropCompiledForTest = false;
+            int dbg = ex.sync().debugViolations;
+            boolean debugOn = FrameExecutor.syncDebugDefault;
+            long dev0 = rec.violations.stream().filter(v -> !v.startsWith("sync debug")).count();
+            if (dev0 > 0 && (dbg > 0 || !debugOn)) {
+                pass++;
+                System.out.println("PASS negative control (B-3B): compiled barriers dropped -> " + dev0 + " device violations, "
+                        + dbg + " sync debug violations" + (debugOn ? "" : " (debug mode off)") + "; schedule " + ex.sync().lastCompile);
+            } else {
+                System.out.println("FAIL negative control (B-3B): device violations " + rec.violations.size() + ", sync debug violations " + dbg);
+            }
+        }
         System.out.println("# packexec " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
     }

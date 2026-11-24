@@ -120,13 +120,29 @@ public final class PackFlightRepro {
         int newHz = rs.stream().filter(r -> !r.old()).mapToInt(Result::hazards).sum();
         int other = rs.stream().mapToInt(Result::otherErrors).sum();
         boolean haveOld = rs.stream().anyMatch(Result::old), haveNew = rs.stream().anyMatch(r -> !r.old());
-        boolean pass = (!haveOld || ctl > 0 && oldHz > 0 && model[0] > 0) && (!haveNew || newHz == 0 && model[1] == 0) && other == 0;
+        // B-3B: debug mode (old tracker in parallel + SyncCheck on every declared access): only the new mode must be clean
+        int dbg = newDebug;
+        SyncPlan.DEBUG_SAMPLE.stream().limit(3).forEach(x -> System.out.println("  sync debug: " + x));
+        System.out.println("# packflight-debug new-mode sync debug violations " + dbg);
+        boolean pass = (!haveOld || ctl > 0 && oldHz > 0 && model[0] > 0) && (!haveNew || newHz == 0 && model[1] == 0 && dbg == 0) && other == 0;
         System.out.println("# packflight " + (pass ? "PASS" : "FAIL") + " (old in-flight hazards " + (haveOld ? oldHz : "-") + ", new hazards "
                 + (haveNew ? newHz : "-") + ", other validation errors " + other + ")");
         System.exit(pass ? 0 : 1);
     }
 
+    static int newDebug;
+
     static Result run(Pack pack, String kase, int inFlight, boolean old) {
+        int dbg0 = SyncPlan.DEBUG_VIOLATIONS_ALL.get();
+        try {
+            return run0(pack, kase, inFlight, old);
+        } finally {
+            if (!old)
+                newDebug += SyncPlan.DEBUG_VIOLATIONS_ALL.get() - dbg0;
+        }
+    }
+
+    static Result run0(Pack pack, String kase, int inFlight, boolean old) {
         FrameExecutor.forgetAtFrameEndForTest = old;
         HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true, inFlight);
         int[] perFrame = new int[FRAMES];
@@ -230,6 +246,10 @@ public final class PackFlightRepro {
      * after its creation clear recorded here), then registered as an import whose layout the backend tracks
      */
     static int sceneImage(HeadlessVkBackend gpu, String name, String fmt) {
+        return sceneImage(gpu, name, fmt, W, H);
+    }
+
+    static int sceneImage(HeadlessVkBackend gpu, String name, String fmt, int W, int H) {
         int own = gpu.createImage(new GpuBackend.ImageDesc(name + " (owner)", fmt, W, H, 1, 1,
                 Set.of(fmt.startsWith("D") ? "DEPTH" : "COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
         gpu.barrier(own, "TRANSFER_WRITE", "TRANSFER_WRITE");

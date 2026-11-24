@@ -607,6 +607,7 @@ tasks.register('customEvalTest', JavaExec) {
 // P3-3 frame executor on a recording fake device (no Vulkan): order, halves, bindings, mips, clears, barriers vs the plan.
 // ./gradlew packExecTest [-Ppack=<pack>] ; last line "# packexec PASS n/n"
 tasks.register('packExecTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Run the pack frame executor against a recording fake device and validate it against the plan'
 	dependsOn 'testClasses'
@@ -622,6 +623,7 @@ tasks.register('packExecTest', JavaExec) {
 // through an ICD file under build/lvp (nothing is installed). ./gradlew packReplay [-Ppack] [-Pfolder] [-Psize=WxH]
 // [-Pcapture=dir] [-Pframes=N] [-Pdump] [-Pgolden=check|update]; last line "# replay PASS ...".
 tasks.register('packReplay', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Replay a pack frame (deferred/composite/final) on lavapipe against a captured or synthetic frame'
 	dependsOn 'testClasses'
@@ -655,6 +657,7 @@ tasks.register('wideVertexTest', JavaExec) {
 // P3-4 pack lifecycle state machine on the recording backend: enable, resize x3, dimension change, unload, memory
 // refusal, disable; no leak, no use after free. ./gradlew packLifecycleTest ; last line "# lifecycle PASS n/n"
 tasks.register('packLifecycleTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Pack lifecycle (enable / resize / dimension / unload / refusal / disable) on the recording backend'
 	dependsOn 'testClasses'
@@ -666,6 +669,7 @@ tasks.register('packLifecycleTest', JavaExec) {
 
 // P3-4 default off: the pack entry points are inert without iroh.pack.enabled. ./gradlew packDefaultOffTest
 tasks.register('packDefaultOffTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Pack path entry points inert without the switch'
 	dependsOn 'testClasses'
@@ -677,6 +681,7 @@ tasks.register('packDefaultOffTest', JavaExec) {
 
 // G1 fix: endPassRunResume drops the bound-pipeline cache and re-sets dynamic state. ./gradlew passResumeTest
 tasks.register('passResumeTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Pass resume invalidates bound state and re-sets dynamic state'
 	dependsOn 'testClasses'
@@ -687,6 +692,7 @@ tasks.register('passResumeTest', JavaExec) {
 
 // G1 fix 2: -Diroh.imageTrace=pack: follows pack render targets. ./gradlew imageTracePackTest
 tasks.register('imageTracePackTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Image trace covers pack images'
 	dependsOn 'testClasses'
@@ -708,6 +714,7 @@ tasks.register('packGpuTimesTest', JavaExec) {
 
 // P3-5 FULL mode (geometry + shadow + post) on the recording backend. ./gradlew packFullTest
 tasks.register('packFullTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Pack FULL mode frame on the recording backend'
 	dependsOn 'testClasses'
@@ -758,6 +765,7 @@ tasks.register('integrationInertTest', JavaExec) {
 // INT-2 first-launch safety net: every feature's init forced to fail (test seam) degrades with one line; startup
 // self-check line. ./gradlew firstLaunchTest ; last line "# firstlaunch PASS n/n"
 tasks.register('firstLaunchTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Forced init failure of every optional feature degrades with one log line; startup self-check line'
 	dependsOn 'testClasses'
@@ -895,6 +903,7 @@ tasks.register('interactionTest', JavaExec) {
 
 // P3-11: the (S) world pass frame order + decision path on the fake device. ./gradlew worldPassTest ; last line "# worldpass PASS n/n"
 tasks.register('worldPassTest', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'World pass (program substitution) order/state on the recording backend'
 	dependsOn 'testClasses'
@@ -963,6 +972,7 @@ tasks.register('float16Repro', JavaExec) {
 // last line "# packthread PASS|FAIL" (PASS = old shows the bug, new is clean incl. 0 sync hazards).
 // -PoldCreate (V-6 negative control): pre-V-6 untracked creation clear, last line "# packthread-oldcreate HAZARD n", n >= 1 = PASS.
 tasks.register('packThreadRepro', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Pack path switched off from another thread during a pack frame on lavapipe + validation (old flagged, V-5 clean)'
 	dependsOn 'testClasses'
@@ -983,6 +993,7 @@ tasks.register('packThreadRepro', JavaExec) {
 // contract on VulkanMod's renderer: per-slot command buffers, submit without waiting) on lavapipe + sync validation.
 // ./gradlew packFlightRepro [-Pmode=old|new|both]; last line "# packflight PASS|FAIL" (old hazards > 0, new 0).
 tasks.register('packFlightRepro', JavaExec) {
+	systemProperty 'iroh.pack.syncDebug', 'true' // B-3B: old tracker in parallel + SyncCheck on every declared access
 	group = 'verification'
 	description = 'Cross-frame pack image hazards with 2 frames in flight on lavapipe + sync validation (old flagged, V-7 clean)'
 	dependsOn 'testClasses'
@@ -996,4 +1007,32 @@ tasks.register('packFlightRepro', JavaExec) {
 		if (project.hasProperty('trace')) systemProperty 'pf.trace', 'true'
 		useLavapipe(it)
 	}
+}
+
+// B-3B: barrier calls per frame and lavapipe per-pass GPU time on the Navidson world0 plan (synthetic, post, full).
+// ./gradlew packBarrierBench [-Pframes=12] [-Pw=320 -Ph=180]; lines "# barrierbench <case> ...". Lavapipe only, no validation.
+tasks.register('packBarrierBench', JavaExec) {
+	group = 'verification'
+	description = 'Pack barrier calls and per-pass lavapipe GPU time per frame (Navidson world0)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shaderpack.runtime.PackBarrierBench'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	doFirst {
+		['frames', 'w', 'h'].each { k -> if (project.hasProperty(k)) systemProperty 'bb.' + k, project.property(k) }
+		if (project.hasProperty('describe')) systemProperty 'bb.describe', 'true'
+		useLavapipe(it)
+	}
+}
+
+// B-3B: the compiled barrier schedule against the independent hazard checker (hand cases, 400 random plans, negative
+// controls). No Vulkan. ./gradlew syncPlanTest ; last line "# syncplan PASS n/n"
+tasks.register('syncPlanTest', JavaExec) {
+	group = 'verification'
+	description = 'Compiled pack barrier schedule vs SyncCheck'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shaderpack.runtime.SyncPlanTest'
+	workingDir = projectDir
 }

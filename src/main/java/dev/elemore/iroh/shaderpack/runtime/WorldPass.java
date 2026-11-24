@@ -315,15 +315,16 @@ public final class WorldPass {
             return;
         if (open != null) {
             gpu.endAttachments();
-            attachmentsDone(open);
+            ex.externalEnded();
             open = null;
         } else if (!irohEnded && host.irohPassBound()) {
             host.endIrohPass();
             irohEnded = true;
         }
-        for (int h : sp.colour)
-            gpu.barrier(h, "ANY", "ATTACHMENT_WRITE");
-        gpu.barrier(sp.depth, "ANY", "ATTACHMENT_WRITE");
+        // B-3B: the attachment set is a site of the executor's compiled schedule (a region between its segments): one
+        // barrier for its attachment writes and bound pack images, and the executor's later passes see its writes
+        // (was: one full barrier per attachment before and after every set)
+        ex.external(sp);
         gpu.beginAttachments(sp.passId, sp.colour, sp.depth, sp.viewport);
         open = sp;
         passBegins++;
@@ -333,7 +334,7 @@ public final class WorldPass {
         if (open == null)
             return;
         gpu.endAttachments();
-        attachmentsDone(open);
+        ex.externalEnded();
         open = null;
         if (irohEnded) {
             host.resumeIrohPass();
@@ -341,13 +342,6 @@ public final class WorldPass {
         }
         host.invalidateBoundState();
         host.reapplyDynamicState();
-    }
-
-    /** the executor's later passes read/write these attachments: make our writes visible (its access tracking does not see them) */
-    private void attachmentsDone(FrameExecutor.SubstPass sp) {
-        for (int h : sp.colour)
-            gpu.barrier(h, "ATTACHMENT_WRITE", "ANY");
-        gpu.barrier(sp.depth, "ATTACHMENT_WRITE", "ANY");
     }
 
     private void fail(String why) {

@@ -8,9 +8,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * A fake device that records every call and checks synchronisation as it goes: a sampled/storage read of an image
- * written since the last barrier on it, or a write over an image read or written since its last barrier, is a
- * violation (a missing barrier on a real device). No Vulkan, no native code: the executor's ORDER and STATE are
+ * A fake device that records every call and checks synchronisation as it goes. B-3B: hazards are checked by a
+ * {@link SyncCheck} with the stages and accesses each recorded command really has (a draw's attachments and bound
+ * images, a dispatch, transfers, the zeroing clear of a new image), against the barriers recorded: the legacy full
+ * barrier, or a {@link GpuBackend.Barrier} with sync1 masks (a missing or too narrow barrier on a real device is a
+ * violation). Imported images are not checked (VkPackBackend wraps every transfer on them in full layout barriers,
+ * modelled here; the renderer orders its own writes). No Vulkan, no native code: the executor's ORDER and STATE are
  * validated against the plan from these records ({@link ExecValidator}).
  */
 public final class RecordingBackend implements GpuBackend {
@@ -23,7 +26,9 @@ public final class RecordingBackend implements GpuBackend {
     public final Set<Integer> cleared = new HashSet<>();
     public final List<ImageDesc> imageDescs = new ArrayList<>();
     private final List<String> pipelineIds = new ArrayList<>();
-    private final Map<Integer, String> dirty = new HashMap<>(); // image -> "W" (written) or "R" (read) since last barrier
+    private final SyncCheck sync = new SyncCheck(Integer.MAX_VALUE);
+    /** B-3B: barrier calls (legacy full / masked) and image barriers inside the masked ones */
+    public int fullBarriers, maskedBarriers, imageBarriers;
     private boolean inFrame;
     /**
      * V-7: model frames in flight (the in-game contract): a frame does not end the previous frame's hazards. What owned
@@ -32,9 +37,6 @@ public final class RecordingBackend implements GpuBackend {
      * synchronises them between pack frames).
      */
     public boolean framesInFlight;
-    private final Map<Integer, String> prevDirty = new HashMap<>();
-    /** accesses since the last barrier on ANY image (W wins): what the next frame inherits */
-    private final Map<Integer, String> tail = new HashMap<>();
     /** V-6: images created outside a frame; their creation clear (VkPackBackend zeroes every new image) is a write the
      *  next frame must barrier: in game the setup is recorded into the SAME command buffer as that frame */
     private final Set<Integer> createdOutside = new HashSet<>();
@@ -71,13 +73,13 @@ public final class RecordingBackend implements GpuBackend {
             ImageDesc cd = imageDescs.get(c);
             if (!cd.usage().contains("COLOR_ATTACHMENT"))
                 violations.add(pass + " attaches " + cd.name() + " without COLOR_ATTACHMENT usage");
-            write(c, pass);
+            write(c, pass, Sync.COLOR);
         }
         if (depth >= 0) {
             ImageDesc dd = imageDescs.get(depth);
             if (dd == null || !dd.vkFormat().startsWith("D"))
                 violations.add(pass + " depth attachment is not a depth format");
-            write(depth, pass);
+            write(depth, pass, Sync.DEPTH);
         }
         if (viewport[2] <= 0 || viewport[3] <= 0)
             violations.add(pass + " empty viewport");
@@ -99,6 +101,8 @@ public final class RecordingBackend implements GpuBackend {
         for (Bind b : set0.values())
             if (b.image() >= 0 && b.image() < imageDescs.size() && freed.contains(b.image()))
                 violations.add("bindExternalDraw " + pass + " samples freed image " + n(b.image()));
+        bindAccess(set0, pass, Set.of(), false); // no barrier fits inside the attachments: the one before them covers these
+        bufferAccess(set1, pass, false);
         String id = pipeline >= 0 && pipeline < pipelineIds.size() ? pipelineIds.get(pipeline) : "?";
         externalBinds.add(pass + " " + id);
         calls.add("bindExternalDraw " + pass + " " + id + " ubo " + uniforms.length);
@@ -121,9 +125,8 @@ public final class RecordingBackend implements GpuBackend {
         imageDescs.add(d);
         calls.add("createImage " + d.name() + " " + d.vkFormat() + " " + d.width() + "x" + d.height() + "x" + d.depth() + " mips " + d.mips());
         int h = imageDescs.size() - 1;
-        if (inFrame)
-            { dirty.put(h, "W"); tail.put(h, "W"); } // V-6: the creation clear is a transfer write
-        else
+        sync.access(h, Sync.XFER_W, "creation clear of " + d.name()); // V-6: the creation clear is a transfer write
+        if (!inFrame)
             createdOutside.add(h);
         return h;
     }
@@ -182,7 +185,7 @@ public final class RecordingBackend implements GpuBackend {
     public int importImage(Object external, String name) {
         int h = createImage(new ImageDesc(name, "R8G8B8A8_UNORM", 8, 8, 1, 1, java.util.Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
         imported.add(h);
-        dirty.remove(h); // an imported image is not cleared by this backend
+        sync.forget(h); // an imported image is not cleared by this backend
         createdOutside.remove(h);
         return h;
     }
@@ -192,7 +195,7 @@ public final class RecordingBackend implements GpuBackend {
     public int external(ImageDesc d) {
         int h = createImage(d);
         imported.add(h);
-        dirty.remove(h);
+        sync.forget(h);
         createdOutside.remove(h);
         return h;
     }
@@ -211,9 +214,18 @@ public final class RecordingBackend implements GpuBackend {
         notInside("blit");
         use(src, "blit");
         use(dst, "blit");
-        read(src, "blit");
-        write(dst, "blit");
+        wrapImported(src, dst);
+        read(src, "blit", Sync.XFER_R);
+        write(dst, "blit", Sync.XFER_W);
+        wrapImported(src, dst);
         calls.add("blit " + n(src) + " -> " + n(dst));
+    }
+
+    /** VkPackBackend.enterTransfer/leaveTransfer: a layout barrier ALL_COMMANDS -> ALL_COMMANDS on each imported image */
+    private void wrapImported(int a, int b) {
+        for (int h : new int[]{a, b})
+            if (h >= 0 && imported.contains(h))
+                sync.imageBarrier(h, Sync.ALL_COMMANDS, Sync.ALL_COMMANDS, Sync.MEMORY_WRITE, Sync.MEMORY_READ | Sync.MEMORY_WRITE);
     }
 
     private String n(int image) {
@@ -227,7 +239,7 @@ public final class RecordingBackend implements GpuBackend {
         long texels = (long) d.width() * d.height() * d.depth();
         if (rgba.length != texels * 4)
             violations.add("upload " + d.name() + ": " + rgba.length / 4 + " texels for " + texels);
-        write(image, "upload");
+        write(image, "upload", Sync.XFER_W);
         calls.add("upload " + d.name());
     }
 
@@ -263,16 +275,11 @@ public final class RecordingBackend implements GpuBackend {
         notInside("beginFrame");
         frameNo++;
         inFrame = true;
-        prevDirty.clear();
-        if (framesInFlight)
-            tail.forEach((h, k) -> {
-                if (!imported.contains(h))
-                    prevDirty.put(h, k);
-            });
-        tail.clear();
-        dirty.clear();
-        for (int h : createdOutside)
-            { dirty.put(h, "W"); tail.put(h, "W"); }
+        if (!framesInFlight) { // submit and wait: the previous frame is complete; setup recorded since still pends
+            sync.full();
+            for (int h : createdOutside)
+                sync.access(h, Sync.XFER_W, "creation clear of " + n(h));
+        }
         createdOutside.clear();
         calls.add("beginFrame");
     }
@@ -280,32 +287,48 @@ public final class RecordingBackend implements GpuBackend {
     @Override
     public void barrier(int image, String from, String to) {
         notInside("barrier");
-        dirty.remove(image);
-        prevDirty.clear(); // one full memory barrier covers every earlier access
-        tail.clear();
+        sync.full(); // one full memory barrier covers every earlier access
+        fullBarriers++;
         calls.add("barrier " + n(image) + " " + from + " -> " + to);
     }
 
-    private void read(int image, String what) {
-        use(image, what);
-        if ("W".equals(dirty.get(image)))
-            violations.add(what + " reads " + n(image) + " written since its last barrier");
-        else if ("W".equals(prevDirty.get(image)))
-            violations.add(what + " reads " + n(image) + " written by the previous frame after its last barrier (frames in flight)");
-        dirty.putIfAbsent(image, "R");
-        tail.putIfAbsent(image, "R");
+    @Override
+    public void barrier(Barrier b) {
+        notInside("barrier");
+        for (int i : b.images())
+            if (imported.contains(i) || freed.contains(i))
+                violations.add("masked barrier names " + (imported.contains(i) ? "imported " : "freed ") + n(i));
+        sync.barrier(b);
+        maskedBarriers++;
+        imageBarriers += b.images().length + b.buffers().length;
+        StringBuilder sb = new StringBuilder("barrier ").append(Sync.stages(b.srcStages())).append(" -> ").append(Sync.stages(b.dstStages()));
+        for (int i : b.images())
+            sb.append(' ').append(n(i));
+        calls.add(sb.toString());
     }
 
-    private void write(int image, String what) {
+    private void check(int id, int code, String what, String verb) {
+        int before = sync.count;
+        sync.access(id, code, what);
+        if (sync.count > before) {
+            String v = sync.last;
+            violations.add(what + " " + verb + " " + ((id & Sync.BUF) != 0 ? "buffer " + (id & ~Sync.BUF) : n(id)) + ": "
+                    + v.substring(v.indexOf(": ") + 2) + (framesInFlight ? " (frames in flight)" : ""));
+        }
+    }
+
+    private void read(int image, String what, int code) {
+        use(image, what);
+        if (!imported.contains(image))
+            check(image, code, what, "reads");
+    }
+
+    private void write(int image, String what, int code) {
         use(image, what);
         if (!what.equals("mips"))
             mipsFresh.remove(image);
-        if (dirty.containsKey(image))
-            violations.add(what + " writes " + n(image) + " used since its last barrier (" + dirty.get(image) + ")");
-        else if (prevDirty.containsKey(image))
-            violations.add(what + " writes " + n(image) + " used by the previous frame after its last barrier (" + prevDirty.get(image) + ", frames in flight)");
-        dirty.put(image, "W");
-        tail.put(image, "W");
+        if (!imported.contains(image))
+            check(image, code, what, "writes");
     }
 
     @Override
@@ -313,7 +336,9 @@ public final class RecordingBackend implements GpuBackend {
         notInside("clear");
         if (!inFrame)
             violations.add("clear outside a frame");
-        write(image, "clear");
+        wrapImported(image, -1);
+        write(image, "clear", Sync.XFER_W);
+        wrapImported(image, -1);
         cleared.add(image);
         calls.add("clear " + n(image));
     }
@@ -323,7 +348,7 @@ public final class RecordingBackend implements GpuBackend {
         notInside("mips");
         if (imageDescs.get(image).mips() <= 1)
             violations.add("mips requested on " + n(image) + " which has one level");
-        write(image, "mips");
+        write(image, "mips", Sync.XFER_RW);
         mipsFresh.add(image);
         mipCalls.add(new int[]{image, draws.size()});
         calls.add("mips " + n(image));
@@ -332,8 +357,8 @@ public final class RecordingBackend implements GpuBackend {
     @Override
     public void copy(int src, int dst) {
         notInside("copy");
-        read(src, "copy");
-        write(dst, "copy");
+        read(src, "copy", Sync.XFER_R);
+        write(dst, "copy", Sync.XFER_W);
         calls.add("copy " + n(src) + " -> " + n(dst));
     }
 
@@ -345,7 +370,8 @@ public final class RecordingBackend implements GpuBackend {
         Set<Integer> attached = new HashSet<>();
         for (int c : d.colour())
             attached.add(c);
-        bindAccess(d.set0(), d.pass(), attached);
+        bindAccess(d.set0(), d.pass(), attached, false);
+        bufferAccess(d.set1(), d.pass(), false);
         for (Bind b : d.set0().values())
             if (b.image() >= 0) {
                 GpuBackend.ImageDesc bd = imageDescs.get(b.image());
@@ -356,7 +382,7 @@ public final class RecordingBackend implements GpuBackend {
             ImageDesc cd = imageDescs.get(c);
             if (!cd.usage().contains("COLOR_ATTACHMENT"))
                 violations.add(d.pass() + " attaches " + cd.name() + " without COLOR_ATTACHMENT usage");
-            write(c, d.pass());
+            write(c, d.pass(), Sync.COLOR);
         }
         if (d.viewport()[2] <= 0 || d.viewport()[3] <= 0)
             violations.add(d.pass() + " empty viewport");
@@ -369,7 +395,7 @@ public final class RecordingBackend implements GpuBackend {
      * program (Navidson's voxel / floodfill volumes) is one read-modify-write by that program, i.e. a write; the
      * executor's barrier before the draw covers it.
      */
-    private void bindAccess(Map<Integer, Bind> set0, String pass, Set<Integer> attached) {
+    private void bindAccess(Map<Integer, Bind> set0, String pass, Set<Integer> attached, boolean compute) {
         Set<Integer> stored = new HashSet<>();
         for (Bind b : set0.values())
             if (b.image() >= 0 && "STORAGE".equals(b.sampler()))
@@ -381,10 +407,19 @@ public final class RecordingBackend implements GpuBackend {
             if (attached.contains(b.image()))
                 violations.add(pass + " samples " + n(b.image()) + " while it is attached (feedback loop)");
             if (stored.contains(b.image()))
-                write(b.image(), pass);
+                write(b.image(), pass, compute ? Sync.CS_RW : Sync.GFX_RW);
             else
-                read(b.image(), pass);
+                read(b.image(), pass, compute ? Sync.CS_R : Sync.GFX_R);
         }
+    }
+
+    /** B-3B: storage buffers (set 1) are read-modify-write by the program */
+    private void bufferAccess(Map<Integer, Bind> set1, String pass, boolean compute) {
+        if (set1 == null)
+            return;
+        for (Bind b : set1.values())
+            if (b.buffer() >= 0)
+                check(Sync.BUF | b.buffer(), compute ? Sync.CS_RW : Sync.GFX_RW, pass, "writes");
     }
 
     public final List<GeoDraw> geoDraws = new ArrayList<>();
@@ -418,18 +453,19 @@ public final class RecordingBackend implements GpuBackend {
             attached.add(c);
         if (d.depth() >= 0)
             attached.add(d.depth());
-        bindAccess(d.set0(), d.pass(), attached);
+        bindAccess(d.set0(), d.pass(), attached, false);
+        bufferAccess(d.set1(), d.pass(), false);
         for (int c : d.colour()) {
             ImageDesc cd = imageDescs.get(c);
             if (!cd.usage().contains("COLOR_ATTACHMENT"))
                 violations.add(d.pass() + " attaches " + cd.name() + " without COLOR_ATTACHMENT usage");
-            write(c, d.pass());
+            write(c, d.pass(), Sync.COLOR);
         }
         if (d.depth() >= 0) {
             ImageDesc dd = imageDescs.get(d.depth());
             if (dd == null || !dd.vkFormat().startsWith("D"))
                 violations.add(d.pass() + " depth attachment " + (dd == null ? "?" : dd.name()) + " is not a depth format");
-            write(d.depth(), d.pass());
+            write(d.depth(), d.pass(), Sync.DEPTH);
         }
         for (GeoBatch gb : d.batches())
             if (gb.indirect() != null ? gb.indirect().vertexBuffer() == 0 || gb.indirect().indirectBuffer() == 0 || gb.indirect().indexBuffer() == 0
@@ -442,7 +478,8 @@ public final class RecordingBackend implements GpuBackend {
     @Override
     public void dispatch(Dispatch d) {
         notInside("dispatch");
-        bindAccess(d.set0(), d.pass(), Set.of());
+        bindAccess(d.set0(), d.pass(), Set.of(), true);
+        bufferAccess(d.set1(), d.pass(), true);
         for (int g : d.groups())
             if (g <= 0)
                 violations.add(d.pass() + " dispatch with " + g + " groups");
