@@ -120,8 +120,11 @@ public final class PackRuntime {
         if (impl == null)
             return "ok (not running)";
         impl.disable();
-        if (!DebugSwitches.on(PackSwitches.ENABLED))
+        impl.dropLoaded(); // V-7 (review 698ba7c #2): disable keeps the loaded pack; enable() then returned "ok" on the OLD pack
+        if (!DebugSwitches.on(PackSwitches.ENABLED)) {
+            active = false; // V-7 (review #3): else the next frame rebuilds every pack image before a queued enabled=off frees them
             return "ok";
+        }
         String r = impl.enable();
         active = impl.usable();
         return r.equals("ok") ? "rebuild" : r;

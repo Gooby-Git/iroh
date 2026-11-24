@@ -65,6 +65,14 @@ public final class PackExecTest {
                 ex.frame(scene); // a second frame: state carried over (end-of-frame copies, history) stays valid
                 for (int k = v; k < rec.violations.size(); k++)
                     errs.add("frame 2: " + rec.violations.get(k));
+                // V-7: three frames with frames in flight (in game frame N+1 is submitted while frame N may run): no access
+                // may race the previous frame's accesses after its last barrier
+                RecordingBackend fly = new RecordingBackend();
+                fly.framesInFlight = true;
+                FrameExecutor exFly = new FrameExecutor(data, plan, folder, fly, FrameExecutor.cap(1L << 30));
+                for (int k = 0; k < 3; k++)
+                    exFly.frame(scene);
+                fly.violations.stream().limit(4).forEach(x -> errs.add("in flight: " + x));
                 // round trip through the capture format
                 Path cap = Paths.get("build/packExec/captures").resolve(PackHarness.safe(name) + "-" + folder.replace("<", "").replace(">", "") + ".irohframe");
                 FrameCapture.of(scene, name, folder, "synthetic", "PackExecTest").write(cap);

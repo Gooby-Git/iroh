@@ -102,6 +102,11 @@ public interface GpuBackend extends AutoCloseable {
 
     void beginFrame();
 
+    /**
+     * declares a hazard on {@code image}. V-7 contract: a barrier orders EVERY earlier access of every image (earlier frames
+     * included) before every later one; VkPackBackend records one full memory barrier. FrameExecutor's cross-frame carry
+     * relies on it (an image-only barrier here would need the carry to drop only that image).
+     */
     void barrier(int image, String from, String to);
 
     void clear(int image, float[] rgba);

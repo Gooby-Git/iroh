@@ -95,6 +95,15 @@ final class PackRuntimeImpl {
         }
     }
 
+    /**
+     * V-7 (review 698ba7c #2): forget the loaded (or loading) pack so the next {@link #enable} reads {@link #packPath} again.
+     * A load still running finishes on its thread and is ignored (ensureLoaded only joins the current future).
+     */
+    void dropLoaded() {
+        loaded = null;
+        loading = null;
+    }
+
     static Path packPath() {
         String p = DebugSwitches.getOr(PackSwitches.PATH, "");
         if (!p.isBlank())
