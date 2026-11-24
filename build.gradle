@@ -1112,7 +1112,8 @@ def vkvalAllow = {
 		l = l.trim(); if (!l || l.startsWith('#')) return
 		def p = l.split('\\|', 3).collect { it.trim() }
 		if (p.size() < 3 || !p[2]) throw new GradleException("tools/vkval-allowlist.txt: entry without a written reason: ${l}")
-		r << [vuid: p[0], sub: p[1], reason: p[2]]
+		def tk = p[1].startsWith('task=') ? p[1].substring(5) : null  // 'task=<label>': matches any message of that harness only (F-2)
+		r << [vuid: p[0], sub: tk ? '*' : p[1], task: tk, reason: p[2]]
 	}
 	r
 }
@@ -1124,7 +1125,7 @@ def vkvalCheck = { JavaExec t ->
 		def key = (m.VUID ?: m.MessageID ?: '?') + ' ' + (m.Severity ?: '?')
 		def g = groups.get(key)
 		if (g == null) {
-			def a = allow.find { it.vuid == m.VUID && (it.sub == '*' || (m.MainMessage ?: '').contains(it.sub)) }
+			def a = allow.find { it.vuid == m.VUID && (it.task == null || it.task == t.ext.vkvalLabel) && (it.sub == '*' || (m.MainMessage ?: '').contains(it.sub)) }
 			g = [vuid: m.VUID ?: m.MessageID, sev: m.Severity, n: 0, fn: m.Function, msg: (m.MainMessage ?: '').replaceAll('\\s+', ' '), region: m.DebugRegion, allow: a]
 			groups[key] = g
 		}

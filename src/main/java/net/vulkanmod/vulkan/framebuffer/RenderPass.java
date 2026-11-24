@@ -90,7 +90,7 @@ public class RenderPass {
                         .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
                         .stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
                         .initialLayout(colorLayout)
-                        .finalLayout(colorAttachmentInfo.finalLayout);
+                        .finalLayout((feedbackMask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : colorAttachmentInfo.finalLayout); // variant: stay GENERAL, no end transition (sync-validation WAW hazard, F-2); the tracker says GENERAL after the pass
 
                 VkAttachmentReference colorAttachmentRef = attachmentRefs.get(0)
                         .attachment(0)
@@ -112,7 +112,7 @@ public class RenderPass {
                         .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
                         .stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
                         .initialLayout(depthLayout)
-                        .finalLayout(depthAttachmentInfo.finalLayout);
+                        .finalLayout((feedbackMask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : depthAttachmentInfo.finalLayout);
 
                 VkAttachmentReference depthAttachmentRef = attachmentRefs.get(1)
                         .attachment(1)
@@ -221,14 +221,15 @@ public class RenderPass {
 
     public void endRenderPass(VkCommandBuffer commandBuffer) {
         vkCmdEndRenderPass(commandBuffer);
+        final int mask = this.activeMask;
         this.activeMask = 0;
         activeColor = activeDepth = null;
 
         if (colorAttachmentInfo != null)
-            framebuffer.getColorAttachment().setCurrentLayout(colorAttachmentInfo.finalLayout);
+            framebuffer.getColorAttachment().setCurrentLayout((mask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : colorAttachmentInfo.finalLayout);
 
         if (depthAttachmentInfo != null)
-            framebuffer.getDepthAttachment().setCurrentLayout(depthAttachmentInfo.finalLayout);
+            framebuffer.getDepthAttachment().setCurrentLayout((mask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : depthAttachmentInfo.finalLayout);
 
         Renderer.getInstance().setBoundRenderPass(null);
     }
