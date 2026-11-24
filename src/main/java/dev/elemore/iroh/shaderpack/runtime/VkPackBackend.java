@@ -61,6 +61,15 @@ public abstract class VkPackBackend implements GpuBackend {
         /** PACK-FULL: move the image to its sampling layout (owner's rule, recorded outside every render pass) */
         default void toSampled() {
         }
+
+        /** PACK-FULL (review #3): the owner has uploads for it queued but not recorded yet (game: in-frame batch) */
+        default boolean pending() {
+            return false;
+        }
+
+        /** PACK-FULL (review #3): the frame command buffer samples it now (game: markFrameUse: later uploads this frame follow it) */
+        default void noteSampled() {
+        }
     }
 
     /** PACK-FULL: the device was created with vertexPipelineStoresAndAtomics / fragmentStoresAndAtomics */
@@ -123,14 +132,24 @@ public abstract class VkPackBackend implements GpuBackend {
     @Override
     public boolean sampleReady(int image) {
         Img im = img(image);
-        return im.imported == null || samplingLayout(im.imported.get());
+        return im.imported == null || samplingLayout(im.imported.get()) && !im.imported.pending();
     }
 
     @Override
     public void prepareSample(int image) {
         Img im = img(image);
-        if (im.imported != null && !samplingLayout(im.imported.get()))
+        if (im.imported == null)
+            return;
+        if (!samplingLayout(im.imported.get()) || im.imported.pending())
             im.imported.toSampled();
+        im.imported.noteSampled();
+    }
+
+    @Override
+    public void noteSampled(int image) {
+        Img im = img(image);
+        if (im.imported != null)
+            im.imported.noteSampled();
     }
 
     /** PACK-FULL: descriptors that named an imported image in a non-sampling layout (a missed prepareSample; logged once) */

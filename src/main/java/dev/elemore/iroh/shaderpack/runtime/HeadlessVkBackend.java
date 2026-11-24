@@ -110,7 +110,7 @@ public final class HeadlessVkBackend extends VkPackBackend {
         this.inFlight = Math.max(1, inFlight);
         try (MemoryStack s = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(s).sType$Default().pApplicationName(s.UTF8("iroh-pack-replay"))
-                    .apiVersion(VK_API_VERSION_1_3);
+                    .apiVersion(features == Features.ALL ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2); // PACK-FULL review #4: the game's instance is 1.2
             VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(s).sType$Default().pApplicationInfo(app);
             if (validation)
                 ici.ppEnabledLayerNames(s.pointers(s.UTF8("VK_LAYER_KHRONOS_validation")))
@@ -183,6 +183,13 @@ public final class HeadlessVkBackend extends VkPackBackend {
                 if (features == Features.GAME)
                     PackDeviceFeatures.apply(a, e);
                 f2.features().set(e);
+                // DeviceManager also enables shaderDrawParameters (IndirectDrawCaps, Vulkan 1.1 struct) where offered
+                VkPhysicalDeviceVulkan11Features q11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default();
+                VkPhysicalDeviceFeatures2 probe = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(q11.address());
+                vkGetPhysicalDeviceFeatures2(phys, probe);
+                VkPhysicalDeviceVulkan11Features e11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default()
+                        .shaderDrawParameters(q11.shaderDrawParameters() && a.multiDrawIndirect());
+                f2.pNext(e11.address());
             }
             vertexStores = f2.features().vertexPipelineStoresAndAtomics();
             fragmentStores = f2.features().fragmentStoresAndAtomics();

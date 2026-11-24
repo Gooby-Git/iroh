@@ -296,8 +296,21 @@ public final class IrohVkBackend extends VkPackBackend {
             @Override
             public void toSampled() {
                 // PACK-FULL: Iroh's own rule (upload buffer when the pending change is there, else the frame buffer); the
-                // caller is outside every render pass, so the frame-buffer branch records between passes
+                // caller is outside every render pass, so the frame-buffer branch records between passes. Queued in-frame
+                // uploads are recorded first (review #3: else the pack samples the texels from before them)
+                if (vi.hasInFramePending())
+                    VulkanImage.flushInFrame();
                 vi.readOnlyLayout();
+            }
+
+            @Override
+            public boolean pending() {
+                return vi.hasInFramePending();
+            }
+
+            @Override
+            public void noteSampled() {
+                vi.markFrameUse(); // a later upload this frame goes to the frame buffer, after this sample (as for Iroh's own binds)
             }
         });
     }

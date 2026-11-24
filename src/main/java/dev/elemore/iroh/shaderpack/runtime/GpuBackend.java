@@ -166,6 +166,10 @@ public interface GpuBackend extends AutoCloseable {
     default void prepareSample(int image) {
     }
 
+    /** PACK-FULL (review #3): an imported image that needed no preparation is sampled by this frame (owner bookkeeping only) */
+    default void noteSampled(int image) {
+    }
+
     /** PACK-FULL: frees a {@link #createBuffer} storage buffer (deferred like images); executor rebuilds leaked them */
     default void freeStorageBuffer(int buffer) {
     }

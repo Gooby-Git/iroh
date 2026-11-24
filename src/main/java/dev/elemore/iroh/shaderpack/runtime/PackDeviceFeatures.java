@@ -26,6 +26,15 @@ public final class PackDeviceFeatures {
         enable.vertexPipelineStoresAndAtomics(v);
         enable.fragmentStoresAndAtomics(f);
         enable.independentBlend(b);
-        return "vertexPipelineStoresAndAtomics=" + v + " fragmentStoresAndAtomics=" + f + " independentBlend=" + b;
+        // review #4: the game's instance is Vulkan 1.2 (no format_feature_flags2): unformatted storage images in pack
+        // shaders (colorimgN without a layout format) need the WithoutFormat bits; r16ui / rg16f etc. the extended formats
+        if (avail.shaderStorageImageWriteWithoutFormat())
+            enable.shaderStorageImageWriteWithoutFormat(true);
+        if (avail.shaderStorageImageReadWithoutFormat())
+            enable.shaderStorageImageReadWithoutFormat(true);
+        if (avail.shaderStorageImageExtendedFormats())
+            enable.shaderStorageImageExtendedFormats(true);
+        return "vertexPipelineStoresAndAtomics=" + v + " fragmentStoresAndAtomics=" + f + " independentBlend=" + b
+                + " storageWithoutFormat=" + enable.shaderStorageImageWriteWithoutFormat() + "/" + enable.shaderStorageImageReadWithoutFormat();
     }
 }
