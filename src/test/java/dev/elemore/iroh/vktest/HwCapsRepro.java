@@ -68,7 +68,9 @@ public final class HwCapsRepro {
             if (natives && DeviceCaps.fsrCapable()) check(fsrMade, "FSR context could not be created on a device DeviceCaps calls fsrCapable");
 
             String upTier = !DeviceCaps.velocityCapable() ? "base" : !DeviceCaps.fsrCapable() ? "velocity" : DeviceCaps.fp16ShadersAllowed() ? "fsr-fp16" : "fsr-fp32";
-            boolean nvidia = pr.vendorID() == 0x10DE;
+            // the profiles layer keeps lavapipe's vendorID/deviceName, so the profile file name (nv-*) is the vendor hint (review 71f9e93 #5)
+            String pfile = System.getenv("VK_KHRONOS_PROFILES_PROFILE_FILE");
+            boolean nvidia = pr.vendorID() == 0x10DE || (pfile != null && new java.io.File(pfile).getName().startsWith("nv-"));
             tier = upTier;
             extra = " fsr3=" + (natives && DeviceCaps.fsrCapable() ? "available" : natives ? "needs-device-features" : "needs-native-library")
                 + " fsrCtx=" + (fsrMade ? "created" : "n/a") + " dlss=" + (nvidia ? "notYet(nvidia)" : "needsNvidia")

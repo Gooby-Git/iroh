@@ -251,16 +251,14 @@ public abstract class DeviceManager {
             enabledFeatures += dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits(); // empty unless RT was requested
             // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
             java.util.List<Runnable> extAllocs = new ArrayList<>();
-            createInfo.ppEnabledExtensionNames(heapNames(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION), extAllocs));
-
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
             // Iroh (P1-1): device layers are deprecated since Vulkan 1.0 (VUID-VkDeviceCreateInfo-enabledLayerCount-12384).
             createInfo.ppEnabledLayerNames(null);
 
-            PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
-
             try {
+                createInfo.ppEnabledExtensionNames(heapNames(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION), extAllocs));
+                PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
                 int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
                 if (res != VK_SUCCESS && dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled) {
                     // INT-4: a driver that offers the RT features but refuses the device with them: ONE line, RT off, retry
