@@ -38,7 +38,8 @@ public final class TerrainIndirectRepro {
     static final int W = 128, H = 128, SECTIONS = 8, CMD_STRIDE = 32; // CMD_STRIDE as DrawBuffers
     static final String MODE = System.getProperty("ti.vkval", "core");
 
-    record Result(String tier, int errors, String firstError, String hash, int tilesOk, int litPixels) {}
+    /** errors = all validation errors of the case; unexpected = those other than the OLD case's firstInstance-00554 negative control */
+    record Result(String tier, int errors, int unexpected, String firstError, String firstUnexpected, String hash, int tilesOk, int litPixels) {}
 
     public static void main(String[] a) throws Exception {
         String icd = System.getenv("VK_DRIVER_FILES");
@@ -47,6 +48,16 @@ public final class TerrainIndirectRepro {
         Result old, nu, fb;
         try (MemoryStack s = MemoryStack.stackPush()) {
             Float16Repro.init(s);
+            // review b97ae0e #3: a device (profile) without the features has nothing indirect to test: the fallback is hwCapsRepro's job
+            try (MemoryStack f = s.push()) {
+                VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(f).sType$Default();
+                VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(f).sType$Default().pNext(a11.address());
+                vkGetPhysicalDeviceFeatures2(Float16Repro.phys, a2);
+                if (!IndirectDrawCaps.multiDrawSupported(a2.features(), a11) || !a2.features().drawIndirectFirstInstance()) {
+                    System.out.println("# terrainindirect SKIP device lacks multiDrawIndirect/shaderDrawParameters/drawIndirectFirstInstance (direct fallback covered by hwCapsRepro)");
+                    System.exit(0);
+                }
+            }
             String base = ShaderLoadUtil.class.getResource("/assets/vulkanmod").toExternalForm() + "/shaders/basic";
             SPIRVUtils.SPIRV vs = SPIRVUtils.compileShader("terrain", ShaderLoadUtil.getShaderSource(base, "terrain", "terrain", SPIRVUtils.ShaderKind.VERTEX_SHADER), SPIRVUtils.ShaderKind.VERTEX_SHADER);
             SPIRVUtils.SPIRV fs = SPIRVUtils.compileShader("terrain", ShaderLoadUtil.getShaderSource(base, "terrain", "terrain", SPIRVUtils.ShaderKind.FRAGMENT_SHADER), SPIRVUtils.ShaderKind.FRAGMENT_SHADER);
@@ -63,9 +74,10 @@ public final class TerrainIndirectRepro {
         boolean oldFlagged = old.errors > 0 && old.firstError != null && old.firstError.contains("firstInstance-00554");
         boolean newOk = nu.errors == 0 && nu.tier.equals("INDIRECT") && nu.tilesOk == SECTIONS;
         boolean fbOk = fb.errors == 0 && fb.tier.equals("DIRECT") && fb.tilesOk == SECTIONS && fb.hash.equals(nu.hash);
+        if (old.unexpected > 0) System.out.println("  ! vk old (other than firstInstance-00554): " + old.firstUnexpected);
         if (nu.errors > 0) System.out.println("  ! vk new: " + nu.firstError);
         if (fb.errors > 0) System.out.println("  ! vk fallback: " + fb.firstError);
-        ok = newOk && fbOk && (!gpuav || oldFlagged);
+        ok = newOk && fbOk && old.unexpected == 0 && old.tilesOk == SECTIONS && (!gpuav || oldFlagged);
         System.out.println("# terrainindirect " + (ok ? "PASS" : "FAIL") + " mode=" + MODE + " old(no firstInstance) errors=" + old.errors
             + (gpuav ? (oldFlagged ? " (VUID firstInstance-00554 flagged)" : " (NOT flagged)") : " (core: GPU-AV needed to see it)")
             + " new(indirect) errors=" + nu.errors + " fallback(direct) errors=" + fb.errors + " images " + (fb.hash.equals(nu.hash) ? "equal" : "DIFFER"));
@@ -308,12 +320,17 @@ public final class TerrainIndirectRepro {
         } finally {
             while (!undo.isEmpty()) undo.pop().run();
         }
-        int n = Float16Repro.ERRORS.size() - before;
-        String first = n > 0 ? Float16Repro.ERRORS.get(before) : null;
-        if (n > 0 && kase == Case.OLD) // prefer the VUID under test for the report
-            for (String e : Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size())) if (e.contains("firstInstance-00554")) { first = e; break; }
-        if (kase == Case.OLD && n > 0) Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size()).clear(); // expected (negative control)
-        return new Result(tier, n, first, hash, tilesOk, lit);
+        int n = Float16Repro.ERRORS.size() - before, unexpected = 0;
+        String first = null, firstUnexpected = null;
+        for (String e : Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size())) {
+            boolean expected = kase == Case.OLD && e.contains("firstInstance-00554"); // only the negative control's own VUID
+            if (expected) { if (first == null) first = e; }
+            else { unexpected++; if (firstUnexpected == null) firstUnexpected = e; }
+        }
+        if (first == null) first = firstUnexpected;
+        if (kase == Case.OLD) // the expected ones are reported here, not left for other cases' counts
+            Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size()).removeIf(e -> e.contains("firstInstance-00554"));
+        return new Result(tier, n, unexpected, first, firstUnexpected, hash, tilesOk, lit);
     }
 
     /** section-local block coordinate -> compressed vertex int16 (VertexBuilder.CompressedVertexBuilder: (v + POS_OFFSET) * 2048) */

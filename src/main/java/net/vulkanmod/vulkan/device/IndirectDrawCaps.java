@@ -60,6 +60,14 @@ public final class IndirectDrawCaps {
         return firstInstance;
     }
 
+    /**
+     * api 4 (P2-3 review b97ae0e #1): multiDrawIndirectCount commands carry firstInstance, and its no-drawIndirectCount fallback issues
+     * vkCmdDrawIndexedIndirect with drawCount = maxDraws: offered to mods only when both features are enabled (every desktop GPU).
+     */
+    public static boolean api4IndirectAllowed() {
+        return multiDrawIndirect && firstInstance;
+    }
+
     /** Render thread, per frame: draw terrain through indirect commands (device tier AND the user's option). */
     public static boolean useTerrainIndirect() {
         return tier == TerrainTier.INDIRECT && net.vulkanmod.Initializer.CONFIG.indirectDraw;
