@@ -230,6 +230,12 @@ public final class WorldPass {
         }
         FrameExecutor.SubstPass sp = tr ? d.translucentSp : d.opaqueSp;
         if (sp == null && pipe >= 0) {
+            // PACK-FULL (T-2 I-9: clears / barriers / copies inside Iroh's render pass after every resize): building a
+            // SubstPass resolves its bindings and may CREATE images (dummies, geometry textures: creation barrier +
+            // zeroing clear + upload). The first bind of a pass after an executor (re)build came here with Iroh's main
+            // pass (or another attachment set) open; close everything first (enter() below would anyway).
+            if (!oldBindOrderForTest)
+                suspend();
             sp = ex.substPass(pass, in);
             if (tr)
                 d.translucentSp = sp;
@@ -253,24 +259,22 @@ public final class WorldPass {
     public boolean beforeDraw() {
         if (pendSp == null || failure != null)
             return false;
+        Object tex = pendSp.texBindings.length > 0 ? src.texture() : null;
+        int texHandle = tex != null ? textureHandle(tex) : -1;
+        // PACK-FULL (T-2 I-9: descriptors naming TRANSFER_DST, VUID 04150 / 09600 / submit layout): a renderer texture
+        // uploaded this frame is still in its transfer layout. Move it to SHADER_READ_ONLY as the renderer would, and
+        // never inside a render pass: close our attachments for it (rare: once per freshly uploaded texture).
+        if (texHandle >= 0 && !noSamplePrepForTest && !gpu.sampleReady(texHandle)) {
+            suspend();
+            gpu.prepareSample(texHandle);
+        }
         if (open != pendSp)
             enter(pendSp); // a foreign recording closed the attachments between the bind and this draw
         src.modelView(mv);
         src.projection(pj);
         src.ids(perDraw);
-        Object tex = src.texture();
-        if (tex != null && pendSp.texBindings.length > 0) {
-            long k = src.textureKey(tex);
-            long[] t = textures.get(tex);
-            if (t == null || t[1] != k) {
-                if (t != null) { // recreated in place: the old view is gone
-                    gpu.freeImage((int) t[0]);
-                    texBinds[(int) t[0]] = null;
-                }
-                t = new long[]{src.importTexture(tex), k};
-                textures.put(tex, t);
-            }
-            int h = (int) t[0];
+        if (texHandle >= 0) {
+            int h = texHandle;
             if (h >= texBinds.length)
                 texBinds = java.util.Arrays.copyOf(texBinds, Math.max(h + 1, texBinds.length * 2));
             GpuBackend.Bind b = texBinds[h];
@@ -289,6 +293,41 @@ public final class WorldPass {
         }
         c[0]++;
         return true;
+    }
+
+    /** the backend handle of a renderer texture (imported once per key; re-imported when recreated in place) */
+    private int textureHandle(Object tex) {
+        long k = src.textureKey(tex);
+        long[] t = textures.get(tex);
+        if (t == null || t[1] != k) {
+            if (t != null) { // recreated in place: the old view is gone
+                gpu.freeImage((int) t[0]);
+                if (t[0] < texBinds.length)
+                    texBinds[(int) t[0]] = null;
+            }
+            t = new long[]{src.importTexture(tex), k};
+            textures.put(tex, t);
+        }
+        return (int) t[0];
+    }
+
+    /** PACK-FULL negative controls (packFullVkRepro -Pmode=old): the pre-fix bind order / no sample preparation */
+    static boolean oldBindOrderForTest, noSamplePrepForTest;
+
+    /**
+     * PACK-FULL: outside EVERY render pass from here on: our attachments closed (without resuming Iroh's pass) and
+     * Iroh's pass ended. The next {@link #enter} opens attachments directly; {@link #leave} resumes Iroh's pass.
+     */
+    private void suspend() {
+        if (open != null) {
+            gpu.endAttachments();
+            ex.externalEnded();
+            open = null;
+        }
+        if (!irohEnded && host.irohPassBound()) {
+            host.endIrohPass();
+            irohEnded = true;
+        }
     }
 
     /** a recording that is not ours is about to begin (Iroh pass begin/end, endPassRunResume): close our attachments */
@@ -331,11 +370,13 @@ public final class WorldPass {
     }
 
     private void leave() {
-        if (open == null)
+        if (open == null && !irohEnded) // PACK-FULL: suspend() may have ended Iroh's pass with no attachments open
             return;
-        gpu.endAttachments();
-        ex.externalEnded();
-        open = null;
+        if (open != null) {
+            gpu.endAttachments();
+            ex.externalEnded();
+            open = null;
+        }
         if (irohEnded) {
             host.resumeIrohPass();
             irohEnded = false;

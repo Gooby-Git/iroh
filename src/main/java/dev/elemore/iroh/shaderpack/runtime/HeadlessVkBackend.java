@@ -71,8 +71,41 @@ public final class HeadlessVkBackend extends VkPackBackend {
         this(allowGpu, capBytes, validation, 1);
     }
 
+    /**
+     * PACK-FULL: the device's feature set. ALL = every core feature the device offers (the replays' default: blind to a
+     * feature the game does not enable); GAME = what DeviceManager enables (rc14 set + indirect bits + the pack's
+     * {@link PackDeviceFeatures}); GAME_NO_PACK = the game set before PACK-FULL (negative control: no store features).
+     */
+    public enum Features { ALL, GAME, GAME_NO_PACK }
+
+    /** -Diroh.vkval.stacks=true: each validation message carries the recording call stack (harness debugging) */
+    static final boolean STACKS = Boolean.getBoolean("iroh.vkval.stacks");
+
+    private boolean vertexStores = true, fragmentStores = true;
+
+    @Override
+    protected boolean vertexStoresEnabled() {
+        return vertexStores;
+    }
+
+    @Override
+    protected boolean fragmentStoresEnabled() {
+        return fragmentStores;
+    }
+
+    private boolean independentBlend = true;
+
+    @Override
+    protected boolean independentBlendEnabled() {
+        return independentBlend;
+    }
+
     /** {@code inFlight}: frames in flight (V-7; 1 = submit and wait every frame) */
     public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation, int inFlight) {
+        this(allowGpu, capBytes, validation, inFlight, Features.ALL);
+    }
+
+    public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation, int inFlight, Features features) {
         this.cap = capBytes;
         this.inFlight = Math.max(1, inFlight);
         try (MemoryStack s = stackPush()) {
@@ -87,7 +120,12 @@ public final class HeadlessVkBackend extends VkPackBackend {
             instance = new VkInstance(pp.get(0), ici);
             if (validation) {
                 messengerCb = VkDebugUtilsMessengerCallbackEXT.create((sev, type, data, user) -> {
-                    validationErrors.add(VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString());
+                    String msg = VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString();
+                    if (STACKS) // PACK-FULL harness debugging: where the offending command was recorded
+                        msg += " @ " + java.util.Arrays.stream(Thread.currentThread().getStackTrace()).skip(2)
+                                .filter(f -> f.getClassName().startsWith("dev.elemore")).limit(8).map(f -> f.getClassName().replaceAll(".*\\.", "") + "." + f.getMethodName() + ":" + f.getLineNumber())
+                                .collect(java.util.stream.Collectors.joining(" < "));
+                    validationErrors.add(msg);
                     return VK_FALSE;
                 });
                 LongBuffer ml = s.mallocLong(1);
@@ -138,6 +176,17 @@ public final class HeadlessVkBackend extends VkPackBackend {
             // enable the core 1.0 features the device supports (the in-game device does the same for what packs need)
             VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default();
             vkGetPhysicalDeviceFeatures2(phys, f2);
+            if (features != Features.ALL) { // PACK-FULL: DeviceManager's set (core bits; the 1.1/1.2 bits the pack does not use stay off)
+                VkPhysicalDeviceFeatures a = f2.features(), e = VkPhysicalDeviceFeatures.calloc(s);
+                e.samplerAnisotropy(a.samplerAnisotropy()).logicOp(a.logicOp()).wideLines(a.wideLines())
+                        .multiDrawIndirect(a.multiDrawIndirect()).drawIndirectFirstInstance(a.drawIndirectFirstInstance());
+                if (features == Features.GAME)
+                    PackDeviceFeatures.apply(a, e);
+                f2.features().set(e);
+            }
+            vertexStores = f2.features().vertexPipelineStoresAndAtomics();
+            fragmentStores = f2.features().fragmentStoresAndAtomics();
+            independentBlend = f2.features().independentBlend();
             VkDeviceQueueCreateInfo.Buffer qci = VkDeviceQueueCreateInfo.calloc(1, s).sType$Default().queueFamilyIndex(family)
                     .pQueuePriorities(s.floats(1f));
             VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(s).sType$Default().pNext(f2.address()).pQueueCreateInfos(qci);
@@ -422,6 +471,22 @@ public final class HeadlessVkBackend extends VkPackBackend {
         later.clear();
     }
 
+    /**
+     * PACK-FULL harness: false = close() destroys only the backend's own frame objects, not the pack's (images,
+     * pipelines, render passes, ...): what the pack owner did not release shows up as a validation leak report at
+     * vkDestroyDevice, as in game when nothing released the pack at shutdown.
+     */
+    public boolean releaseOnClose = true;
+
+    /** PACK-FULL harness: everything recorded is submitted and complete, every deferred release has run */
+    public void submitAndDrain() {
+        submitWait();
+        if (inFlight == 1)
+            return;
+        for (int i = 0; i < inFlight; i++)
+            waitSlot(i);
+    }
+
     @Override
     public void beginFrame() {
         if (inFlight > 1) { // V-7: setup work stays in this frame's buffer (as in game); the slot's last use has completed
@@ -559,7 +624,8 @@ public final class HeadlessVkBackend extends VkPackBackend {
         if (queryPool != 0)
             vkDestroyQueryPool(device, queryPool, null);
         queryPool = 0;
-        destroyShared();
+        if (releaseOnClose)
+            destroyShared();
         submitWait();
         for (Runnable r : later)
             r.run();
