@@ -422,6 +422,16 @@ tasks.register('memoryBudgetTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// P2-12 (L9/L10): timeline / budget / priority decisions, allocation hints, upload wait mask. ./gradlew syncMemCapsTest; last line "# syncmemcaps PASS n/n"
+tasks.register('syncMemCapsTest', JavaExec) {
+	group = 'verification'
+	description = 'Sync/memory capability decisions (timeline, VK_EXT_memory_budget/priority), dedicated render targets, upload wait stages'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.uploadtest.SyncMemCapsTest'
+	jvmArgs '-ea'
+}
+
 // rc10: per-facing bucket predicate never drops a front face. ./gradlew facingMaskTest
 tasks.register('facingMaskTest', JavaExec) {
 	group = 'verification'
