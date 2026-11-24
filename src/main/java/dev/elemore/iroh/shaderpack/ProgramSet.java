@@ -34,7 +34,7 @@ public final class ProgramSet implements Json.Dumpable {
                 {"gbuffers_block", "gbuffers_terrain"}, {"gbuffers_block_translucent", "gbuffers_block"},
                 {"gbuffers_beaconbeam", "gbuffers_textured"}, {"gbuffers_item", "gbuffers_textured_lit"},
                 {"gbuffers_entities", "gbuffers_textured_lit"}, {"gbuffers_entities_translucent", "gbuffers_entities"},
-                {"gbuffers_entities_glowing", "gbuffers_entities"}, {"gbuffers_armor_glint", "gbuffers_textured"},
+                {"gbuffers_armor_glint", "gbuffers_textured"},
                 {"gbuffers_spidereyes", "gbuffers_textured"}, {"gbuffers_hand", "gbuffers_textured_lit"},
                 {"gbuffers_hand_water", "gbuffers_hand"}, {"gbuffers_weather", "gbuffers_textured_lit"},
                 {"gbuffers_water", "gbuffers_terrain"}, {"gbuffers_particles", "gbuffers_textured_lit"},
@@ -52,7 +52,7 @@ public final class ProgramSet implements Json.Dumpable {
             "gbuffers_textured_lit", "gbuffers_skybasic", "gbuffers_skytextured", "gbuffers_clouds", "gbuffers_terrain",
             "gbuffers_terrain_solid", "gbuffers_terrain_cutout", "gbuffers_damagedblock", "gbuffers_block",
             "gbuffers_block_translucent", "gbuffers_beaconbeam", "gbuffers_item", "gbuffers_entities",
-            "gbuffers_entities_translucent", "gbuffers_entities_glowing", "gbuffers_armor_glint", "gbuffers_spidereyes",
+            "gbuffers_entities_translucent", "gbuffers_armor_glint", "gbuffers_spidereyes",
             "gbuffers_hand", "gbuffers_hand_water", "gbuffers_weather", "gbuffers_water", "gbuffers_particles",
             "gbuffers_particles_translucent", "gbuffers_lightning",
             "shadow", "shadow_solid", "shadow_cutout", "shadow_water", "shadow_entities", "shadow_lightning", "shadow_block", "dh_terrain", "dh_water", "dh_shadow", "dh_generic");

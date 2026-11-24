@@ -53,7 +53,7 @@ public final class PassGraph {
             new GeometryClass("terrain_cutout", "gbuffers_terrain_cutout", "solid", "RenderType.cutout sections"),
             new GeometryClass("lod_vista", "vista_terrain", "solid", "Vista far terrain (Phase 9 contract)"),
             new GeometryClass("entities", "gbuffers_entities", "solid", "entity render types"),
-            new GeometryClass("entities_glowing", "gbuffers_entities_glowing", "solid", "outline/glowing entities"),
+            new GeometryClass("entities_glowing", "gbuffers_entities", "solid", "outline/glowing entities (Iris ignores gbuffers_entities_glowing: drawn by gbuffers_entities)"),
             new GeometryClass("armor_glint", "gbuffers_armor_glint", "solid", "glint render types"),
             new GeometryClass("spider_eyes", "gbuffers_spidereyes", "solid", "RenderType.eyes"),
             new GeometryClass("lightning", "gbuffers_lightning", "solid", "RenderType.lightning"),
