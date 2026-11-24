@@ -23,7 +23,7 @@ public final class IntakeBudget {
 
     private double perByteNs = DEFAULT_PER_BYTE;
     private long fixedNs = DEFAULT_FIXED;
-    public int deferredSections;
+    public long deferredSections;
 
     /** Predicted render-thread cost of a section of {@code bytes}. */
     public long estimate(long bytes) {
