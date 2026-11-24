@@ -46,6 +46,13 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
 
     private record Mem(long memory, long size) {}
 
+    /**
+     * R1-HANG test switch: submit the upload batch AFTER the frame's command buffer, the order the game gives an upload
+     * recorded mid-frame (VulkanMod's UploadManager is flushed at the next beginFrame, on another queue). Work that
+     * reads such an upload in the same frame reads stale memory; RT build inputs must be written in the frame instead.
+     */
+    public boolean uploadsAfterFrame;
+
     /** {@code forceNoIndirectCount}: test the fallback path even where the feature exists. */
     public HeadlessGpuDevice(long capBytes, boolean forceNoIndirectCount) {
         this(capBytes, forceNoIndirectCount, false);
@@ -442,7 +449,9 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
                     vkEndCommandBuffer(uploadCmd);
                     uploadRecording = false;
                     uploadDsts.clear();
-                    bufs = s.pointers(uploadCmd, cmd); // the frame's uploads first (game order)
+                    // the frame's uploads first; R1-HANG: uploadsAfterFrame models the game's UploadManager for uploads
+                    // recorded DURING a frame (transfer queue, submitted at the next beginFrame: after this frame's work)
+                    bufs = uploadsAfterFrame ? s.pointers(cmd, uploadCmd) : s.pointers(uploadCmd, cmd);
                 } else bufs = s.pointers(cmd);
                 vkResetFences(device, fence);
                 check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(bufs), fence), "vkQueueSubmit");

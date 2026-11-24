@@ -54,9 +54,15 @@ public final class RtAccel {
         public final long handle, address, bytes;
         final VkBuf storage;
         public final long scratchBytes;
+        /** R1-HANG: set by {@link RtAccel#destroy}; a TLAS must never name a destroyed BLAS (checked by the backend). */
+        volatile boolean destroyed;
 
         public VkBuf storage() {
             return storage;
+        }
+
+        public boolean destroyed() {
+            return destroyed;
         }
 
         Accel(long handle, long address, long bytes, VkBuf storage, long scratchBytes) {
@@ -122,8 +128,11 @@ public final class RtAccel {
         }
         b.flip();
         VkBuf nb = inputBuffer(b.remaining());
-        dev.upload(nb, 0, b);
+        writeInFrame(nb, b);   // R1-HANG: never dev.upload (in game it lands after this frame's builds)
         MemoryUtil.memFree(b);
+        dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                ACCESS_AS_READ | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT);
         if (quadIndices != null) {
             dev.destroyBuffer(quadIndices);
         }
@@ -166,9 +175,16 @@ public final class RtAccel {
                     .vertexFormat(g.vertexFormat).vertexStride(g.vertexStride)
                     .maxVertex(Math.max(0, g.quadCount * 4 - 1)).indexType(VK_INDEX_TYPE_UINT32);
             // P5-2: vertices == null -> vertexOffset is an absolute device address (the game's raster arena, read in place)
-            t.vertexData().deviceAddress(g.vertices == null ? g.vertexOffset : address(g.vertices) + g.vertexOffset);
+            long va = g.vertices == null ? g.vertexOffset : address(g.vertices) + g.vertexOffset;
+            if (g.quadCount < 0 || g.vertexStride <= 0 || (va == 0 && g.quadCount > 0))
+                throw new IllegalStateException("BLAS geometry " + i + ": quads " + g.quadCount + " stride " + g.vertexStride + " address " + va);
+            requireAligned(va, g.vertexFormat == VK_FORMAT_R32G32B32_SFLOAT ? 4 : 2, "vertexData");
+            requireAligned(idx, 4, "indexData");
+            long ta = transformBase == 0 || g.transform3x4 == null ? 0 : transformBase + i * 48L;
+            if (ta != 0) requireAligned(ta, 16, "transformData");
+            t.vertexData().deviceAddress(va);
             t.indexData().deviceAddress(idx);
-            t.transformData().deviceAddress(transformBase == 0 || g.transform3x4 == null ? 0 : transformBase + i * 48L);
+            t.transformData().deviceAddress(ta);
         }
         int flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | extraFlags;
         return VkAccelerationStructureBuildGeometryInfoKHR.calloc(s).sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
@@ -193,8 +209,57 @@ public final class RtAccel {
         return b;
     }
 
-    private long aligned(long addr) {
-        return (addr + scratchAlign - 1) / scratchAlign * scratchAlign;
+    /**
+     * The aligned scratch address inside {@code sc} for {@code need} bytes. R1-HANG: refuses (throws, the caller falls back
+     * to raster) rather than let the build write outside the buffer.
+     */
+    private long scratchAddress(VkBuf sc, long need) {
+        long base = address(sc), a = alignUp(base, scratchAlign);
+        if (!rangeInside(base, sc.size(), a, need))
+            throw new IllegalStateException(String.format("AS scratch 0x%x+%d outside its buffer 0x%x+%d", a, need, base, sc.size()));
+        return a;
+    }
+
+    /** True when [a, a + need) lies inside [base, base + size). Unsigned-safe (device addresses may be negative longs). */
+    public static boolean rangeInside(long base, long size, long a, long need) {
+        long off = a - base;
+        return off >= 0 && need >= 0 && off <= size && need <= size - off;
+    }
+
+    /**
+     * First address at or above {@code addr} that is a multiple of {@code align}. R1-HANG: RADV device addresses are
+     * sign-extended (0xffff8001..., NEGATIVE as a Java long); the old {@code (a + n - 1) / n * n} rounds toward zero, i.e.
+     * up by another n for a negative a, and the build wrote up to n-1 bytes past the scratch buffer (validation: "scratchData
+     * .deviceAddress ... has no buffer(s) associated that are valid"; then VK_ERROR_DEVICE_LOST). Never divide addresses.
+     */
+    public static long alignUp(long addr, long align) {
+        if (align <= 1) return addr;
+        if ((align & (align - 1)) == 0) return (addr + align - 1) & -align;   // the spec guarantees a power of two here
+        long r = Math.floorMod(addr, align);
+        return r == 0 ? addr : addr + (align - r);
+    }
+
+    /**
+     * R1-HANG: writes build inputs INTO the frame's command buffer (vkCmdUpdateBuffer, 64 KiB per call, ordered by the
+     * caller's TRANSFER -> AS_BUILD barrier). {@code dev.upload} is wrong here: in the game it is VulkanMod's UploadManager,
+     * flushed at the next beginFrame on another queue family, so this frame's builds would read stale memory (stale TLAS
+     * instance records name destroyed BLASes: lavapipe SIGSEGVs, the GPU hangs). Must be called outside a render pass.
+     */
+    void writeInFrame(VkBuf b, ByteBuffer data) {
+        int len = data.remaining();
+        if ((len & 3) != 0) throw new IllegalArgumentException("in-frame write of " + len + " bytes (needs a multiple of 4)");
+        VkCommandBuffer c = dev.recordingCommandBuffer();
+        long src = MemoryUtil.memAddress(data);
+        for (int off = 0; off < len; off += 65536) {
+            int n = Math.min(65536, len - off);
+            nvkCmdUpdateBuffer(c, b.buffer(), off, n, src + off);
+        }
+    }
+
+    /** Device addresses the builds read must be aligned (VUIDs 03711 vertexData component, 03712 indexData, 03810 transform, 03715 instances). */
+    private static void requireAligned(long addr, int align, String what) {
+        if ((addr & (align - 1)) != 0)
+            throw new IllegalStateException(String.format("%s address 0x%x not %d-byte aligned", what, addr, align));
     }
 
     /**
@@ -221,11 +286,14 @@ public final class RtAccel {
 
     private Accel buildBlas(List<Geometry> geoms, int extraFlags, Accel update) {
         try (MemoryStack s = stackPush()) {
+            int maxQuads = 0;
+            for (Geometry g : geoms) maxQuads = Math.max(maxQuads, g.quadCount);
+            quadIndices(Math.max(1, maxQuads));   // R1-HANG: grow (in-frame write + its barrier) before the inputs below
             ByteBuffer tb = MemoryUtil.memAlloc(geoms.size() * 48).order(ByteOrder.LITTLE_ENDIAN);
             for (Geometry g : geoms) for (int k = 0; k < 12; k++) tb.putFloat(g.transform3x4 == null ? 0 : g.transform3x4[k]);
             tb.flip();
             VkBuf tbuf = inputBuffer(tb.remaining());
-            dev.upload(tbuf, 0, tb);
+            writeInFrame(tbuf, tb);
             MemoryUtil.memFree(tb);
             transient_.add(tbuf);
             dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, STAGE_AS_BUILD, VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
@@ -244,7 +312,7 @@ public final class RtAccel {
                 info.mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR).srcAccelerationStructure(a.handle);
                 dev.barrier(STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE, STAGE_AS_BUILD, ACCESS_AS_READ | ACCESS_AS_WRITE);
             }
-            info.dstAccelerationStructure(a.handle).scratchData().deviceAddress(aligned(address(sc)));
+            info.dstAccelerationStructure(a.handle).scratchData().deviceAddress(scratchAddress(sc, update == null ? sz.buildScratchSize() : sz.updateScratchSize()));
             VkAccelerationStructureBuildRangeInfoKHR.Buffer ranges = VkAccelerationStructureBuildRangeInfoKHR.calloc(geoms.size(), s);
             for (int i = 0; i < geoms.size(); i++) ranges.get(i).primitiveCount(geoms.get(i).quadCount * 2);
             PointerBuffer pr = s.pointers(ranges.address());
@@ -323,8 +391,9 @@ public final class RtAccel {
                 ib.putLong(o + 56, in.blasAddress);
             }
             VkBuf ibuf = inputBuffer(Math.max(1, n) * 64L);
-            dev.upload(ibuf, 0, ib);
+            writeInFrame(ibuf, ib);   // R1-HANG: in this frame's command buffer, never a late upload
             MemoryUtil.memFree(ib);
+            requireAligned(address(ibuf), 16, "instances data");
             transient_.add(ibuf);
             dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT | STAGE_AS_BUILD, VK_ACCESS_TRANSFER_WRITE_BIT | ACCESS_AS_WRITE,
                     STAGE_AS_BUILD, VK_ACCESS_SHADER_READ_BIT | ACCESS_AS_READ);
@@ -339,7 +408,7 @@ public final class RtAccel {
             vkGetAccelerationStructureBuildSizesKHR(vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, info.get(0), s.ints(n), sz);
             Accel a = create(s, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, sz.accelerationStructureSize(), sz.buildScratchSize());
             VkBuf sc = scratch(sz.buildScratchSize());
-            info.get(0).dstAccelerationStructure(a.handle).scratchData().deviceAddress(aligned(address(sc)));
+            info.get(0).dstAccelerationStructure(a.handle).scratchData().deviceAddress(scratchAddress(sc, sz.buildScratchSize()));
             VkAccelerationStructureBuildRangeInfoKHR.Buffer r = VkAccelerationStructureBuildRangeInfoKHR.calloc(1, s);
             r.get(0).primitiveCount(n);
             vkCmdBuildAccelerationStructuresKHR(dev.recordingCommandBuffer(), info, s.pointers(r.address()));
@@ -366,6 +435,8 @@ public final class RtAccel {
     }
 
     public void destroy(Accel a) {
+        if (a.destroyed) throw new IllegalStateException("acceleration structure destroyed twice");
+        a.destroyed = true;
         long h = a.handle;
         dev.deferRelease(() -> vkDestroyAccelerationStructureKHR(vk, h, null));
         dev.destroyBuffer(a.storage);

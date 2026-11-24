@@ -21,7 +21,7 @@ else
     runs+=("$t|$t")
   done
   # INT-4: the RT suites (card/P5-0..P5-3) must be among the discovered ones; fail loudly if a rename drops one
-  for t in rtReplay rtSeamTest rtProbe rtEntities rtLights rtLook memorySharesTest; do
+  for t in rtReplay rtSeamTest rtProbe rtEntities rtLights rtLook memorySharesTest rtHangRepro rtWorldReplay; do   # R1-HANG: +2
     grep -q "tasks.register('$t', JavaExec)" build.gradle || echo "MISSING RT/INT-4 task $t" | tee -a "$OUT/summary.txt"
   done
   runs+=("rtLook|rtLook -Pout=build/rt-allsuites")

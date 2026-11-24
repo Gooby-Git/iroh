@@ -32,7 +32,7 @@ public final class MemoryShares {
     public enum Owner {
         API4_EACH("api-4 owner (each)", Double.parseDouble(System.getProperty("iroh.gpu.ownerShare", "0.40")), Long.MAX_VALUE),
         PACK("pack", 0.35, Long.MAX_VALUE),
-        RT("iroh-rt", 0.25, Long.getLong("iroh.rt.capMiB", 1536) << 20),
+        RT("iroh-rt", 0.25, Long.getLong("iroh.rt.capMiB", Boolean.getBoolean("iroh.rt.safe") ? 256 : 1536) << 20), // R1-HANG safe mode = RtLimits
         FSR("upscaler", 0.10, Long.MAX_VALUE);
 
         public final String id;

@@ -1,6 +1,7 @@
 package dev.elemore.iroh.rt.game;
 
 import dev.elemore.iroh.gpu.VkGpuDevice;
+import dev.elemore.iroh.rt.RtLimits;
 import dev.elemore.iroh.rt.SectionGeometry;
 import dev.elemore.iroh.rt.vk.RtAccel;
 
@@ -25,14 +26,19 @@ public final class VkRtBackend implements RtSession.Backend {
     private RtAccel.Accel tlas;
     private VkGpuDevice.VkBuf work;
     private int ox, oy, oz;
+    /** R1-HANG: true only between this frame's TLAS build and the next change to the BLAS set (see {@link #tlasForTrace}) */
+    private boolean tlasValid;
+    /** builds recorded since construction (rtWorldReplay prints them) */
+    public long blasBuilds, tlasBuilds;
 
-    public VkRtBackend(VkGpuDevice dev) {
+    /** {@code vertexSize}: the raster arena's vertex size (game: DrawBuffers.VERTEX_SIZE; rtWorldReplay: 16). */
+    public VkRtBackend(VkGpuDevice dev, int vertexSize) {
         this.dev = dev;
         this.accel = new RtAccel(dev);
         if (!accel.vertexFormatSupported(VK_FORMAT_R16G16B16A16_SNORM))
             throw new IllegalStateException("R16G16B16A16_SNORM is not an acceleration-structure vertex format on this device");
-        if (net.vulkanmod.render.chunk.buffer.DrawBuffers.VERTEX_SIZE != 16)
-            throw new IllegalStateException("RT needs the 16-byte compressed terrain vertex (got " + net.vulkanmod.render.chunk.buffer.DrawBuffers.VERTEX_SIZE + ")");
+        if (vertexSize != 16)
+            throw new IllegalStateException("RT needs the 16-byte compressed terrain vertex (got " + vertexSize + ")");
     }
 
     static final float[] TRANSFORM = {RtAccel.SNORM_SCALE, 0, 0, RtAccel.POS_OFFSET, 0, RtAccel.SNORM_SCALE, 0, RtAccel.POS_OFFSET, 0, 0, RtAccel.SNORM_SCALE, RtAccel.POS_OFFSET};
@@ -49,6 +55,7 @@ public final class VkRtBackend implements RtSession.Backend {
         RtAccel.Accel a = solid.isEmpty() ? null : accel.buildBlas(solid, false);
         RtAccel.Accel t = trans.isEmpty() ? null : accel.buildBlas(trans, false);
         accel.barrierBuildToBuild();
+        blasBuilds += (a == null ? 0 : 1) + (t == null ? 0 : 1);
         long h = next++;
         blas.put(h, new RtAccel.Accel[]{a, t});
         bytes += (a == null ? 0 : a.bytes) + (t == null ? 0 : t.bytes);
@@ -59,6 +66,7 @@ public final class VkRtBackend implements RtSession.Backend {
     public void destroyBlas(long handle) {
         RtAccel.Accel[] p = blas.remove(handle);
         if (p == null) return;
+        tlasValid = false;   // the current TLAS may name it: no trace until the next TLAS build
         for (RtAccel.Accel a : p)
             if (a != null) {
                 bytes -= a.bytes;
@@ -74,10 +82,23 @@ public final class VkRtBackend implements RtSession.Backend {
 
     @Override
     public void buildTlas(long[] handles, int[][] sections, int count) {
+        tlasValid = false;
+        if (count == 0) {   // R1-HANG: nothing resident (or world unload / disable, possibly outside a frame): no TLAS, no recording
+            if (tlas != null) {
+                bytes -= tlas.bytes;
+                accel.destroy(tlas);
+                tlas = null;
+            }
+            return;
+        }
+        if (count * 2L > RtLimits.HARD_MAX_INSTANCES)
+            throw new IllegalStateException("TLAS of " + count + " sections exceeds the hard instance cap");
         List<RtAccel.Instance> inst = new ArrayList<>(count * 2);
         for (int i = 0; i < count; i++) {
             RtAccel.Accel[] p = blas.get(handles[i]);
             if (p == null) continue;
+            for (RtAccel.Accel x : p) // R1-HANG: never name a destroyed BLAS (a TLAS over freed memory hangs the GPU)
+                if (x != null && x.destroyed()) throw new IllegalStateException("TLAS would name a destroyed BLAS (handle " + handles[i] + ")");
             float tx = (sections[i][0] - ox) * 16f, ty = (sections[i][1] - oy) * 16f, tz = (sections[i][2] - oz) * 16f;
             if (p[0] != null) inst.add(new RtAccel.Instance(tx, ty, tz, i, 1, p[0].address, false));
             if (p[1] != null) inst.add(new RtAccel.Instance(tx, ty, tz, i, 2, p[1].address, false));
@@ -88,7 +109,18 @@ public final class VkRtBackend implements RtSession.Backend {
         }
         tlas = accel.buildTlas(inst);
         bytes += tlas.bytes;
+        tlasBuilds++;
+        tlasValid = true;
         accel.releaseTransient();   // VkGpuDevice frees are deferred past the frames that read them
+    }
+
+    /**
+     * R1-HANG: the TLAS a ray-query pass of THIS frame may trace, or 0 = do not trace. Valid only after this frame's
+     * {@link #buildTlas} (recorded earlier in the same command buffer, followed by the build -> compute barrier) and
+     * while no BLAS it names was destroyed since. A pass that gets 0 skips tracing (raster stays).
+     */
+    public long tlasForTrace() {
+        return tlasValid && tlas != null && !tlas.destroyed() ? tlas.handle : 0;
     }
 
     @Override
@@ -106,7 +138,7 @@ public final class VkRtBackend implements RtSession.Backend {
     }
 
     public long tlasAddress() {
-        return tlas == null ? 0 : tlas.address;
+        return tlasValid && tlas != null && !tlas.destroyed() ? tlas.address : 0;
     }
 
     @Override
@@ -124,6 +156,7 @@ public final class VkRtBackend implements RtSession.Backend {
     @Override
     public void close() {
         for (Long h : new ArrayList<>(blas.keySet())) destroyBlas(h);
+        tlasValid = false;
         if (tlas != null) {
             accel.destroy(tlas);
             tlas = null;

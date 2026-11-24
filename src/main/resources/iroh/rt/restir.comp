@@ -118,7 +118,7 @@ void main() {
     uint i = px.y * fr.dims.x + px.x;
     Surf s = surface(px);
     bool ok = s.valid && mat0(s.tile).z == 0.0 && fr.counts.x > 0u;
-    uint M0 = max(1u, uint(fr.params.z));
+    uint M0 = clamp(uint(fr.params.z), 1u, RT_MAX_RIS);
     if (pc.phase == 0u) {
         Res r; r.y = vec3(0.0); r.li = 0xFFFFFFFFu; r.wsum = 0.0; r.M = 0.0; r.W = 0.0;
         if (ok) {

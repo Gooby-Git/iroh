@@ -47,10 +47,10 @@ public final class RtSession {
         this.source = source;
         this.backend = backend;
         this.queue = new BlasBuildQueue(memory, model);
-        this.queue.radius = Integer.getInteger("iroh.rt.residency", 8);   // chunks, independent of render distance (P5-PLAN 4)
+        this.queue.radius = RtLimits.residency();   // chunks, independent of render distance (P5-PLAN 4); R1-HANG safe mode: 2
         RtPreset p = settings == null ? RtPreset.MEDIUM : settings.preset();
-        this.queue.maxBuilds = p == RtPreset.LOW ? 4 : 8;
-        this.queue.maxTriangles = p == RtPreset.LOW ? 100_000 : 200_000;
+        this.queue.maxBuilds = RtLimits.maxBuilds(p);         // R1-HANG: the per-submit work bound (one frame = one command buffer)
+        this.queue.maxTriangles = RtLimits.maxTriangles(p);
     }
 
     /** Bytes of the render-size RT targets: G-buffer attachment (16 B/px) + RT working buffers (~64 B/px, P5-PLAN 4). */

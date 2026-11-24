@@ -43,6 +43,7 @@ public final class RtFrameHooks {
                 if (backend instanceof VkRtBackend vk) vk.origin(sx, sy, sz);
                 last = session.frame(sx, sy, sz);
             });
+            statsLine();
         } catch (Throwable t) {
             fallBack("frame", t);
         }
@@ -50,9 +51,30 @@ public final class RtFrameHooks {
 
     static RtSession.Backend backend;
 
+    /** R1-HANG: one "[iroh-rt]" line every 5 s with -Diroh.profile / -Diroh.memStats (the in-game test reads it). */
+    private static final boolean STATS = Boolean.getBoolean("iroh.profile") || Boolean.getBoolean("iroh.memStats");
+    private static long nextStats, builtSum, trisSum, frames;
+
+    private static void statsLine() {
+        if (!STATS || last == null) return;
+        builtSum += last.built();
+        trisSum += last.triangles();
+        frames++;
+        long now = System.nanoTime();
+        if (now < nextStats) return;
+        nextStats = now + 5_000_000_000L;
+        long blas = backend instanceof VkRtBackend vk ? vk.blasBuilds : -1, tlas = backend instanceof VkRtBackend vk2 ? vk2.tlasBuilds : -1;
+        RtDeviceFeatures.log(String.format("[iroh-rt] frames %d builds %d tris %d (max/frame %d builds, %d tris) | resident %d pending %d refused %d"
+                        + " | used %d MiB | BLAS builds %d TLAS builds %d | ranges refused %d | %s", frames, builtSum, trisSum, session.queue.maxBuilds,
+                session.queue.maxTriangles, last.resident(), last.pending(), last.refused(), last.usedBytes() >> 20, blas, tlas,
+                VulkanModSections.skippedRanges, dev.elemore.iroh.rt.RtLimits.describe(RtSwitch.settings().preset())));
+        builtSum = trisSum = frames = 0;
+    }
+
     static void start(FrameContext c) {
         RtFailures.inject("session");
-        backend = new VkRtBackend((dev.elemore.iroh.gpu.VkGpuDevice) dev.elemore.iroh.gpu.GpuCore.get().device);
+        backend = new VkRtBackend((dev.elemore.iroh.gpu.VkGpuDevice) dev.elemore.iroh.gpu.GpuCore.get().device,
+                net.vulkanmod.render.chunk.buffer.DrawBuffers.VERTEX_SIZE);
         RtSession s = new RtSession(RtSwitch.settings(), RtGuardMemory.forGame(), RtMemoryModel.radvAssumed(), new VulkanModSections(), backend);
         if (!s.enable(c.viewportWidth(), c.viewportHeight())) throw new IllegalStateException("RT targets refused (memory owner iroh-rt)");
         session = s;

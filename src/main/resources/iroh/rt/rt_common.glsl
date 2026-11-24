@@ -70,8 +70,14 @@ float candidateAlpha(uint ci, uint geom, uint prim, vec2 bary) {
 // ---------------------------------------------------------------------------------------------------- tracing
 bool alphaTestOn() { return (fr.dims.w & F_ALPHA_TEST) != 0u; }
 
+// R1-HANG: every traversal loop is capped. A healthy AS gives a handful of candidates per ray; a corrupt one (or a
+// NaN ray) must not keep a wave alive until the kernel's ring timeout. Past the cap the ray ends with what it has.
+const uint RT_MAX_CANDIDATES = 256u, RT_MAX_RIS = 32u;
+
 void resolveCandidates(rayQueryEXT rq) {
+    uint guardN = 0u;
     while (rayQueryProceedEXT(rq)) {
+        if (++guardN > RT_MAX_CANDIDATES) { rayQueryTerminateEXT(rq); break; }
         if (rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
             uint ci = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
             uint g = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false));
@@ -83,7 +89,15 @@ void resolveCandidates(rayQueryEXT rq) {
 }
 
 /** True when nothing blocks o -> o + d * tmax (sun / light visibility). */
+// R1-HANG: OpRayQueryInitializeKHR needs a finite origin and direction and 0 <= tmin <= tmax (VUID-RuntimeSpirv-
+// OpRayQueryInitializeKHR-06348..06351); anything else is undefined behaviour in the driver's traversal.
+bool rayFinite(vec3 o, vec3 d, float tmax) {
+    return !any(isnan(o)) && !any(isinf(o)) && !any(isnan(d)) && !any(isinf(d)) && dot(d, d) > 0.0 && !isnan(tmax);
+}
+
 bool visible(vec3 o, vec3 d, float tmax, uint mask) {
+    if (!rayFinite(o, d, tmax)) return false;
+    if (tmax <= 0.0) return true;   // an empty segment: nothing can block it
     rayQueryEXT rq;
     uint flags = gl_RayFlagsTerminateOnFirstHitEXT | (alphaTestOn() ? 0u : gl_RayFlagsOpaqueEXT);
     rayQueryInitializeEXT(rq, tlas, flags, mask, o, 0.0, d, tmax);
@@ -94,6 +108,7 @@ bool visible(vec3 o, vec3 d, float tmax, uint mask) {
 struct Hit { bool hit; float t; vec3 pos; vec3 n; int tile; vec3 albedo; uint ci; uint prim; };
 
 Hit traceClosest(vec3 o, vec3 d, float tmax, uint mask) {
+    if (!rayFinite(o, d, tmax) || tmax <= 0.0) { Hit none; none.hit = false; return none; }
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, tlas, alphaTestOn() ? gl_RayFlagsNoneEXT : gl_RayFlagsOpaqueEXT, mask, o, 0.0, d, tmax);
     resolveCandidates(rq);
@@ -226,7 +241,7 @@ bool lightCandidate(vec3 x, vec3 n, out vec3 w, out float dist, out float invPdf
  */
 vec3 emitIrradiance(vec3 x, vec3 n, inout uint rays) {
     if (fr.counts.x == 0u) return vec3(0.0);
-    uint M = max(1u, uint(fr.params.z));
+    uint M = clamp(uint(fr.params.z), 1u, RT_MAX_RIS);
     float wsum = 0.0, selPhat = 0.0, selDist = 0.0;
     vec3 selW = vec3(0.0);
     uint selL = 0u;

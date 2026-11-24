@@ -13,7 +13,7 @@ public final class RtStartup {
         if (!RtSwitch.requestedAtLaunch()) return "";
         if (RtFailures.reason() != null) return " rt=failed";
         if (!RtSwitch.ON) return " rt=unavailable";
-        return " rt=on(" + RtSwitch.settings().preset() + ",residency " + Integer.getInteger("iroh.rt.residency", 8)
-                + ",cap " + (RtGuardMemory.DEFAULT_CAP >> 20) + "MiB; " + RtSwitch.STAGE + ")"; // INT-4: honest stage
+        return " rt=on(" + RtSwitch.settings().preset() + "," + dev.elemore.iroh.rt.RtLimits.describe(RtSwitch.settings().preset())
+                + "; " + RtSwitch.STAGE + ")"; // INT-4: honest stage; R1-HANG: limits (SAFE when -Diroh.rt.safe=true)
     }
 }

@@ -24,6 +24,9 @@ import static org.lwjgl.vulkan.VK12.vkGetBufferDeviceAddress;
  * was enabled at launch ({@link RtVma#arenaUsage}).
  */
 public final class VulkanModSections implements RtSectionSource {
+    /** R1-HANG: ranges refused because they ran past their arena buffer (should stay 0) */
+    public static int skippedRanges;
+
     static int bucket(TerrainRenderType t) {
         return switch (t) {
             case SOLID -> SectionGeometry.OPAQUE;
@@ -68,8 +71,11 @@ public final class VulkanModSections implements RtSectionSource {
                 for (int f = 0; f < QuadFacing.COUNT; f++) {
                     long p = DrawParametersBuffer.getParamsPtr(base, s.inAreaIndex, t.ordinal(), f);
                     int quads = DrawParametersBuffer.getIndexCount(p) / 6;
-                    if (quads > 0)
-                        out.add(new Range(bucket(t), addr, (long) DrawParametersBuffer.getVertexOffset(p) * DrawBuffers.VERTEX_SIZE, DrawBuffers.VERTEX_SIZE, quads));
+                    long off = (long) DrawParametersBuffer.getVertexOffset(p) * DrawBuffers.VERTEX_SIZE;
+                    // R1-HANG: never hand the build a range outside the arena buffer (primitiveCount over the buffer)
+                    if (quads > 0 && off >= 0 && off + (long) quads * 4 * DrawBuffers.VERTEX_SIZE <= ab.getSize())
+                        out.add(new Range(bucket(t), addr, off, DrawBuffers.VERTEX_SIZE, quads));
+                    else if (quads > 0) skippedRanges++;
                 }
             }
         }

@@ -658,6 +658,29 @@ tasks.register('rtProbe', JavaExec) {
 	doFirst { useLavapipe(it, 'rtProbe') }
 }
 
+// R1-HANG (td-84dfca): the two defects behind the in-game device loss, reproduced offline (scratch alignment over RADV's
+// sign-extended addresses; build inputs uploaded after the frame, the game's order). ./gradlew rtHangRepro ; "# rthang PASS n/n"
+tasks.register('rtHangRepro', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtHangRepro'
+	doFirst { useLavapipe(it, 'rtHangRepro') }
+}
+
+// R1-HANG: world-scale RT replay of the R1 scenario on lavapipe (game RT classes, game upload order, residency 8 then safe
+// mode). ./gradlew rtWorldReplay [-Ptrace=false] [-Pframes=N] ; "# rtworld PASS n/n"
+tasks.register('rtWorldReplay', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtWorldReplay'
+	maxHeapSize = '3g'
+	if (project.hasProperty('trace')) systemProperty 'rtworld.trace', project.property('trace')
+	if (project.hasProperty('frames')) systemProperty 'rtworld.frames', project.property('frames')
+	doFirst { useLavapipe(it, 'rtWorldReplay') }
+}
+
 // P4-2a native FSR library (CI-style; not part of build): ./gradlew fsrNative [-PfsrArgs=--linux-only]
 tasks.register('fsrNative', Exec) {
 	group = 'build'

@@ -2,6 +2,7 @@ package dev.elemore.iroh.rttest;
 
 import dev.elemore.iroh.rt.*;
 import dev.elemore.iroh.rt.game.RtGameBridge;
+import dev.elemore.iroh.rt.game.RtSession;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -137,6 +138,29 @@ public final class RtSeamTest {
         System.out.printf(Locale.ROOT, "    per section: %d quads -> %.0f KiB BLAS (RADV assumed), %.0f KiB on lavapipe (measured 104 B/tri)%n", 3000,
                 model.blasBytes(3000) / 1024.0, new RtMemoryModel(RtMemoryModel.LAVAPIPE_BYTES_PER_TRIANGLE, 0.4, 8).blasBytes(3000) / 1024.0);
         RtAdapterTest.run();
+
+        // R1-HANG: RT work limits (safe mode for the next in-game test; hard ceilings no property lifts; alignment helper)
+        String keepSafe = System.getProperty("iroh.rt.safe"), keepRes = System.getProperty("iroh.rt.residency"), keepB = System.getProperty("iroh.rt.maxBuilds");
+        System.clearProperty("iroh.rt.safe");
+        check("R1-HANG default limits = R1's (residency 8, 1536 MiB, 8 builds, 200k tris on MEDIUM)",
+                RtLimits.residency() == 8 && RtLimits.capMiB() == 1536 && RtLimits.maxBuilds(RtPreset.MEDIUM) == 8 && RtLimits.maxTriangles(RtPreset.MEDIUM) == 200_000);
+        System.setProperty("iroh.rt.safe", "true");
+        check("R1-HANG safe mode: residency 2, 256 MiB, 2 builds, 50k tris; self-check text says SAFE",
+                RtLimits.residency() == 2 && RtLimits.capMiB() == 256 && RtLimits.maxBuilds(RtPreset.MEDIUM) == 2 && RtLimits.maxTriangles(RtPreset.MEDIUM) == 50_000
+                        && RtLimits.describe(RtPreset.MEDIUM).startsWith("SAFE residency 2,cap 256MiB"));
+        System.setProperty("iroh.rt.residency", "99");
+        System.setProperty("iroh.rt.maxBuilds", "1000");
+        check("R1-HANG hard ceilings clamp properties (residency 16, 32 builds/frame)", RtLimits.residency() == 16 && RtLimits.maxBuilds(RtPreset.HIGH) == 32);
+        RtSession sess = new RtSession(RtSettings.DEFAULT, new RtMemory.Counter(1L << 30), RtMemoryModel.radvAssumed(), dev.elemore.iroh.rt.game.RtSectionSource.NONE,
+                new RtAdapterTest.Fake());
+        check("R1-HANG the session's queue takes the limits", sess.queue.radius == 16 && sess.queue.maxBuilds == 32 && sess.queue.maxTriangles == 50_000);
+        if (keepSafe == null) System.clearProperty("iroh.rt.safe"); else System.setProperty("iroh.rt.safe", keepSafe);
+        if (keepRes == null) System.clearProperty("iroh.rt.residency"); else System.setProperty("iroh.rt.residency", keepRes);
+        if (keepB == null) System.clearProperty("iroh.rt.maxBuilds"); else System.setProperty("iroh.rt.maxBuilds", keepB);
+        long neg = 0xffff800101a7df80L;
+        check("R1-HANG alignUp on a sign-extended (negative) RADV address rounds up by < align",
+                dev.elemore.iroh.rt.vk.RtAccel.alignUp(neg, 256) == 0xffff800101a7e000L && dev.elemore.iroh.rt.vk.RtAccel.alignUp(0xffff800101a7e000L, 256) == 0xffff800101a7e000L
+                        && dev.elemore.iroh.rt.vk.RtAccel.rangeInside(neg, 404, 0xffff800101a7e000L, 148) && !dev.elemore.iroh.rt.vk.RtAccel.rangeInside(neg, 404, 0xffff800101a7e100L, 148));
         RtEntityBudgetTest.run();
         System.out.println("# rtseam " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
