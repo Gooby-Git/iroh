@@ -113,6 +113,10 @@ public final class PackReplay {
                 float[] srgb = new float[c0.length];
                 for (int i = 0; i < c0.length; i++)
                     srgb[i] = (i & 3) == 3 ? 1f : (float) Math.pow(Math.min(1, c0[i]), 1 / 2.2);
+                // V-6: these stand-ins are backend images (in game: imported Iroh images), zeroed at creation; the
+                // uploads must wait for that clear (sync validation WAW otherwise)
+                gpu.barrier(sc, "TRANSFER_WRITE", "TRANSFER_WRITE");
+                gpu.barrier(sd, "TRANSFER_WRITE", "TRANSFER_WRITE");
                 gpu.upload(sc, srgb);
                 gpu.upload(sd, syn.image("depthtex0"));
                 ex.presentTo = sc;
