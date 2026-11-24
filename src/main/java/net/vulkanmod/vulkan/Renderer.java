@@ -509,21 +509,33 @@ public class Renderer {
             VkSubmitInfo submitInfo = VkSubmitInfo.calloc(stack);
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO);
 
-            // perf/uploads: also wait (on the GPU) for the transfer-queue uploads submitted since the last frame
-            long[] uploadWaits = Synchronization.INSTANCE.takeWaitSemaphores();
-            java.nio.LongBuffer waits = stack.mallocLong(1 + uploadWaits.length);
-            java.nio.IntBuffer stages = stack.mallocInt(1 + uploadWaits.length);
+            // perf/uploads: also wait (on the GPU) for the transfer-queue uploads submitted since the last frame.
+            // P2-12 (L9): at the stages that read uploaded data (Synchronization.UPLOAD_WAIT_STAGES), not ALL_COMMANDS; with timeline
+            // semaphores one wait per upload queue (value = its last upload), else one binary semaphore per upload command buffer.
+            long[][] uploadWaits = Synchronization.INSTANCE.takeUploadWaits();
+            long[] upSems = uploadWaits[0], upVals = uploadWaits[1];
+            boolean anyTimeline = false;
+            for (long v : upVals) anyTimeline |= v != 0L;
+            java.nio.LongBuffer waits = stack.mallocLong(1 + upSems.length);
+            java.nio.IntBuffer stages = stack.mallocInt(1 + upSems.length);
+            java.nio.LongBuffer waitValues = anyTimeline ? stack.mallocLong(1 + upSems.length) : null;
             waits.put(imageAvailableSemaphores.get(currentFrame));
             stages.put(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            for (long w : uploadWaits) {
-                waits.put(w);
-                stages.put(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            if (waitValues != null) waitValues.put(0L);
+            for (int i = 0; i < upSems.length; i++) {
+                waits.put(upSems[i]);
+                stages.put(Synchronization.UPLOAD_WAIT_STAGES);
+                if (waitValues != null) waitValues.put(upVals[i]);
             }
             waits.flip();
             stages.flip();
             submitInfo.waitSemaphoreCount(waits.remaining());
             submitInfo.pWaitSemaphores(waits);
             submitInfo.pWaitDstStageMask(stages);
+            if (waitValues != null) {
+                waitValues.flip();
+                net.vulkanmod.vulkan.queue.UploadSubmit.chainWaitValues(stack, submitInfo, waitValues);
+            }
             submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
             submitInfo.pCommandBuffers(stack.pointers(currentCmdBuffer));
 

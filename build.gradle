@@ -294,6 +294,7 @@ tasks.register('apiReplay', JavaExec) {
 	mainClass = 'dev.elemore.iroh.apitest.ApiReplay'
 	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
 	if (project.hasProperty('golden')) jvmArgs "-Dgolden=${project.property('golden')}"
+	if (project.findProperty('mode') == 'legacy') jvmArgs '-Diroh.api4.legacyTargetBarrier=true' // P2-12 negative control: the pre-P2-12 global target barrier
 	doFirst { useLavapipe(it) }
 }
 
@@ -1017,6 +1018,20 @@ tasks.register('imageSyncRepro', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.vktest.ImageSyncRepro'
+	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	ext.syncval = true
+	ext.syncHeuristic = true
+	doFirst { useLavapipe(it) }
+}
+
+// P2-12 (L9): the narrowed upload wait (Synchronization.UPLOAD_WAIT_STAGES) with binary and timeline semaphores, sync validation + shader heuristic.
+// ./gradlew timelineSyncRepro ; last line "# timelinesync PASS|FAIL path=timeline|binary ..." (the path the device takes is printed for the hw matrix)
+tasks.register('timelineSyncRepro', JavaExec) {
+	group = 'verification'
+	description = 'Transfer -> frame ordering at the narrow upload wait stages, binary and timeline semaphores, sync validation'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.TimelineSyncRepro'
 	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
 	ext.syncval = true
 	ext.syncHeuristic = true

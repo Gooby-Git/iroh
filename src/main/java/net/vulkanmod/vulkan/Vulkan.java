@@ -366,6 +366,11 @@ public class Vulkan {
             allocatorCreateInfo.pVulkanFunctions(vulkanFunctions);
             allocatorCreateInfo.instance(instance);
             allocatorCreateInfo.vulkanApiVersion(VK_API_VERSION_1_2);
+            // P2-12 (L10): only when the device extension is ENABLED (SyncMemCaps), else VMA would query structs the device lacks
+            int vmaFlags = 0;
+            if (net.vulkanmod.vulkan.device.SyncMemCaps.memoryBudget()) vmaFlags |= org.lwjgl.util.vma.Vma.VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+            if (net.vulkanmod.vulkan.device.SyncMemCaps.memoryPriority()) vmaFlags |= org.lwjgl.util.vma.Vma.VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
+            allocatorCreateInfo.flags(vmaFlags);
 
             PointerBuffer pAllocator = stack.pointers(VK_NULL_HANDLE);
 

@@ -164,6 +164,27 @@ public class CommandPool {
             return fence;
         }
 
+        /**
+         * P2-12 (L9): submit signalling {@code timelineSemaphore} to {@code value} (VK_KHR_timeline_semaphore, Vulkan 1.2 core): the
+         * frame waits one value per queue instead of one binary semaphore per command buffer.
+         */
+        public long submitCommandsTimeline(MemoryStack stack, VkQueue queue, long timelineSemaphore, long value) {
+            long fence = this.fence;
+            vkEndCommandBuffer(this.handle);
+            vkResetFences(Vulkan.getVkDevice(), this.fence);
+
+            VkSubmitInfo submitInfo = VkSubmitInfo.calloc(stack);
+            submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+            submitInfo.pCommandBuffers(stack.pointers(this.handle));
+            UploadSubmit.signalTimeline(stack, submitInfo, timelineSemaphore, value);
+
+            dev.elemore.iroh.memory.MemoryGuard.check(vkQueueSubmit(queue, submitInfo, fence), "upload vkQueueSubmit (timeline)");
+
+            this.recording = false;
+            this.submitted = true;
+            return fence;
+        }
+
         public void reset() {
             this.submitted = false;
             this.recording = false;

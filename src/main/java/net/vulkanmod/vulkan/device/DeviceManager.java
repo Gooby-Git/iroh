@@ -253,10 +253,21 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
             }
 
+            // P2-12 (L9/L10): timeline semaphore (Vulkan 1.2 core feature), VK_EXT_memory_budget and VK_EXT_memory_priority, each only when offered
+            java.util.Set<String> offeredExts = net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(physicalDevice);
+            SyncMemCaps.Decision syncMem = SyncMemCaps.apply(offeredExts, device.availableFeatures12.timelineSemaphore(),
+                    SyncMemCaps.priorityFeatureOffered(stack, physicalDevice, offeredExts), deviceVulkan12Features);
+            if (syncMem.priority())
+                SyncMemCaps.chainPriority(deviceVulkan12Features, VkPhysicalDeviceMemoryPriorityFeaturesEXT.calloc(stack));
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", SyncMemCaps.report());
+            enabledFeatures += " timelineSemaphore=" + syncMem.timeline() + " memoryBudget=" + syncMem.budget() + " memoryPriority=" + syncMem.priority();
+
             // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
             java.util.List<Runnable> extAllocs = new ArrayList<>();
             try {
-                createInfo.ppEnabledExtensionNames(heapNames(Vulkan.REQUIRED_EXTENSION, extAllocs));
+                java.util.List<String> enabledExts = new ArrayList<>(Vulkan.REQUIRED_EXTENSION);
+                enabledExts.addAll(SyncMemCaps.extensionNames());
+                createInfo.ppEnabledExtensionNames(heapNames(enabledExts, extAllocs));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 

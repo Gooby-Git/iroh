@@ -173,6 +173,29 @@ public final class ApiReplay {
         }
     }
 
+    /** {total barriers, ALL->ALL barriers} recorded by one frame of three passes */
+    static int[] countBarriers() {
+        HeadlessGpuDevice dev = new HeadlessGpuDevice(1L << 30, false);
+        GpuCore core = GpuCore.install(dev);
+        core.resize(W, H);
+        try {
+            RenderTargetHandle a = IrohTargets.create(OWNER, "bcA", IrohTargets.Format.RGBA8, W, H);
+            RenderTargetHandle b = IrohTargets.create(OWNER, "bcB", IrohTargets.Format.RGBA8, W, H);
+            dev.flush();
+            long t0 = dev.barriers, g0 = dev.globalBarriers;
+            for (RenderTargetHandle t : new RenderTargetHandle[]{a, b, a}) {
+                IrohTargets.beginRendering(t, null, true, new float[]{0, 0, 0, 0}, 1f);
+                IrohTargets.endRendering();
+            }
+            dev.flush();
+            return new int[]{(int) (dev.barriers - t0), (int) (dev.globalBarriers - g0)};
+        } finally {
+            core.freeOwner(OWNER);
+            GpuCore.uninstall();
+            dev.close();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         int[] ref = reference(quads());
         StringBuilder h1 = new StringBuilder(), h2 = new StringBuilder();
@@ -185,6 +208,12 @@ public final class ApiReplay {
         int diff = 0;
         for (int i = 0; i < a.length; i++) if (a[i] != b[i]) diff++;
         check("zero-tail fallback (no drawIndirectCount) draws the same image (" + diff + " pixels differ)", diff == 0);
+        // P2-12 (RQ-APP1-a): barriers per frame of a 3-pass api 4 frame (two targets, the second pass samples nothing but reuses the first's colour)
+        int[] bc = countBarriers();
+        boolean legacy = Boolean.getBoolean("iroh.api4.legacyTargetBarrier");
+        System.out.println("     barriers per 3-pass frame: total " + bc[0] + ", ALL_COMMANDS->ALL_COMMANDS " + bc[1] + (legacy ? " (legacy path)" : ""));
+        check("no ALL_COMMANDS -> ALL_COMMANDS barrier per frame" + (legacy ? " (legacy negative control: expected " + bc[0] + " > 0)" : ""),
+                legacy ? bc[1] > 0 : bc[1] == 0);
         String golden = System.getProperty("golden", "");
         System.out.println("     image sha256 " + h1);
         if (!golden.isEmpty()) check("golden " + golden, golden.contentEquals(h1));
