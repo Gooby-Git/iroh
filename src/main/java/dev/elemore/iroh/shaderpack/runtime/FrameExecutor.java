@@ -438,7 +438,7 @@ public final class FrameExecutor {
         // P3-7: the trace holds the LAST frame only (it grew without bound in game: one list entry per pass per frame)
         if (!keepTrace)
             trace.clear();
-        gpu.beginFrame(); // lastAccess is cleared at the END of a frame (V-6): images created since then are TRANSFER_WRITE
+        gpu.beginFrame(); // V-6/V-7: lastAccess holds images created since the last frame (TRANSFER_WRITE) and the last frame's tail
         postCut = false;
         if (tracing) trace.add("frame start=" + in.startStage() + " size=" + width + "x" + height);
         int start = STAGES.indexOf(in.startStage());
@@ -489,6 +489,7 @@ public final class FrameExecutor {
             int h = (Integer) cp[0];
             access(h, "TRANSFER_WRITE");
             gpu.clear(h, cc);
+            recorded();
             if (tracing) trace.add("clear " + h + " " + java.util.Arrays.toString(cc));
         }
         // supplied images: uploaded into the half the first replayed reader sees
@@ -510,6 +511,7 @@ public final class FrameExecutor {
             }
             access(h, "TRANSFER_WRITE");
             gpu.upload(h, in.image(name));
+            recorded();
             if (tracing) trace.add("upload " + key);
         }
         // copies from backend images (post mode) and forced clears
@@ -528,6 +530,7 @@ public final class FrameExecutor {
             access(e.getValue(), "TRANSFER_READ");
             access(h, "TRANSFER_WRITE");
             gpu.blit(e.getValue(), h);
+            recorded();
             if (tracing) trace.add("blit input -> " + e.getKey());
         }
         Map<String, float[]> clearVals = in.clearValues();
@@ -549,6 +552,7 @@ public final class FrameExecutor {
             for (int h : hs) {
                 access(h, "TRANSFER_WRITE");
                 gpu.clear(h, e.getValue());
+                recorded();
                 if (tracing) trace.add("clear " + e.getKey() + " (input value)");
             }
         }
@@ -559,6 +563,7 @@ public final class FrameExecutor {
                     continue;
                 access(h, "TRANSFER_WRITE");
                 gpu.clear(h, FAR_DEPTH);
+                recorded();
                 if (tracing) trace.add("clear " + dk + " 1.0 (geometry frame)");
             }
         if (afterInputs != null)
@@ -666,6 +671,7 @@ public final class FrameExecutor {
             access(am[0], "TRANSFER_READ");
             access(am[1], "TRANSFER_WRITE");
             gpu.copy(am[0], am[1]);
+            recorded();
             if (tracing) trace.add("copy " + am[0] + " -> " + am[1] + " (end of frame alt -> main)");
         }
         if (in.depthTo() >= 0 && images.containsKey("depthtex0")) {
@@ -673,6 +679,7 @@ public final class FrameExecutor {
             access(d0, "TRANSFER_READ");
             access(in.depthTo(), "TRANSFER_WRITE");
             gpu.blit(d0, in.depthTo());
+            recorded();
             if (tracing) trace.add("depth back depthtex0 -> scene depth");
         }
         if (rasterOver >= 0)
@@ -682,10 +689,11 @@ public final class FrameExecutor {
             access(out, "TRANSFER_READ");
             access(presentTo, "TRANSFER_WRITE");
             gpu.blit(out, presentTo);
+            recorded();
             if (tracing) trace.add("present output");
         }
         gpu.endFrame();
-        lastAccess.clear();
+        carryTail();
         if (tracing) trace.add("frame end");
     }
 
@@ -824,21 +832,140 @@ public final class FrameExecutor {
      */
     private int newImage(GpuBackend.ImageDesc d) {
         int h = gpu.createImage(d);
-        if (!untrackedCreateForTest)
+        owned.set(h);
+        if (!untrackedCreateForTest) {
             lastAccess.put(h, "TRANSFER_WRITE");
+            noteSinceBarrier(h);
+        }
         return h;
     }
 
     /** negative control for the V-6 repro (packThreadRepro -PoldCreate): the pre-V-6 untracked creation clear */
     static boolean untrackedCreateForTest;
 
+    /** negative control for the V-7 repro (packFlightRepro -Pmode=old): the pre-V-7 end of frame (every access forgotten) */
+    static boolean forgetAtFrameEndForTest;
+
+    /*
+     * V-7 (review 698ba7c finding 1): frames in flight. In game each frame is its own command buffer and frame N+1 is
+     * submitted while frame N may still run on the same queue, so forgetting every access at the end of a frame left the
+     * first access of frame N+1 with no barrier against frame N's last one (packFlightRepro: WAW end-of-frame alt -> main
+     * copy vs the next frame's scene blit into main, WAR copy read vs the next composite draw). gpu.barrier is ONE FULL
+     * memory barrier (VkPackBackend: ALL_COMMANDS -> ALL_COMMANDS, MEMORY_WRITE -> MEMORY_READ|WRITE): it orders every
+     * earlier command of every image, earlier frames included, before everything after it. So only commands recorded
+     * AFTER a frame's last executor barrier can race the next frame: their accesses of executor-owned images are carried
+     * into the next frame and dropped at its first barrier; the first conflicting access before that barrier emits it. Imported images
+     * (scene colour / depth, atlas) are not carried: their owner writes them between pack frames and the backend
+     * transitions them around every blit. Steady-state cost: a barrier only where a real cross-frame conflict exists
+     * (Navidson world0: none, barriers per frame unchanged).
+     */
+    /** executor-owned images (every one goes through newImage) */
+    private final java.util.BitSet owned = new java.util.BitSet();
+    /**
+     * images whose COMMAND may run after the executor's last barrier, in declaration order. access() declares before
+     * the command is recorded and may emit the barrier in the middle of one command's declarations (a draw: one barrier
+     * per bound image that needs it), so a barrier drops only the entries of commands already recorded (before
+     * {@link #cmdStart}); {@link #recorded} marks the end of a command. A missing mark keeps more (more barriers), never fewer.
+     */
+    private int[] since = new int[64];
+    private int nSince, cmdStart;
+    private int[] sincePos = new int[256];
+    private final java.util.BitSet inSince = new java.util.BitSet();
+    /** lastAccess entries carried over from the previous frame's tail (dropped at this frame's first barrier) */
+    private final java.util.BitSet carried = new java.util.BitSet();
+
+    private void noteSinceBarrier(int image) {
+        if (image < 0 || (inSince.get(image) && sincePos[image] >= cmdStart))
+            return;
+        if (nSince == since.length)
+            since = java.util.Arrays.copyOf(since, nSince * 2);
+        if (image >= sincePos.length)
+            sincePos = java.util.Arrays.copyOf(sincePos, Math.max(image + 1, sincePos.length * 2));
+        inSince.set(image);
+        sincePos[image] = nSince;
+        since[nSince++] = image;
+    }
+
+    /** the command whose accesses were just declared is recorded (V-7) */
+    private void recorded() {
+        cmdStart = nSince;
+    }
+
+    private void barrierEmitted() {
+        for (int h = carried.nextSetBit(0); h >= 0; h = carried.nextSetBit(h + 1))
+            lastAccess.put(h, null);
+        carried.clear();
+        // recorded commands are ordered by this barrier; the declarations of the command still pending stay
+        inSince.clear();
+        int k = 0;
+        for (int i = cmdStart; i < nSince; i++) {
+            int h = since[i];
+            if (inSince.get(h))
+                continue;
+            inSince.set(h);
+            sincePos[h] = k;
+            since[k++] = h;
+        }
+        nSince = k;
+        cmdStart = 0;
+    }
+
+    /** end of frame: keep only the owned images whose commands ran after the frame's last barrier (V-7) */
+    private void carryTail() {
+        if (forgetAtFrameEndForTest) {
+            forgetAccesses();
+            return;
+        }
+        int n = 0;
+        if (keepH.length < nSince) {
+            keepH = new int[since.length];
+            keepK = new String[since.length];
+        }
+        for (int i = 0; i < nSince; i++) {
+            int h = since[i];
+            String k = lastAccess.get(h);
+            if (k != null && owned.get(h)) {
+                keepH[n] = h;
+                keepK[n++] = k;
+            }
+        }
+        forgetAccesses();
+        for (int i = 0; i < n; i++) {
+            if (carried.get(keepH[i]))
+                continue;
+            lastAccess.put(keepH[i], keepK[i]);
+            carried.set(keepH[i]);
+            noteSinceBarrier(keepH[i]);
+        }
+        recorded();
+    }
+
+    private int[] keepH = new int[64];
+    private String[] keepK = new String[64];
+
+    private void forgetAccesses() {
+        lastAccess.clear();
+        carried.clear();
+        inSince.clear();
+        nSince = 0;
+        cmdStart = 0;
+    }
+
+    /** V-7: images whose previous-frame access is still carried (tests) */
+    int carriedCount() {
+        return carried.cardinality();
+    }
+
     private void access(int image, String kind) {
         String last = lastAccess.get(image);
         boolean write = kind.endsWith("WRITE");
         if (last != null && (last.endsWith("WRITE") || write)) {
             gpu.barrier(image, last, kind);
+            barrierEmitted();
         }
         lastAccess.put(image, kind);
+        carried.clear(image);
+        noteSinceBarrier(image);
     }
 
     private Integer imageFor(String target, String half) {
@@ -984,6 +1111,7 @@ public final class FrameExecutor {
                 cutDraw = new GpuBackend.Draw("engine:motion", motionPipe, new int[]{mv}, new int[]{0, 0, width, height},
                         Map.of(1, GpuBackend.Bind.image(depth, "NEAREST")), Map.of(), b.array());
             gpu.draw(cutDraw);
+            recorded();
             if (tracing) trace.add("engine motion vectors " + width + "x" + height);
         }
         if (cutCopies == null) {
@@ -1001,6 +1129,7 @@ public final class FrameExecutor {
             access(sd[0], "TRANSFER_READ");
             access(sd[1], "TRANSFER_WRITE");
             gpu.blit(sd[0], sd[1]);
+            recorded();
             if (tracing) trace.add("display copy " + sd[0] + " -> " + sd[1]);
         }
         if (cutIn == null) {
@@ -1014,6 +1143,7 @@ public final class FrameExecutor {
                 access(mv, "SAMPLED_READ");
             access(outImg, "TRANSFER_WRITE");
             upscale.upscaler().dispatch(gpu, inImg, depth == null ? -1 : depth, mv == null ? -1 : mv, outImg, width, height, displayW, displayH);
+            recorded();
             if (tracing) trace.add("upscale " + upscale.upscaler().name() + " " + upscaleInKey + " " + width + "x" + height + " -> D:" + upscaleOutKey + " " + displayW + "x" + displayH);
         }
         postCut = true;
@@ -1032,12 +1162,14 @@ public final class FrameExecutor {
             for (int h : c.mips) {
                 access(h, "TRANSFER_WRITE");
                 gpu.generateMips(h);
+                recorded();
             }
             accessBinds(c.draw.set0(), "STORAGE_WRITE");
             for (int h : c.draw.colour())
                 access(h, "ATTACHMENT_WRITE");
             fillUniforms(u, c.ubo, in.uniforms(), true, viewW(), viewH());
             gpu.draw(c.draw);
+            recorded();
             if (tracing) trace.add("draw " + p.id + " viewport " + c.draw.viewport()[2] + "x" + c.draw.viewport()[3] + " reads " + readKeys(p));
             passIndex = frame.passes.indexOf(p);
             drawCount++;
@@ -1054,6 +1186,7 @@ public final class FrameExecutor {
                 mipHandles[nMips++] = h;
                 access(h, "TRANSFER_WRITE");
                 gpu.generateMips(h);
+                recorded();
                 if (tracing) trace.add("mips " + tp[0] + "#" + tp[1]);
             }
         }
@@ -1087,6 +1220,7 @@ public final class FrameExecutor {
         c.draw = new GpuBackend.Draw(p.id, pipe, colour, viewport, set0, set1, c.ubo.array());
         passCache.put(p, c);
         gpu.draw(c.draw);
+        recorded();
         if (tracing) trace.add("draw " + p.id + " -> " + keys + " viewport " + viewport[2] + "x" + viewport[3] + " reads " + readKeys(p));
         passIndex = frame.passes.indexOf(p);
         drawCount++;
@@ -1094,7 +1228,7 @@ public final class FrameExecutor {
             gpu.endFrame();
             afterPass.accept(p.id, keys);
             gpu.beginFrame();
-            lastAccess.clear();
+            forgetAccesses(); // offline debug dumps only: the frame was submitted and waited around afterPass
         }
     }
 
@@ -1123,6 +1257,7 @@ public final class FrameExecutor {
         h = newImage(new GpuBackend.ImageDesc("pack:" + key, "R8G8B8A8_UNORM", w, hh, 1, 1, Set.of("SAMPLED", "TRANSFER_DST")));
         access(h, "TRANSFER_WRITE");
         gpu.upload(h, px);
+        recorded();
         images.put(key, h);
         return h;
     }
@@ -1330,6 +1465,7 @@ public final class FrameExecutor {
                 access(c.depth, "ATTACHMENT_WRITE");
             }
             gpu.drawGeometry(c.geoDraws.get(di));
+            recorded();
         }
         if (tracing) trace.add("geometry " + p.id + " + " + (shadow ? "shadowtex0" : "depthtex0") + " batches " + c.batches.size()
                 + " quads " + quads + " reads " + readKeys(p));
@@ -1438,6 +1574,7 @@ public final class FrameExecutor {
         access(a, "TRANSFER_READ");
         access(b, "TRANSFER_WRITE");
         gpu.copy(a, b);
+        recorded();
         if (tracing) trace.add("capture " + p.id);
     }
 
@@ -1460,6 +1597,7 @@ public final class FrameExecutor {
         int[] groups = c.dispatch.groups();
         fillUniforms(u, c.ubo, in.uniforms(), false, viewW(), viewH());
         gpu.dispatch(c.dispatch);
+        recorded();
         if (tracing) trace.add("dispatch " + p.id + " " + java.util.Arrays.toString(groups));
     }
 
@@ -1611,6 +1749,7 @@ public final class FrameExecutor {
                             h = newImage(d);
                             access(h, "TRANSFER_WRITE");
                             gpu.upload(h, px);
+                            recorded();
                         }
                     }
                 } catch (IOException e) {
@@ -1646,6 +1785,7 @@ public final class FrameExecutor {
         if (depth) {
             access(h, "TRANSFER_WRITE");
             gpu.upload(h, new float[]{1, 0, 0, 0}); // far plane: compare passes (lit)
+            recorded();
         }
         images.put(key, h);
         return h;
@@ -1860,13 +2000,14 @@ public final class FrameExecutor {
         for (Integer h : new java.util.LinkedHashSet<>(images.values()))
             gpu.freeImage(h);
         images.clear();
+        owned.clear();
         for (Integer p : pipelines.values())
             gpu.freePipeline(p);
         pipelines.clear();
         for (Integer vb : vertexBuffers.values())
             gpu.freeBuffer(vb);
         vertexBuffers.clear();
-        lastAccess.clear();
+        forgetAccesses();
         passCache.clear();
         hasBatchesCache.clear();
         passLayouts.clear();

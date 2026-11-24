@@ -1250,3 +1250,22 @@ tasks.register('packThreadRepro', JavaExec) {
 		useLavapipe(it, project.hasProperty('oldCreate') ? 'packThreadRepro-oldCreate' : null)
 	}
 }
+
+// V-7 (review 698ba7c finding 1): pack frames with 2 frames in flight (HeadlessVkBackend inFlight 2 = IrohVkBackend's
+// contract on VulkanMod's renderer: per-slot command buffers, submit without waiting) on lavapipe + sync validation.
+// ./gradlew packFlightRepro [-Pmode=old|new|both]; last line "# packflight PASS|FAIL" (old hazards > 0, new 0).
+tasks.register('packFlightRepro', JavaExec) {
+	group = 'verification'
+	description = 'Cross-frame pack image hazards with 2 frames in flight on lavapipe + sync validation (old flagged, V-7 clean)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shaderpack.runtime.PackFlightRepro'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	ext.syncval = true
+	doFirst {
+		systemProperty 'pf.mode', project.findProperty('mode') ?: 'both'
+		if (project.hasProperty('trace')) systemProperty 'pf.trace', 'true'
+		useLavapipe(it)
+	}
+}

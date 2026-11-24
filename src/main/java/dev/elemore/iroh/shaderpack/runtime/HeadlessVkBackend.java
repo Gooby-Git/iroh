@@ -39,6 +39,22 @@ public final class HeadlessVkBackend extends VkPackBackend {
     private final List<HostBuf> frameBufs = new ArrayList<>();
     private final List<Runnable> later = new ArrayList<>();
 
+    /**
+     * V-7: frames in flight. 1 (default) = every frame is submitted and waited (setup work too). N > 1 = the in-game
+     * contract of IrohVkBackend on VulkanMod's renderer: one command buffer, fence, descriptor pool and UBO ring per frame
+     * slot; setup work made outside a frame (prepare's image creation) goes into the NEXT frame's buffer; endFrame submits
+     * WITHOUT waiting; a slot's fence is waited only when the slot records again (frame N+1 is submitted while frame N
+     * may still run). Deferred frees wait for the slot that used them. Sync validation then sees cross-frame hazards on
+     * the one queue (it validates at submit time against work not yet known complete).
+     */
+    public final int inFlight;
+    private VkCommandBuffer[] slotCmds;
+    private long[] slotFences, slotPools;
+    private boolean[] slotPending;
+    private List<List<HostBuf>> slotBufs;
+    private List<List<Runnable>> slotLater;
+    private int slot, lastSubmitted = -1;
+
     private record Mem(long memory, long size) {}
 
     /** V-5: validation-layer ERROR messages of this device (only with {@code validation = true}); thread-safe */
@@ -52,7 +68,13 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     /** {@code validation}: enable VK_LAYER_KHRONOS_validation on this instance and collect its errors in {@link #validationErrors} */
     public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation) {
+        this(allowGpu, capBytes, validation, 1);
+    }
+
+    /** {@code inFlight}: frames in flight (V-7; 1 = submit and wait every frame) */
+    public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation, int inFlight) {
         this.cap = capBytes;
+        this.inFlight = Math.max(1, inFlight);
         try (MemoryStack s = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(s).sType$Default().pApplicationName(s.UTF8("iroh-pack-replay"))
                     .apiVersion(VK_API_VERSION_1_3);
@@ -75,6 +97,9 @@ public final class HeadlessVkBackend extends VkPackBackend {
                         .pfnUserCallback(messengerCb), null, ml), "messenger");
                 messenger = ml.get(0);
             }
+            VkDevice dev = null;
+            VkPhysicalDeviceMemoryProperties mp = null;
+            try { // V-7 (review 698ba7c #4): every failure below releases the device, messenger, callback and instance
             IntBuffer n = s.mallocInt(1);
             vkEnumeratePhysicalDevices(instance, n, null);
             PointerBuffer devs = s.mallocPointer(n.get(0));
@@ -93,13 +118,11 @@ public final class HeadlessVkBackend extends VkPackBackend {
                         break;
                 }
             }
-            if (chosen == null) {
-                vkDestroyInstance(instance, null);
+            if (chosen == null)
                 throw new IllegalStateException("no CPU Vulkan device (lavapipe) found; the replay never uses a GPU");
-            }
             phys = chosen;
             deviceName = name;
-            memProps = VkPhysicalDeviceMemoryProperties.malloc();
+            memProps = mp = VkPhysicalDeviceMemoryProperties.malloc();
             vkGetPhysicalDeviceMemoryProperties(phys, memProps);
             vkGetPhysicalDeviceQueueFamilyProperties(phys, n, null);
             VkQueueFamilyProperties.Buffer qf = VkQueueFamilyProperties.calloc(n.get(0), s);
@@ -110,6 +133,8 @@ public final class HeadlessVkBackend extends VkPackBackend {
                     family = i;
                     break;
                 }
+            if (family < 0)
+                throw new IllegalStateException("no graphics+compute queue family on " + name);
             // enable the core 1.0 features the device supports (the in-game device does the same for what packs need)
             VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default();
             vkGetPhysicalDeviceFeatures2(phys, f2);
@@ -117,7 +142,7 @@ public final class HeadlessVkBackend extends VkPackBackend {
                     .pQueuePriorities(s.floats(1f));
             VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(s).sType$Default().pNext(f2.address()).pQueueCreateInfos(qci);
             check(vkCreateDevice(phys, dci, null, pp), "vkCreateDevice");
-            device = new VkDevice(pp.get(0), phys, dci);
+            device = dev = new VkDevice(pp.get(0), phys, dci);
             vkGetDeviceQueue(device, family, 0, pp);
             queue = new VkQueue(pp.get(0), device);
             LongBuffer lb = s.mallocLong(1);
@@ -131,8 +156,47 @@ public final class HeadlessVkBackend extends VkPackBackend {
             check(vkCreateFence(device, VkFenceCreateInfo.calloc(s).sType$Default(), null, lb), "fence");
             fence = lb.get(0);
             descPool = createDescriptorPool(device);
+            if (this.inFlight > 1) {
+                int k = this.inFlight;
+                slotCmds = new VkCommandBuffer[k];
+                slotFences = new long[k];
+                slotPools = new long[k];
+                slotPending = new boolean[k];
+                slotBufs = new ArrayList<>();
+                slotLater = new ArrayList<>();
+                PointerBuffer pc = s.mallocPointer(k);
+                check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(s).sType$Default().commandPool(cmdPool)
+                        .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(k), pc), "slot cmds");
+                for (int i = 0; i < k; i++) {
+                    slotCmds[i] = new VkCommandBuffer(pc.get(i), device);
+                    check(vkCreateFence(device, VkFenceCreateInfo.calloc(s).sType$Default(), null, lb), "slot fence");
+                    slotFences[i] = lb.get(0);
+                    slotPools[i] = createDescriptorPool(device);
+                    slotBufs.add(new ArrayList<>());
+                    slotLater.add(new ArrayList<>());
+                }
+            }
+            } catch (RuntimeException | Error e) {
+                if (dev != null)
+                    vkDestroyDevice(dev, null); // children of a half-made device (lavapipe out of memory only) go with it
+                if (mp != null)
+                    mp.free();
+                destroyInstanceObjects();
+                throw e;
+            }
         }
         initQuad();
+    }
+
+    /** messenger before the instance (a live child at vkDestroyInstance is a validation error), then the native callback */
+    private void destroyInstanceObjects() {
+        if (messenger != 0)
+            EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
+        messenger = 0;
+        vkDestroyInstance(instance, null);
+        if (messengerCb != null)
+            messengerCb.free();
+        messengerCb = null;
     }
 
     static long createDescriptorPool(VkDevice device) {
@@ -171,6 +235,17 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     protected VkCommandBuffer cmd() {
+        if (inFlight > 1) {
+            if (!recording) {
+                waitSlot(slot);
+                try (MemoryStack s = stackPush()) {
+                    vkResetCommandBuffer(slotCmds[slot], 0);
+                    vkBeginCommandBuffer(slotCmds[slot], VkCommandBufferBeginInfo.calloc(s).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT));
+                }
+                recording = true;
+            }
+            return slotCmds[slot];
+        }
         if (!recording) {
             try (MemoryStack s = stackPush()) {
                 vkResetCommandBuffer(cmd, 0);
@@ -183,7 +258,47 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     protected long descriptorPool() {
-        return descPool;
+        return inFlight > 1 ? slotPools[slot] : descPool;
+    }
+
+    /** V-7: the slot's last submission has completed: its fence, then its deferred frees */
+    private void waitSlot(int i) {
+        if (!slotPending[i])
+            return;
+        int r = vkWaitForFences(device, slotFences[i], true, 120_000_000_000L);
+        if (r != VK_SUCCESS)
+            throw new IllegalStateException("replay frame did not finish in 120 s (VkResult " + r + ")");
+        slotPending[i] = false;
+        for (HostBuf b : slotBufs.get(i))
+            freeHostBuffer(b);
+        slotBufs.get(i).clear();
+        List<Runnable> l = new ArrayList<>(slotLater.get(i));
+        slotLater.get(i).clear();
+        l.forEach(Runnable::run);
+    }
+
+    /** V-7: submit the slot being recorded, no wait; the next frame records into the next slot */
+    private void submitSlot() {
+        if (!recording)
+            return;
+        try (MemoryStack s = stackPush()) {
+            vkEndCommandBuffer(slotCmds[slot]);
+            recording = false;
+            vkResetFences(device, slotFences[slot]);
+            check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(slotCmds[slot])), slotFences[slot]), "vkQueueSubmit");
+        }
+        slotPending[slot] = true;
+        lastSubmitted = slot;
+        slot = (slot + 1) % inFlight;
+    }
+
+    /** V-7: deferred work goes to the slot recording now, else the last submitted one (nothing in flight: run now) */
+    private void deferred(Runnable r) {
+        int i = recording ? slot : lastSubmitted;
+        if (i >= 0 && (recording || slotPending[i]))
+            slotLater.get(i).add(r);
+        else
+            r.run();
     }
 
     // ------------------------------------------------------------------------------------------------ memory
@@ -227,7 +342,7 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     protected void releaseImage(long image, Object alloc, long[] views) {
-        later.add(() -> {
+        releaseLater(() -> {
             for (long v : views)
                 vkDestroyImageView(device, v, null);
             vkDestroyImage(device, image, null);
@@ -239,7 +354,10 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     protected void releaseLater(Runnable r) {
-        later.add(r);
+        if (inFlight > 1)
+            deferred(r);
+        else
+            later.add(r);
     }
 
     @Override
@@ -270,12 +388,21 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     protected void freeHostBufferAfterFrame(HostBuf b) {
-        frameBufs.add(b);
+        if (inFlight > 1)
+            deferred(() -> freeHostBuffer(b));
+        else
+            frameBufs.add(b);
     }
 
     // ------------------------------------------------------------------------------------------------ frame
 
     private void submitWait() {
+        if (inFlight > 1) { // V-7: everything submitted and complete (readback, close)
+            submitSlot();
+            for (int i = 0; i < inFlight; i++)
+                waitSlot(i);
+            return;
+        }
         if (!recording)
             return;
         try (MemoryStack s = stackPush()) {
@@ -297,6 +424,12 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     public void beginFrame() {
+        if (inFlight > 1) { // V-7: setup work stays in this frame's buffer (as in game); the slot's last use has completed
+            cmd();
+            vkResetDescriptorPool(device, slotPools[slot], 0);
+            resetUboRing(slot);
+            return;
+        }
         submitWait(); // setup work first, so the descriptor pool reset below cannot hit in-flight sets
         vkResetDescriptorPool(device, descPool, 0);
         resetUboRing(0);
@@ -312,6 +445,10 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     @Override
     public void endFrame() {
+        if (inFlight > 1) {
+            submitSlot();
+            return;
+        }
         submitWait();
         readQueries();
     }
@@ -423,15 +560,16 @@ public final class HeadlessVkBackend extends VkPackBackend {
             r.run();
         later.clear();
         vkDeviceWaitIdle(device);
+        if (inFlight > 1)
+            for (int i = 0; i < inFlight; i++) {
+                vkDestroyDescriptorPool(device, slotPools[i], null);
+                vkDestroyFence(device, slotFences[i], null);
+            }
         vkDestroyDescriptorPool(device, descPool, null);
         vkDestroyFence(device, fence, null);
         vkDestroyCommandPool(device, cmdPool, null);
         vkDestroyDevice(device, null);
-        if (messenger != 0)
-            EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
-        vkDestroyInstance(instance, null);
-        if (messengerCb != null)
-            messengerCb.free();
+        destroyInstanceObjects();
         memProps.free();
     }
 }
