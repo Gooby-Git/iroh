@@ -246,7 +246,9 @@ public abstract class DeviceManager {
             // the 1.2 struct's tail, bufferDeviceAddress in the SAME single 1.2 struct, + 3 extensions; else unchanged
             deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(stack, physicalDevice, deviceVulkan12Features, deviceVulkan12Features.pNext()));
             enabledFeatures += dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits(); // empty unless RT was requested
-            createInfo.ppEnabledExtensionNames(asPointerBuffer(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION)));
+            // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
+            java.util.List<java.nio.Buffer> extAllocs = new ArrayList<>();
+            createInfo.ppEnabledExtensionNames(heapNames(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION), extAllocs));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
@@ -255,18 +257,22 @@ public abstract class DeviceManager {
 
             PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
 
-            int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
-            if (res != VK_SUCCESS && dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled) {
-                // INT-4: a driver that offers the RT features but refuses the device with them: ONE line, RT off, retry
-                // once with exactly the int-3 chain and extensions (never fail a launch for an optional feature)
-                deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.unchain(deviceVulkan12Features, res));
-                createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));
-                enabledFeatures = enabledFeatures.substring(0, enabledFeatures.indexOf(" rt=")) + dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits();
-                res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
-            }
-            Vulkan.checkResult(res, "Failed to create logical device");
+            try {
+                int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
+                if (res != VK_SUCCESS && dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled) {
+                    // INT-4: a driver that offers the RT features but refuses the device with them: ONE line, RT off, retry
+                    // once with exactly the int-3 chain and extensions (never fail a launch for an optional feature)
+                    deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.unchain(deviceVulkan12Features, res));
+                    createInfo.ppEnabledExtensionNames(heapNames(Vulkan.REQUIRED_EXTENSION, extAllocs));
+                    enabledFeatures = enabledFeatures.substring(0, enabledFeatures.indexOf(" rt=")) + dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits();
+                    res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
+                }
+                Vulkan.checkResult(res, "Failed to create logical device");
 
-            vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+                vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+            } finally {
+                extAllocs.forEach(org.lwjgl.system.MemoryUtil::memFree);
+            }
             dev.elemore.iroh.rt.game.RtDeviceFeatures.deviceCreated(); // P5-2: no-op unless the RT features were chained
 
             graphicsQueue = new GraphicsQueue(stack, indices.graphicsFamily);
@@ -274,6 +280,18 @@ public abstract class DeviceManager {
             presentQueue = new PresentQueue(stack, indices.presentFamily);
             computeQueue = new ComputeQueue(stack, indices.computeFamily);
         }
+    }
+
+    /** H1A: heap pointer array + UTF-8 strings for extension names; every allocation is added to {@code allocs} for the caller to free. */
+    private static PointerBuffer heapNames(java.util.Collection<String> names, java.util.List<java.nio.Buffer> allocs) {
+        PointerBuffer pb = org.lwjgl.system.MemoryUtil.memAllocPointer(names.size());
+        allocs.add(pb);
+        for (String n : names) {
+            java.nio.ByteBuffer b = org.lwjgl.system.MemoryUtil.memUTF8(n);
+            allocs.add(b);
+            pb.put(b);
+        }
+        return pb.rewind();
     }
 
     private static PointerBuffer getRequiredExtensions() {
