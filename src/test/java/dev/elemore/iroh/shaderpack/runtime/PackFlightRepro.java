@@ -28,7 +28,9 @@ import static org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_GENERAL;
  * new = V-7. Serial (inFlight 1, HeadlessVkBackend's submit-and-wait) is run once for the old mode to show why
  * packThreadRepro could not see this. Barriers per frame are counted at the GpuBackend interface.
  * {@code ./gradlew packFlightRepro [-Pmode=old|new|both]}; last line "# packflight PASS|FAIL ..." (PASS = old > 0 hazards
- * with frames in flight, new 0 in every case, no other validation error).
+ * with frames in flight, new 0 in every case, no other validation error). The positive control (a deliberate
+ * cross-submission WAW, proves sync validation sees across submissions) runs with the old mode only, so mode=new is
+ * a clean run for a vkval harness.
  */
 public final class PackFlightRepro {
 
@@ -105,9 +107,11 @@ public final class PackFlightRepro {
                 System.out.println("# packflight-model-" + (o == 0 ? "old" : "new") + " " + p.name() + " violations " + rec.violations.size()
                         + (rec.violations.isEmpty() ? "" : " e.g. " + rec.violations.get(0)));
             }
-        int ctl = positiveControl();
-        System.out.println("# packflight-control cross-submission clear->clear with no barrier, 2 in flight: sync-hazards " + ctl
-                + (ctl > 0 ? " (sync validation sees hazards across submissions)" : " (BLIND: sync validation did not flag it)"));
+        boolean withOld = !mode.equals("new");
+        int ctl = withOld ? positiveControl() : -1; // a deliberate hazard: only with the old (negative-control) mode
+        if (withOld)
+            System.out.println("# packflight-control cross-submission clear->clear with no barrier, 2 in flight: sync-hazards " + ctl
+                    + (ctl > 0 ? " (sync validation sees hazards across submissions)" : " (BLIND: sync validation did not flag it)"));
         for (Result r : rs) {
             System.out.println(r.line());
             r.samples().stream().limit(2).forEach(s -> System.out.println("    " + (s.length() > 400 ? s.substring(0, 400) : s).replace('\n', ' ')));
@@ -116,7 +120,7 @@ public final class PackFlightRepro {
         int newHz = rs.stream().filter(r -> !r.old()).mapToInt(Result::hazards).sum();
         int other = rs.stream().mapToInt(Result::otherErrors).sum();
         boolean haveOld = rs.stream().anyMatch(Result::old), haveNew = rs.stream().anyMatch(r -> !r.old());
-        boolean pass = ctl > 0 && (!haveOld || oldHz > 0 && model[0] > 0) && (!haveNew || newHz == 0 && model[1] == 0) && other == 0;
+        boolean pass = (!haveOld || ctl > 0 && oldHz > 0 && model[0] > 0) && (!haveNew || newHz == 0 && model[1] == 0) && other == 0;
         System.out.println("# packflight " + (pass ? "PASS" : "FAIL") + " (old in-flight hazards " + (haveOld ? oldHz : "-") + ", new hazards "
                 + (haveNew ? newHz : "-") + ", other validation errors " + other + ")");
         System.exit(pass ? 0 : 1);
@@ -148,10 +152,18 @@ public final class PackFlightRepro {
             SyntheticScene syn = new SyntheticScene(pack.data(), pack.plan().frames.get(pack.folder()), pack.plan().resources.get(pack.folder()), W, H);
             PackFrameInputs in = syn;
             if (kase.startsWith("post")) {
-                int sc = sceneImage(gpu, "scene colour", "R8G8B8A8_UNORM");
+                // lavapipe has no BLIT_DST for B10G11R11 (Navidson colortex0; RQ-V6-a, fixed on card/V6AB, not here): the
+                // scene colour is two imported stand-ins, one in colortex0's format (copied in) and one in the output's
+                // format (presented into), so both transfers are copies (the same transfer accesses for sync validation).
+                // Imported images are not carried across frames, so splitting the scene colour changes nothing here.
+                String c0 = "R8G8B8A8_UNORM";
+                for (dev.elemore.iroh.shaderpack.graph.ResourcePlan.Image im : pack.plan().resources.get(pack.folder()).images)
+                    if (im.name.equals("colortex0"))
+                        c0 = im.vkFormat;
+                int sc = sceneImage(gpu, "scene colour", c0);
                 int sd = sceneImage(gpu, "scene depth", "D32_SFLOAT");
                 if (kase.equals("post"))
-                    ex.presentTo = sc;
+                    ex.presentTo = sceneImage(gpu, "scene colour (present)", "R8G8B8A8_UNORM");
                 Map<String, Integer> copies = new LinkedHashMap<>();
                 copies.put("colortex0", sc);
                 copies.put("depthtex0", sd);
