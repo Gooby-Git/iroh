@@ -265,7 +265,10 @@ public class Vulkan {
             int result = vkCreateInstance(createInfo, null, instancePtr);
             checkResult(result, "Failed to create instance");
 
-            return new VkInstance(instancePtr.get(0), createInfo);
+            final long handle = instancePtr.get(0);
+            final VkInstanceCreateInfo ci = createInfo;
+            // H1A: LWJGL reads every device extension (260 B each) onto the thread's MemoryStack inside this constructor; run it on a wide one.
+            return net.vulkanmod.vulkan.util.WideStack.call(() -> new VkInstance(handle, ci));
         } finally {
             if (debugCreateInfo != null) debugCreateInfo.free();
             createInfo.free();

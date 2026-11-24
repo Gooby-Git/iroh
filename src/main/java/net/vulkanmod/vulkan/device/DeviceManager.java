@@ -242,7 +242,16 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
             }
 
-            createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));
+            // H1A: extension name pointers and strings on the heap (freed below), so device creation does not scale with the list on the 64 KB stack
+            List<java.nio.ByteBuffer> extStrings = new ArrayList<>();
+            PointerBuffer extNames = org.lwjgl.system.MemoryUtil.memAllocPointer(Vulkan.REQUIRED_EXTENSION.size());
+            for (String n : Vulkan.REQUIRED_EXTENSION) {
+                java.nio.ByteBuffer b = org.lwjgl.system.MemoryUtil.memUTF8(n);
+                extStrings.add(b);
+                extNames.put(b);
+            }
+            extNames.rewind();
+            createInfo.ppEnabledExtensionNames(extNames);
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
@@ -251,10 +260,15 @@ public abstract class DeviceManager {
 
             PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
 
-            int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
-            Vulkan.checkResult(res, "Failed to create logical device");
+            try {
+                int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
+                Vulkan.checkResult(res, "Failed to create logical device");
 
-            vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+                vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+            } finally {
+                org.lwjgl.system.MemoryUtil.memFree(extNames);
+                extStrings.forEach(org.lwjgl.system.MemoryUtil::memFree);
+            }
 
             graphicsQueue = new GraphicsQueue(stack, indices.graphicsFamily);
             transferQueue = new TransferQueue(stack, indices.transferFamily);
