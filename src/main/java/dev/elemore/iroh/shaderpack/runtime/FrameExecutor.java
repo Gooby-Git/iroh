@@ -2088,9 +2088,11 @@ public final class FrameExecutor {
         access(rasterOver, "TRANSFER_READ");
         access(img, "TRANSFER_WRITE");
         gpu.blit(rasterOver, img);
+        recorded();
         access(img, "SAMPLED_READ");
         access(out, "ATTACHMENT_WRITE");
         gpu.draw(overDraw);
+        recorded();
         if (tracing) trace.add("raster-over composite (world-pass raster draws over the output)");
     }
 
@@ -2104,6 +2106,7 @@ public final class FrameExecutor {
         access(h, "TRANSFER_READ");
         access(dst, "TRANSFER_WRITE");
         gpu.blit(h, dst);
+        recorded();
         if (tracing) trace.add("blit " + key + " -> external");
     }
 
@@ -2115,6 +2118,7 @@ public final class FrameExecutor {
         access(src, "TRANSFER_READ");
         access(h, "TRANSFER_WRITE");
         gpu.blit(src, h);
+        recorded();
         if (tracing) trace.add("blit external -> " + target);
     }
 
@@ -2122,6 +2126,7 @@ public final class FrameExecutor {
     public void clearExternal(int image, float[] rgba) {
         access(image, "TRANSFER_WRITE");
         gpu.clear(image, rgba);
+        recorded();
         if (tracing) trace.add("clear external");
     }
 
