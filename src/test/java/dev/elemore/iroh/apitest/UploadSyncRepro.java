@@ -18,10 +18,26 @@ import java.nio.ByteOrder;
  *       must read the OLD bytes, pass 2 the NEW. The pre-frame path lands before the whole frame: pass 1 reads NEW.</li>
  *   <li>B, upload between frames (client tick, AFTER_PRESENT) into a buffer the frame in flight read: deferred to the next
  *       frame start (in-stream, ordered after that frame); legacy: on the transfer queue under the frame (check: WAR).</li>
- *   <li>C, upload inside the game's main pass (world stages) into a buffer this frame used: one pass break, in order; an
- *       untouched buffer takes the pre-frame path with no break.</li>
+ *   <li>C, upload inside the game's main pass (world stages) into a buffer this frame used: queued (US-REV: no pass
+ *       break of its own), recorded before the next api-4 work that reads it, in order; an untouched buffer takes the
+ *       pre-frame path.</li>
  *   <li>D, upload inside an open api-4 pass (Vista's per-use uniform elements): pre-frame as in api 4.1; distinct bytes
  *       are fine, the same bytes twice in one frame is reported by the check.</li>
+ * </ol>
+ * US-REV (review of 9793f7d), on a second device with TWO frames in flight ({@link HeadlessGpuDevice#setFramesInFlight}:
+ * frame command buffers are held until their slot comes round, the pre-frame batch is submitted at once, the worst legal
+ * schedule of the game's async transfer queue), so in-flight ordering is exercised, not only program order:
+ * <ol start="5">
+ *   <li>B2, B with the frame really in flight: the frame in flight reads the OLD bytes, the next frame the NEW.</li>
+ *   <li>E, a buffer read ONLY by the main join (Vista composite style), then a world-stage upload while that frame is in
+ *       flight: the frame in flight must read the OLD bytes (review B1, scenario 1).</li>
+ *   <li>F, the main join reads a buffer, then a world-stage upload into it in the same frame: the join reads the OLD
+ *       bytes (review B1, scenario 2).</li>
+ *   <li>G, a deferred upload still queued (its drain skipped by a pack world pass at frame start) and a second upload
+ *       into the same buffer once the frame that used it has finished: the second must win (review m1).</li>
+ *   <li>H, cost per frame of a realistic api-4 pattern (Vista: per-slot uploads in BEFORE_MAIN_PASS, its explicit
+ *       runOutsideMainPass, a per-slot composite uniform, the main join) plus a GL-port uploader writing K ranges of one
+ *       join-read buffer from a world stage: pass breaks, barriers and global barriers per frame (review M2).</li>
  * </ol>
  */
 public final class UploadSyncRepro {
@@ -42,6 +58,11 @@ public final class UploadSyncRepro {
             layout(std430, set = 0, binding = 1) writeonly buffer Dst { uint d[]; };
             void main() { d[gl_GlobalInvocationID.x] = s[gl_GlobalInvocationID.x]; }
             """;
+    static final String VS_FULL = "#version 450\nvoid main(){ vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);"
+            + " gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+    /** the main join's draw: red = the buffer's first word / 255 */
+    static final String FS_SHOW = "#version 450\nlayout(std430, set = 0, binding = 0) readonly buffer B { uint v[]; };\n"
+            + "layout(location = 0) out vec4 o;\nvoid main(){ o = vec4(float(v[0]) / 255.0, 0.0, 0.0, 1.0); }\n";
 
     static ByteBuffer words(int v) {
         ByteBuffer b = ByteBuffer.allocateDirect(16).order(ByteOrder.LITTLE_ENDIAN);
@@ -65,7 +86,7 @@ public final class UploadSyncRepro {
 
     static String routes(GpuCore core) {
         long[] r = core.uploadRoutes();
-        return "routes in-stream " + r[0] + " pre-frame " + r[1] + " pass-break " + r[2] + " deferred " + r[3] + " in-pass " + r[4];
+        return "routes in-stream " + r[0] + " pre-frame " + r[1] + " queued " + r[2] + " deferred " + r[3] + " in-pass " + r[4];
     }
 
     public static void main(String[] args) {
@@ -127,9 +148,9 @@ public final class UploadSyncRepro {
             boolean cOk = c1 == 3 && c2 == 4 && cy == 8;
             if (!cOk) wrong++;
             if (LEGACY) System.out.println("     C legacy: pass before the upload read " + c1 + " (program order: 3), after " + c2 + ", y " + cy);
-            else check("C main pass bound: used buffer -> pass break (route " + routeCx + ", breaks " + (dev.passBreaks - breaks0) + "), reads "
-                    + c1 + " then " + c2 + "; untouched buffer -> pre-frame, no break (route " + routeCy + "), y = " + cy,
-                    cOk && routeCx == GpuCore.ROUTE_PASS_BREAK && routeCy == GpuCore.ROUTE_PRE_FRAME && dev.passBreaks - breaks0 == 1 && core.uploadHazards() == hz0);
+            else check("C main pass bound: used buffer -> queued (route " + routeCx + ", pass breaks " + (dev.passBreaks - breaks0) + "), reads "
+                    + c1 + " then " + c2 + "; untouched buffer -> pre-frame (route " + routeCy + "), y = " + cy,
+                    cOk && routeCx == GpuCore.ROUTE_PASS_BREAK && routeCy == GpuCore.ROUTE_PRE_FRAME && dev.passBreaks - breaks0 == 0 && core.uploadHazards() == hz0);
 
             // ---- D: inside an open api-4 pass (per-use uniform elements)
             if (!LEGACY) {
@@ -160,14 +181,238 @@ public final class UploadSyncRepro {
             GpuCore.uninstall();
             dev.close();
         }
+        long legacyHazards = core.uploadHazards();
+        wrong += inFlight();
         if (LEGACY) {
-            // negative control: the old path must show the wrong order (A, C) and the check must see the hazards
-            boolean reproduced = wrong >= 2 && core.uploadHazards() >= 2;
-            System.out.println("# uploadsync " + (reproduced ? "PASS" : "FAIL") + " legacy negative control: wrong reads " + wrong + ", hazards " + core.uploadHazards()
+            // negative control: the old path must show the wrong order (A, C, E, F, G) and the check must see the hazards
+            boolean reproduced = wrong >= 2 && legacyHazards >= 2;
+            System.out.println("# uploadsync " + (reproduced ? "PASS" : "FAIL") + " legacy negative control: wrong reads " + wrong + ", hazards " + legacyHazards
                     + (reproduced ? " (reproduced)" : " (NOT reproduced)"));
             System.exit(reproduced ? 0 : 1);
         }
         System.out.println("# uploadsync " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
+    }
+
+    // ============================================================================================ US-REV: frames in flight
+
+    static HeadlessGpuDevice fdev;
+    static GpuCore fcore;
+
+    /** the game's frame order: fence wait, GpuLifecycle.frameStart, vkBeginCommandBuffer, frameRecordingStarted */
+    static void begin(boolean drainBlocked) {
+        fdev.beginFrame();
+        fdev.betweenFrames = true;      // GpuLifecycle.frameStart runs before the frame buffer is begun
+        fcore.frameStart();
+        fdev.betweenFrames = false;
+        fdev.mainPassBound = drainBlocked; // a pack world pass live at frame start: no in-frame copy possible
+        fcore.frameRecordingStarted();
+        fdev.mainPassBound = false;
+    }
+
+    /** BEFORE_MAIN_PASS hooks ran: Renderer settles, then the world stages run with the main pass bound */
+    static void worldStages() {
+        fcore.settleAll();
+        fdev.mainPassBound = true;
+    }
+
+    static void end() {
+        fdev.mainPassBound = false;
+        fdev.endFrame();
+    }
+
+    static int red(RenderTargetHandle t) {
+        return IrohTargets.readback(t).get(0) & 0xFF;
+    }
+
+    static void join(IndirectPipelineHandle show, GpuBuffer... reads) {
+        IrohTargets.beginRendering(IrohTargets.mainColor(), IrohTargets.mainDepth(), false, null, 1f, reads);
+        IrohDraw.draw(show, new IrohCompute.Binding[]{IrohCompute.Binding.read(reads[0])}, new GpuTexture[0], null, 3, 1);
+        IrohTargets.endRendering();
+    }
+
+    /** E..H on a device with two frames in flight; returns the wrong reads (legacy counts them). */
+    static int inFlight() {
+        int wrong = 0;
+        fdev = new HeadlessGpuDevice(1L << 30, false);
+        fdev.setFramesInFlight(2);
+        fcore = GpuCore.install(fdev);
+        fcore.resize(4, 4);
+        try {
+            begin(false);
+            ComputePipelineHandle cp = IrohCompute.pipeline(OWNER, "copy", COPY, 2, 0);
+            IndirectPipelineHandle show = IrohDraw.indirectPipeline(OWNER, "show", VS_FULL, FS_SHOW, 1, 0, 0, IrohTargets.Format.RGBA8,
+                    IrohTargets.Format.DEPTH32F, org.lwjgl.vulkan.VK10.VK_COMPARE_OP_ALWAYS, false, IrohTargets.Blend.NONE);
+            RenderTargetHandle mc = IrohTargets.create(OWNER, "main colour", IrohTargets.Format.RGBA8, 4, 4);
+            RenderTargetHandle md = IrohTargets.create(OWNER, "main depth", IrohTargets.Format.DEPTH32F, 4, 4);
+            fcore.standInMain(mc, md);
+            GpuBuffer xe = buf("e"), xf = buf("f"), xg = buf("g"), out = buf("out"), xb = buf("b2"), out2 = buf("out2");
+            IrohBuffers.upload(xe, 0, words(10));
+            IrohBuffers.upload(xf, 0, words(30));
+            IrohBuffers.upload(xb, 0, words(5));
+            end();
+
+            // ---- B2: an upload between frames while the frame that read the buffer is really in flight
+            begin(false);
+            IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(xb), IrohCompute.Binding.write(out)}, null, 1, 1, 1);
+            end();                            // in flight
+            fdev.betweenFrames = true;        // client tick
+            int routeB2 = fcore.uploadRoute(xb);
+            IrohBuffers.upload(xb, 0, words(6));
+            fdev.betweenFrames = false;
+            begin(false);
+            IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(xb), IrohCompute.Binding.write(out2)}, null, 1, 1, 1);
+            end();
+            int b1 = read(fdev, fcore, out), b2 = read(fdev, fcore, out2);
+            boolean b2Ok = b1 == 5 && b2 == 6;
+            if (!b2Ok) wrong++;
+            if (LEGACY) System.out.println("     B2 legacy: the frame in flight read " + b1 + " (want 5), the next " + b2);
+            else check("B2 upload between frames, the frame that read it really in flight: route " + routeB2 + ", that frame read " + b1
+                    + " (want 5), the next " + b2 + " (want 6)", b2Ok && routeB2 == GpuCore.ROUTE_DEFERRED);
+
+            // ---- E: read only by the main join, then an upload while that frame is in flight
+            begin(false);
+            worldStages();
+            join(show, xe);                   // frame N reads xe (10) through the main join only
+            end();                            // frame N in flight
+            begin(false);                     // frame N+1: frames up to N-1 finished
+            worldStages();
+            int routeE = fcore.uploadRoute(xe);
+            IrohBuffers.upload(xe, 0, words(20)); // a world-stage upload
+            end();
+            int e1 = red(mc);                 // what frame N's join drew
+            begin(false);
+            IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(xe), IrohCompute.Binding.write(out)}, null, 1, 1, 1);
+            int e2 = read(fdev, fcore, out);
+            end();
+            boolean eOk = e1 == 10 && e2 == 20;
+            if (!eOk) wrong++;
+            if (LEGACY) System.out.println("     E legacy: frame in flight read " + e1 + " (want 10), later " + e2);
+            else check("E main-join-only buffer, upload while that frame is in flight: route " + routeE + ", the frame in flight read " + e1
+                    + " (want 10), the next frame " + e2 + " (want 20)", eOk && routeE != GpuCore.ROUTE_PRE_FRAME);
+
+            // ---- F: the main join reads it, then an upload in the same frame
+            begin(false);
+            worldStages();
+            join(show, xf);                   // reads 30
+            int routeF = fcore.uploadRoute(xf);
+            IrohBuffers.upload(xf, 0, words(40));
+            end();
+            int f1 = red(mc);
+            begin(false);
+            IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(xf), IrohCompute.Binding.write(out)}, null, 1, 1, 1);
+            int f2 = read(fdev, fcore, out);
+            end();
+            boolean fOk = f1 == 30 && f2 == 40;
+            if (!fOk) wrong++;
+            if (LEGACY) System.out.println("     F legacy: the join before the upload read " + f1 + " (want 30), later " + f2);
+            else check("F main join then a same-frame upload: route " + routeF + ", the join read " + f1 + " (want 30), the next frame " + f2
+                    + " (want 40)", fOk && routeF != GpuCore.ROUTE_PRE_FRAME);
+
+            // ---- G: a deferred upload whose drain was skipped, then a second upload into the same buffer
+            begin(false);
+            IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(xg), IrohCompute.Binding.write(out)}, null, 1, 1, 1);
+            end();                            // xg used by the frame now in flight
+            fdev.betweenFrames = true;
+            IrohBuffers.upload(xg, 0, words(50)); // U1: deferred
+            fdev.betweenFrames = false;
+            begin(true);                      // the pack world pass is live at frame start: U1 cannot drain
+            end();
+            fdev.beginFrame();
+            fdev.betweenFrames = true;
+            fcore.frameStart();               // the frame that used xg has finished now
+            int routeG = fcore.uploadRoute(xg);
+            IrohBuffers.upload(xg, 0, words(60)); // U2, before the frame buffer is begun
+            fdev.betweenFrames = false;
+            fcore.frameRecordingStarted();
+            IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(xg), IrohCompute.Binding.write(out)}, null, 1, 1, 1);
+            int g = read(fdev, fcore, out);
+            end();
+            if (g != 60) wrong++;
+            if (LEGACY) System.out.println("     G legacy: last upload 60, the frame read " + g);
+            else check("G deferred upload still queued, second upload into the same buffer: route " + routeG + ", the frame read " + g
+                    + " (want 60: program order)", g == 60);
+
+            if (!LEGACY) cost(cp, show, mc);
+            fcore.freeOwner(OWNER);
+            fdev.flush();
+            check("frames in flight: all device memory returned", fcore.ownerResources(OWNER) == 0);
+        } finally {
+            GpuCore.uninstall();
+            fdev.close();
+        }
+        return wrong;
+    }
+
+    static final int K = 8, FRAMES = 6;
+
+    /** H: per-frame pass breaks / barriers of a realistic pattern; uploaders after Vista's break (worst) and before it. */
+    static void cost(ComputePipelineHandle cp, IndirectPipelineHandle show, RenderTargetHandle mc) {
+        for (boolean early : new boolean[]{false, true}) {
+            int f = fdev.framesInFlight();
+            GpuBuffer[] jobs = new GpuBuffer[f], ub = new GpuBuffer[f];
+            for (int i = 0; i < f; i++) {
+                jobs[i] = buf("jobs " + i);
+                ub[i] = buf("composite uniforms " + i);
+            }
+            GpuBuffer dyn = IrohBuffers.create(OWNER, "gl port table", 16L * K, IrohBuffers.STORAGE), scratch = buf("scratch");
+            long[] r0 = fcore.uploadRoutes();
+            int br0 = 0, ba0 = 0, gb0 = 0;
+            for (int fr = 0; fr < FRAMES + 2; fr++) {
+                if (fr == 2) { // two warm-up frames: every buffer has been read by a join / dispatch once
+                    br0 = fdev.passBreaks;
+                    ba0 = fdev.barriers;
+                    gb0 = fdev.globalBarriers;
+                    r0 = fcore.uploadRoutes();
+                }
+                begin(false);
+                int slot = IrohBuffers.frameSlot() % f;
+                IrohBuffers.upload(jobs[slot], 0, words(fr));          // BEFORE_MAIN_PASS (Vista prepare)
+                IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(jobs[slot]), IrohCompute.Binding.write(scratch)}, null, 1, 1, 1);
+                worldStages();
+                Runnable glPort = () -> {
+                    for (int k = 0; k < K; k++) IrohBuffers.upload(dyn, 16L * k, words(value(fr0(), k)));
+                };
+                frameValue = 100 + fr;
+                if (early) glPort.run();
+                IrohTargets.runOutsideMainPass(() ->                     // Vista render: its own explicit break
+                        IrohCompute.dispatch(cp, new IrohCompute.Binding[]{IrohCompute.Binding.read(jobs[slot]), IrohCompute.Binding.write(scratch)}, null, 1, 1, 1));
+                if (!early) glPort.run();
+                IrohBuffers.upload(ub[slot], 0, words(fr));              // composite uniform, per slot
+                IrohTargets.beginRendering(IrohTargets.mainColor(), IrohTargets.mainDepth(), false, null, 1f, dyn, ub[slot]);
+                IrohDraw.draw(show, new IrohCompute.Binding[]{IrohCompute.Binding.read(dyn)}, new GpuTexture[0], null, 3, 1);
+                IrohTargets.endRendering();
+                end();
+            }
+            long[] r = fcore.uploadRoutes();
+            double n = FRAMES;
+            int px = red(mc);
+            System.out.printf("     H %s: per frame pass breaks %.1f, barriers %.1f, global barriers %.1f; uploads in-stream %d pre-frame %d queued %d"
+                            + " deferred %d in-pass %d over %d frames; last join read %d (want %d)%n",
+                    early ? "uploader before Vista's break" : "uploader after Vista's break (worst)", (fdev.passBreaks - br0) / n,
+                    (fdev.barriers - ba0) / n, (fdev.globalBarriers - gb0) / n, r[0] - r0[0], r[1] - r0[1], r[2] - r0[2], r[3] - r0[3], r[4] - r0[4],
+                    FRAMES, px, frameValue);
+            int breaks = (int) Math.round((fdev.passBreaks - br0) / n);
+            double barriers = (fdev.barriers - ba0) / n;
+            // before US-REV (measured on int-4c 0cccf9d with this harness): 9 breaks, 13.2 barriers, 10 global barriers per frame
+            check("H cost (" + (early ? "uploader before Vista's break" : "uploader after it") + "): " + K + " world-stage uploads cost at most one pass break"
+                    + " per frame beyond Vista's own (" + breaks + " breaks/frame), one barrier for the run of copies (" + barriers + "/frame),"
+                    + " no global barrier from them, join reads this frame's value",
+                    breaks <= (early ? 1 : 2) && barriers <= (early ? 6 : 7) && px == frameValue && (fdev.globalBarriers - gb0) <= FRAMES * 2);
+            for (GpuBuffer b : jobs) b.close();
+            for (GpuBuffer b : ub) b.close();
+            dyn.close();
+            scratch.close();
+        }
+    }
+
+    static int frameValue;
+
+    static int fr0() {
+        return frameValue;
+    }
+
+    static int value(int v, int k) {
+        return k == 0 ? v : v + k;
     }
 }
