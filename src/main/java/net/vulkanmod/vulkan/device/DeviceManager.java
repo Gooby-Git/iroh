@@ -253,10 +253,14 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
             }
 
+            // P2-10: optional VK_KHR_present_id + present_wait pacing (off unless -Diroh.presentWait=true and offered)
+            java.util.List<String> deviceExts = new ArrayList<>(Vulkan.REQUIRED_EXTENSION);
+            net.vulkanmod.vulkan.PresentPacer.configure(stack, physicalDevice, deviceExts, deviceVulkan12Features);
+
             // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
             java.util.List<Runnable> extAllocs = new ArrayList<>();
             try {
-                createInfo.ppEnabledExtensionNames(heapNames(Vulkan.REQUIRED_EXTENSION, extAllocs));
+                createInfo.ppEnabledExtensionNames(heapNames(deviceExts, extAllocs));
 
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 

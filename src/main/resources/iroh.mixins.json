@@ -68,6 +68,7 @@
     "render.entity.model.ModelPartM",
     "render.frame.MinecraftMixin",
     "render.frame.TaskBudgetM",
+    "render.frame.LimiterM",
     "render.frame.RenderSystemMixin",
     "render.frapi.BakedModelM",
     "render.frapi.ItemRendererAccessor",

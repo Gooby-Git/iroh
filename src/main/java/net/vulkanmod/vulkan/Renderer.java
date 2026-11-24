@@ -545,10 +545,13 @@ public class Renderer {
             presentInfo.pSwapchains(stack.longs(swapChain.getId()));
 
             presentInfo.pImageIndices(stack.ints(imageIndex));
+            PresentPacer.attach(stack, presentInfo); // P2-10: optional present_id, no-op by default
 
             if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.PRESENT);
             vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo), "vkQueuePresentKHR");
             if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.PRESENT);
+
+            if (vkResult == VK_SUCCESS) PresentPacer.afterPresent(device, swapChain.getId()); // P2-10: optional, no-op by default
 
             if (vkResult == VK_ERROR_OUT_OF_DATE_KHR || vkResult == VK_SUBOPTIMAL_KHR || swapChainUpdate) {
                 swapChainUpdate = true;

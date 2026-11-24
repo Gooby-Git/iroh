@@ -191,6 +191,16 @@ tasks.register('hitchesTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// P2-10: L7 precise limiter deadline math, offline. ./gradlew frameLimiterTest ; last line "# frameLimiter PASS n/n"
+tasks.register('frameLimiterTest', JavaExec) {
+	group = 'verification'
+	description = 'Frame limiter deadline math: on time, late 0.5 / 3 periods, cap changes, unlimited, jitter simulation'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.perf.FrameLimiterTest'
+	jvmArgs '-ea'
+}
+
 // perf/frame-attrib: -Diroh.slowFrames ring/record/summary on a fake clock. ./gradlew slowFramesTest
 tasks.register('slowFramesTest', JavaExec) {
 	group = 'verification'
