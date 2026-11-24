@@ -25,6 +25,16 @@ public final class RecordingBackend implements GpuBackend {
     private final List<String> pipelineIds = new ArrayList<>();
     private final Map<Integer, String> dirty = new HashMap<>(); // image -> "W" (written) or "R" (read) since last barrier
     private boolean inFrame;
+    /**
+     * V-7: model frames in flight (the in-game contract): a frame does not end the previous frame's hazards. What owned
+     * images saw after the previous frame's last barrier stays pending until ANY barrier (VkPackBackend's barrier is one
+     * full memory barrier); a conflicting access before it is a violation. Imported images are excluded (their owner
+     * synchronises them between pack frames).
+     */
+    public boolean framesInFlight;
+    private final Map<Integer, String> prevDirty = new HashMap<>();
+    /** accesses since the last barrier on ANY image (W wins): what the next frame inherits */
+    private final Map<Integer, String> tail = new HashMap<>();
     /** V-6: images created outside a frame; their creation clear (VkPackBackend zeroes every new image) is a write the
      *  next frame must barrier: in game the setup is recorded into the SAME command buffer as that frame */
     private final Set<Integer> createdOutside = new HashSet<>();
@@ -112,7 +122,7 @@ public final class RecordingBackend implements GpuBackend {
         calls.add("createImage " + d.name() + " " + d.vkFormat() + " " + d.width() + "x" + d.height() + "x" + d.depth() + " mips " + d.mips());
         int h = imageDescs.size() - 1;
         if (inFrame)
-            dirty.put(h, "W"); // V-6: the creation clear is a transfer write
+            { dirty.put(h, "W"); tail.put(h, "W"); } // V-6: the creation clear is a transfer write
         else
             createdOutside.add(h);
         return h;
@@ -253,9 +263,16 @@ public final class RecordingBackend implements GpuBackend {
         notInside("beginFrame");
         frameNo++;
         inFrame = true;
+        prevDirty.clear();
+        if (framesInFlight)
+            tail.forEach((h, k) -> {
+                if (!imported.contains(h))
+                    prevDirty.put(h, k);
+            });
+        tail.clear();
         dirty.clear();
         for (int h : createdOutside)
-            dirty.put(h, "W");
+            { dirty.put(h, "W"); tail.put(h, "W"); }
         createdOutside.clear();
         calls.add("beginFrame");
     }
@@ -264,6 +281,8 @@ public final class RecordingBackend implements GpuBackend {
     public void barrier(int image, String from, String to) {
         notInside("barrier");
         dirty.remove(image);
+        prevDirty.clear(); // one full memory barrier covers every earlier access
+        tail.clear();
         calls.add("barrier " + n(image) + " " + from + " -> " + to);
     }
 
@@ -271,7 +290,10 @@ public final class RecordingBackend implements GpuBackend {
         use(image, what);
         if ("W".equals(dirty.get(image)))
             violations.add(what + " reads " + n(image) + " written since its last barrier");
+        else if ("W".equals(prevDirty.get(image)))
+            violations.add(what + " reads " + n(image) + " written by the previous frame after its last barrier (frames in flight)");
         dirty.putIfAbsent(image, "R");
+        tail.putIfAbsent(image, "R");
     }
 
     private void write(int image, String what) {
@@ -280,7 +302,10 @@ public final class RecordingBackend implements GpuBackend {
             mipsFresh.remove(image);
         if (dirty.containsKey(image))
             violations.add(what + " writes " + n(image) + " used since its last barrier (" + dirty.get(image) + ")");
+        else if (prevDirty.containsKey(image))
+            violations.add(what + " writes " + n(image) + " used by the previous frame after its last barrier (" + prevDirty.get(image) + ", frames in flight)");
         dirty.put(image, "W");
+        tail.put(image, "W");
     }
 
     @Override
