@@ -491,6 +491,20 @@ tasks.register('velocityGoldenTest', JavaExec) {
 	doFirst { useLavapipe(it) }
 }
 
+// UPLOAD-SYNC (RQ-R1-a): api-4 upload order per consumer type on lavapipe. ./gradlew uploadSyncRepro ; "# uploadsync PASS n/n".
+// -Pmode=legacy = the pre-UPLOAD-SYNC path (negative control: wrong values + hazards; the harness line still says PASS when reproduced)
+tasks.register('uploadSyncRepro', JavaExec) {
+	group = 'verification'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.apitest.UploadSyncRepro'
+	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	def legacy = project.findProperty('mode') == 'legacy'
+	if (legacy) jvmArgs '-Diroh.api4.upload=preframe'
+	ext.syncval = true // F-2b settings; the layer is forced on (HeadlessGpuDevice does not load it): messages on stdout "Validation Error"
+	doFirst { useLavapipe(it); it.environment 'VK_LOADER_LAYERS_ENABLE', 'VK_LAYER_KHRONOS_validation' }
+}
+
 // P4-2a native FSR library (CI-style; not part of build): ./gradlew fsrNative [-PfsrArgs=--linux-only]
 tasks.register('fsrNative', Exec) {
 	group = 'build'

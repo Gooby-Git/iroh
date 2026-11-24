@@ -407,6 +407,7 @@ public class Renderer {
         net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
         // api 4 (card V-M1): BEFORE_MAIN_PASS: the frame command buffer records, no render pass is bound (mod compute,
         // uploads, own passes). Fires every frame, also on menus.
+        { var gc = dev.elemore.iroh.gpu.GpuCore.orNull(); if (gc != null) gc.frameRecordingStarted(); } // UPLOAD-SYNC: deferred api-4 uploads land first
         dev.elemore.iroh.apiimpl.FrameHooks.dispatch(dev.elemore.iroh.api.FrameStage.BEFORE_MAIN_PASS);
         { var gc = dev.elemore.iroh.gpu.GpuCore.orNull(); if (gc != null) gc.settleAll(); } // api 4.1: writes visible to main-pass reads
         mainPass.begin(commandBuffer, stack);
@@ -1094,6 +1095,12 @@ public class Renderer {
 
     public static boolean isRecording() {
         return INSTANCE.recordingCmds;
+    }
+
+    /** UPLOAD-SYNC: a frame command buffer is recording (no log, no renderer = false) */
+    public static boolean isRecordingSafe() {
+        Renderer r = INSTANCE;
+        return r != null && r.recordingCmds && r.currentCmdBuffer != null;
     }
 
     public static void scheduleSwapChainUpdate() {
