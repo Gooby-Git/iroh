@@ -1346,6 +1346,7 @@ tasks.register('packFullVkRepro', JavaExec) {
 		systemProperty 'pfv.mode', m
 		if (project.hasProperty('stacks')) systemProperty 'iroh.vkval.stacks', 'true'
 		if (project.hasProperty('neg')) systemProperty 'pfv.neg', project.property('neg')
+		if (project.hasProperty('features')) systemProperty 'pfv.features', project.property('features')
 		// int-4c vkval: the negative controls (old / both / -Pneg) log under their own label (meant to fail, like packFlightRepro-old)
 		useLavapipe(it, m == 'new' && !project.hasProperty('neg') ? null : 'packFullVkRepro-' + m)
 	}
