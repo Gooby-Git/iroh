@@ -41,6 +41,13 @@ public final class PackFullVkRepro {
     static final List<String> NEW_ENTITY = List.of("Position", "Color", "UV0", "UV1", "UV2", "Normal");
     static final List<String> POS = List.of("Position");
     static final int FRAMES_PER_STEP = 2;
+    /**
+     * -Pvalidate=gpuav (useLavapipe sets ti.vkval): GPU-AV's instrumented shaders SIGSEGV inside lavapipe's JIT (si_addr
+     * 0x4, libvulkan_lvp thread) on the GAME feature set, with or without the renderer draws, and run clean on ALL
+     * features (2026-11-24; same lavapipe/GPU-AV crash class as int-4c's fsrVelocityReplay / rtReplay c..i). The GPU-AV
+     * pass therefore uses ALL; the GAME set is checked by the core + sync run.
+     */
+    static final boolean GPUAV = "gpuav".equals(System.getProperty("ti.vkval"));
 
     record Result(boolean old, Map<String, Integer> classes, List<String> samples, List<String> leakNotes, int knownBlit, boolean leakAtDestroy,
                   int zeroAfterDisable, int exceptions) {}
@@ -249,7 +256,8 @@ public final class PackFullVkRepro {
     static Result run(PackData data, PackPlan plan, boolean old) {
         FrameExecutor.keepStorageBuffersForTest = neg(old, "ssbo");
         VkPackBackend.skipStoreCheckForTest = neg(old, "store");
-        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true, 2, neg(old, "store") ? HeadlessVkBackend.Features.GAME_NO_PACK : HeadlessVkBackend.Features.GAME);
+        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true, 2, neg(old, "store") ? HeadlessVkBackend.Features.GAME_NO_PACK
+                : HeadlessVkBackend.Features.valueOf(System.getProperty("pfv.features", GPUAV ? "ALL" : "GAME")));
         List<String> leakNotes = new ArrayList<>();
         int exceptions = 0;
         int nonZero = 0;
