@@ -1,0 +1,3 @@
+# B-3B: the glowing-entity class is drawn by gbuffers_entities even when the pack ships gbuffers_entities_glowing (Iris ignores it)
+json graph.json folders.<root>.frame.drawnBy.entities_glowing = gbuffers_entities
+json graph.json folders.<root>.frame.drawnBy.entities = gbuffers_entities

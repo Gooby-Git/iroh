@@ -1,0 +1,7 @@
+# B-3B: Iris ignores gbuffers_entities_glowing (public docs, iris-loader.md section 19): the file is not an Iris program,
+# glowing entities are drawn by gbuffers_entities (parity target is Iris, not OptiFine)
+pass gbuffers_entities
+json pack.json programs.folders.<root>.programs.gbuffers_entities_glowing.family = "EXTRA"
+json pack.json programs.folders.<root>.programs.gbuffers_entities.family = "GBUFFERS"
+json pack.json programs.folders.<root>.drawnBy.gbuffers_entities = "gbuffers_entities"
+json pack.json programs.folders.<root>.drawnBy.gbuffers_entities_glowing = null
