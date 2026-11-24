@@ -59,8 +59,11 @@ public class AreaBuffer {
     int segments = 0;
     /** P2-4 stats: bytes the grows copied (tests, memStats) */
     long grows, grownCopyBytes;
-    /** P2-4: grows of every area buffer (render thread; the intake budget skips learning from a section that grew one) */
-    public static long totalGrows;
+    /**
+     * P2-4: device buffer creations + grows of every area buffer (render thread; the intake budget does not learn from a
+     * section during which one happened: a rare, much larger cost than the bytes predict).
+     */
+    public static long bufferEvents;
 
     public AreaBuffer(Usage usage, int elementCount, int elementSize) {
         this(usage, elementCount, elementSize, GAME);
@@ -81,6 +84,7 @@ public class AreaBuffer {
     }
 
     private Buffer allocateBuffer() {
+        bufferEvents++;
         boolean arena = this.ops.arena();
         if (!arena)
             return this.ops.allocate(this.usage, this.size, false);
@@ -207,7 +211,7 @@ public class AreaBuffer {
             this.grownCopyBytes += Math.min(this.buffer.getBufferSize(), dst.getBufferSize());
         }
         this.grows++;
-        totalGrows++;
+        bufferEvents++;
 
         // TODO: moving only used segments causes corruption
 //        moveUsedSegments(dst);

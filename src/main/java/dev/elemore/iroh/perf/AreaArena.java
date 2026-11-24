@@ -158,7 +158,10 @@ public final class AreaArena {
     private static final LinkedBlockingQueue<Integer> requests = new LinkedBlockingQueue<>();
     private static final ConcurrentLinkedQueue<Raw> ready = new ConcurrentLinkedQueue<>();
     private static Thread worker;
-    private static volatile boolean stopWorker;
+    private static java.util.concurrent.atomic.AtomicBoolean workerStop;
+    /** the thread that owns the pool (set at the first take); trims from other threads are deferred to it */
+    private static volatile Thread renderThread;
+    private static volatile boolean trimRequested;
     // stats (memStats, slow frames)
     public static int syncAllocs, prefetched, prefetchRefused;
 
@@ -185,6 +188,7 @@ public final class AreaArena {
      * synchronous allocation (counted). Asks the prefetch thread for this class and the next one.
      */
     public static Buffer take(long minBytes) {
+        renderThread = Thread.currentThread();
         Pool<ArenaBuffer> p = pool();
         drainReady(p);
         int c = classOf(minBytes);
@@ -234,42 +238,51 @@ public final class AreaArena {
     /** Render thread: buffers the prefetch thread finished go into the pool (registered with MemoryManager here). */
     private static void drainReady(Pool<ArenaBuffer> p) {
         for (Raw r; (r = ready.poll()) != null; ) {
-            outstanding[r.cls]--;
-            outstandingBytes -= classBytes(r.cls);
+            // max(0): a result can arrive after worldUnloaded reset the counts (a stop that timed out)
+            outstanding[r.cls] = Math.max(0, outstanding[r.cls] - 1);
+            outstandingBytes = Math.max(0, outstandingBytes - classBytes(r.cls));
             if (r.id == VK_NULL_HANDLE) continue; // refused / failed: nothing to keep
             ArenaBuffer b = new ArenaBuffer(r.cls, MemoryTypes.GPU_MEM);
             MemoryManager.getInstance().adoptBuffer(b, r.id, r.allocation, classBytes(r.cls), true);
-            if (!worldOpen || !p.put(r.cls, b)) b.scheduleFree();
+            // review a64133f #4: after a trim / under memory pressure a late prefetch is not kept
+            if (!worldOpen || !dev.elemore.iroh.memory.MemoryGuard.allowOptional(0) || !p.put(r.cls, b)) b.scheduleFree();
             else prefetched++;
         }
     }
 
     /** Render thread, once per frame from MemoryGuard.tick: collect finished prefetches. */
     public static void frameTick() {
-        if (pool == null || ready.isEmpty()) return;
-        drainReady(pool);
+        if (pool == null) return;
+        if (trimRequested) {
+            trimRequested = false;
+            trim();
+        }
+        if (!ready.isEmpty()) drainReady(pool);
     }
 
     private static void ensureWorker() {
         if (worker != null && worker.isAlive()) return;
-        stopWorker = false;
-        worker = new Thread(AreaArena::workerLoop, "Iroh-AreaArena");
+        var stop = new java.util.concurrent.atomic.AtomicBoolean(); // per thread: a stop that timed out never revives it
+        workerStop = stop;
+        worker = new Thread(() -> workerLoop(stop), "Iroh-AreaArena");
         worker.setDaemon(true);
         worker.setPriority(Thread.MIN_PRIORITY);
         worker.start();
     }
 
-    private static void workerLoop() {
-        while (!stopWorker) {
+    private static void workerLoop(java.util.concurrent.atomic.AtomicBoolean stop) {
+        while (!stop.get()) {
             int c;
             try {
                 c = requests.take();
             } catch (InterruptedException e) {
                 break;
             }
-            if (stopWorker) {
+            // review a64133f #2: no prefetch once stopping or once the memory guard refuses optional memory
+            if (stop.get() || !dev.elemore.iroh.memory.MemoryGuard.allowOptional(classBytes(c))) {
                 ready.add(new Raw(c, VK_NULL_HANDLE, 0));
-                break;
+                if (stop.get()) break;
+                continue;
             }
             ready.add(allocateRaw(c));
         }
@@ -301,13 +314,15 @@ public final class AreaArena {
     private static void stopWorker() {
         Thread w = worker;
         if (w == null) return;
-        stopWorker = true;
+        workerStop.set(true);
         w.interrupt();
         try {
             w.join(5000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        if (w.isAlive()) // inside vmaCreateBuffer for > 5 s: it exits after that call (own stop flag); its result is freed by a later drain
+            net.vulkanmod.Initializer.LOGGER.warn("Iroh: area arena prefetch thread did not stop within 5 s");
         worker = null;
         requests.clear();
     }
@@ -331,7 +346,12 @@ public final class AreaArena {
     /** Memory guard trim / world unload: every pooled buffer is freed (epoch gated, as any buffer). */
     public static void trim() {
         if (pool == null) return;
-        frameTick();
+        Thread rt = renderThread;
+        if (rt != null && Thread.currentThread() != rt) { // review a64133f #1: the pool belongs to the render thread
+            trimRequested = true;
+            return;
+        }
+        if (!ready.isEmpty()) drainReady(pool);
         for (ArenaBuffer b : pool.drain()) b.scheduleFree();
     }
 

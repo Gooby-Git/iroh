@@ -286,14 +286,14 @@ public class TaskDispatcher {
             flag = true;
             n++;
             long s0 = predict ? System.nanoTime() : 0;
-            long grows0 = predict ? net.vulkanmod.render.chunk.buffer.AreaBuffer.totalGrows : 0;
+            long grows0 = predict ? net.vulkanmod.render.chunk.buffer.AreaBuffer.bufferEvents : 0;
             try {
                 doSectionUpdate(result);
             } finally {
                 releaseAll(result); // idempotent: whatever the upload did not consume goes back
             }
             if (predict)
-                this.intakeBudget.observe(nextBytes, System.nanoTime() - s0, net.vulkanmod.render.chunk.buffer.AreaBuffer.totalGrows != grows0);
+                this.intakeBudget.observe(nextBytes, System.nanoTime() - s0, net.vulkanmod.render.chunk.buffer.AreaBuffer.bufferEvents != grows0);
         }
         if (dev.elemore.iroh.diag.SlowFrames.ON) {
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SECTIONS, n);
