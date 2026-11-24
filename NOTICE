@@ -41,3 +41,5 @@ card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh co
   2eabf9a "Prevent crash if texture id is invalid": gl/VkGlTexture.java (bindTexture; the 1.21.10 encoder part does not apply).
   85a3734 "Fix Ctrl+key combos inserting characters in text fields on Wayland" (tmpod): mixin/wayland/KeyboardHandlerM.java
           (adapted to the 1.21.1 charTyped signature), iroh.mixins.json.
+  5a80b35 "Port to 1.21.11" (WorldRenderer hunk only): render/chunk/WorldRenderer.java (no UBO upload/bind for areas that
+          do not draw).

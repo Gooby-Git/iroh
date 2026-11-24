@@ -587,7 +587,9 @@ public class WorldRenderer {
                 var queue = chunkArea.sectionQueue;
                 DrawBuffers drawBuffers = chunkArea.drawBuffers;
 
-                renderer.uploadAndBindUBOs(pipeline);
+                // Upstream VulkanMod 5a80b35 (1.21.11 port, WorldRenderer hunk): the base also uploaded and bound the
+                // UBOs here, for every area and layer, drawn or not; each call writes the pipeline's UBOs into the frame
+                // uniform ring and binds a descriptor set. Only areas that draw need it (the call below).
                 if (drawBuffers.getAreaBuffer(terrainRenderType) != null && queue.size() > 0) {
 
                     drawBuffers.bindBuffers(Renderer.getCommandBuffer(), pipeline, terrainRenderType, camX, camY, camZ);
