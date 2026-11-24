@@ -37,7 +37,6 @@ public final class RtWorldReplay {
     static final int[] CAP = {1024, 64, 256};
     static final long[] OFF = {0, 1024L * 4 * VERTEX, (1024L + 64) * 4 * VERTEX};
     static final long SLOT_BYTES = (1024L + 64 + 256) * 4 * VERTEX;
-    static final int WORLD_MIN = -40, WORLD_MAX = 40;   // sections, x and z
 
     static final String SH = """
             #version 460
@@ -336,19 +335,11 @@ public final class RtWorldReplay {
                 trisTimed == 0 ? 0 : nsBuilds / 1e6 / trisTimed * 100_000, blasB, tlasB, settled, residentParked);
     }
 
+    /** Inverse of SectionGeometry.key (22-bit x, 22-bit z, 20-bit y, two's complement). */
     static int[] unkey(long k) {
-        // SectionGeometry.key packs (x, y, z); decode by search over the loaded window is not needed: keep our own map
-        int[] c = KEYS.get(k);
-        if (c == null) throw new IllegalStateException("unknown key");
-        return c;
-    }
-
-    static final Map<Long, int[]> KEYS = new HashMap<>();
-
-    static {
-        for (int x = WORLD_MIN - 20; x <= WORLD_MAX + 20; x++)
-            for (int z = WORLD_MIN - 20; z <= WORLD_MAX + 20; z++)
-                for (int y = 0; y <= 8; y++) KEYS.put(SectionGeometry.key(x, y, z), new int[]{x, y, z});
+        int x = (int) (k >>> 42) << 10 >> 10, z = (int) ((k >>> 20) & 0x3FFFFF) << 10 >> 10, y = (int) (k & 0xFFFFF) << 12 >> 12;
+        if (SectionGeometry.key(x, y, z) != k) throw new IllegalStateException("bad key");
+        return new int[]{x, y, z};
     }
 
     public static void main(String[] args) {
