@@ -37,3 +37,4 @@ card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh co
           scheduled sorts; Iroh keeps vanilla's limit of 15 instead of upstream's 200 non-empty sections).
   cc5f05e "Fix outline color": mixin/vertex/EntityOutlineGeneratorM.java (outline colour on the fast vertex path).
   62a5106 "Add another AMD device id": vulkan/device/Device.java (vendor 0x1002).
+  13e925f "Add vendor ids for non-PC/exotic vendors": vulkan/device/Device.java.

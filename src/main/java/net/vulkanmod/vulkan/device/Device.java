@@ -78,6 +78,14 @@ public class Device {
             case (0x10DE) -> "Nvidia";
             case (0x1022), (0x1002) -> "AMD"; // upstream 62a5106: 0x1002 is the PCI id RADV / AMDVLK report
             case (0x8086) -> "Intel";
+            // upstream 13e925f: non-PC / software vendors
+            case (0x1010) -> "Imagination Technologies";
+            case (0x13B5) -> "ARM";
+            case (0x5143) -> "Qualcomm";
+            case (0x106B) -> "Apple";
+            case (0x14E4) -> "Broadcom";
+            case (0x1AE0) -> "Google"; // SwiftShader
+            case (0x10005) -> "Mesa"; // VK_VENDOR_ID_MESA: lavapipe, Honeykrisp
             default -> "undef"; //Either AMD or Unknown Driver version/vendor and.or Encoding Scheme
         };
     }
