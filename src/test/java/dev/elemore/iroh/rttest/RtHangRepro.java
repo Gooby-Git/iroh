@@ -9,7 +9,15 @@ import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.List;
+
+import dev.elemore.iroh.rt.*;
+import dev.elemore.iroh.rt.game.RtSectionSource;
+import dev.elemore.iroh.rt.game.RtSession;
+import dev.elemore.iroh.rt.game.VkRtBackend;
+
+import static org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
 
 /**
  * R1-HANG (td-84dfca) reproductions, offline ({@code ./gradlew rtHangRepro}; last line "# rthang PASS n/n").
@@ -27,6 +35,12 @@ import java.util.List;
  * the game's, not the game's; the in-frame writes it demands are still right (program order). Whether this defect
  * contributed to the in-game loss is therefore unproven: the scratch overrun (A) is the evidenced cause.</li>
  * </ol>
+ * R1-REV (Gemini review 5cb221b, docs/reviews/5cb221b-verdicts.md): C = a TLAS build that fails after the old TLAS was
+ * destroyed must not make the release path throw "destroyed twice" (#2); D = a BLAS / TLAS build that fails half way
+ * (allocation refused after the structure, the scratch or the instance buffer exists) leaks no acceleration structure
+ * and no device memory (#3); E = the BLAS size query records nothing (no index-buffer grow outside a frame, or inside
+ * a render pass), and an RT input write inside a render pass is refused (#5); F = alignUp to a non-power-of-two on a
+ * negative address (#10). Fault injection: {@link HeadlessGpuDevice#failAllocationIn}.
  */
 public final class RtHangRepro {
     static final String SH = RtProbe.SH;
@@ -105,7 +119,189 @@ public final class RtHangRepro {
             comp.close();
             dev.flush();
         }
+        // ---- F: alignUp to a non-power-of-two (review #10): unsigned 0xffff800100000000 is a multiple of 48, so a computed
+        // result must be the address itself; R1-REV refuses non-powers of two (no modulo on addresses at all)
+        total++;
+        String f;
+        boolean fok;
+        try {
+            long f1 = RtAccel.alignUp(0xffff800100000000L, 48);
+            fok = f1 == 0xffff800100000000L;
+            f = String.format("0x%x (want 0xffff800100000000 or a refusal)", f1);
+        } catch (IllegalArgumentException e) {
+            fok = true;
+            f = "refused (" + e.getMessage() + ")";
+        }
+        if (fok) pass++;
+        System.out.println((fok ? "ok   " : "FAIL ") + "F alignUp(0xffff800100000000, 48): " + f);
+
+        // ---- C/D/E: failure paths and the size query on the device
+        try (HeadlessGpuDevice dev = new HeadlessGpuDevice(1L << 30, false, true)) {
+            int[] pt = runFailurePaths(dev);
+            pass += pt[0];
+            total += pt[1];
+        }
         System.out.println("# rthang " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         if (pass != total) System.exit(1);
+    }
+
+    /** One 16-byte vertex arena with {@code quads} flat quads; returns {buffer, address}. */
+    static VkBuf arena(HeadlessGpuDevice dev, RtAccel acc, int quads) {
+        ByteBuffer v = MemoryUtil.memAlloc(quads * 64).order(ByteOrder.LITTLE_ENDIAN);
+        for (int q = 0; q < quads; q++)
+            for (float[] p : new float[][]{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}) {
+                for (float x : p) v.putShort((short) Math.round((x + q % 8) * 2048 - 8192));
+                v.putShort((short) 0).putInt(0).putInt(-1);
+            }
+        v.flip();
+        VkBuf vb = acc.inputBuffer(v.remaining());
+        dev.upload(vb, 0, v);
+        dev.flush();
+        MemoryUtil.memFree(v);
+        return vb;
+    }
+
+    /** Session + VkRtBackend over one arena section source (sections (i, 0, 0) all read quads of the same arena). */
+    record Rig(VkRtBackend backend, RtSession session, RtMemory.Counter mem) {}
+
+    static Rig rig(HeadlessGpuDevice dev, long arenaAddr, int quads) {
+        VkRtBackend backend = new VkRtBackend(dev, 16);
+        RtMemory.Counter mem = new RtMemory.Counter(1L << 30);
+        RtSectionSource src = new RtSectionSource() {
+            @Override public List<Range> ranges(int sx, int sy, int sz) {
+                return List.of(new Range(SectionGeometry.OPAQUE, arenaAddr, 0, 16, quads), new Range(SectionGeometry.TRANSLUCENT, arenaAddr, 0, 16, quads));
+            }
+            @Override public int[] quads(int sx, int sy, int sz) { return new int[]{quads, 0, quads}; }
+        };
+        RtSession s = new RtSession(RtSettings.DEFAULT, mem, RtMemoryModel.radvAssumed(), src, backend);
+        if (!s.enable(16, 16)) throw new IllegalStateException("targets refused");
+        return new Rig(backend, s, mem);
+    }
+
+    static SectionGeometry sec(int x, int quads, long version) {
+        return new SectionGeometry(x, 0, 0, 0, 0, 16, new int[]{quads, 0, quads}, new long[3], new float[0], version);
+    }
+
+    static int[] runFailurePaths(HeadlessGpuDevice dev) {
+        int pass = 0, total = 0;
+        RtAccel helper = new RtAccel(dev);
+        VkBuf vb = arena(dev, helper, 8);
+
+        // C: frame 1 builds two sections + TLAS; frame 2 (nothing new) is forced to rebuild the TLAS (camera moved: new
+        // rebase origin) and the TLAS's first allocation fails AFTER the old TLAS was destroyed; then the RT release path
+        total++;
+        {
+            long base = dev.allocatedBytes();   // each case against its own baseline (an earlier case's leak is not this one's)
+            Rig r = rig(dev, helper.address(vb), 8);
+            r.session().queue.sectionBuilt(sec(0, 8, 1));
+            r.session().queue.sectionBuilt(sec(1, 8, 1));
+            r.backend().origin(0, 0, 0);
+            r.session().frame(0, 0, 0);
+            dev.flush();
+            String fail = null, release = null;
+            dev.failAllocationIn = 1;   // the TLAS instance buffer
+            try {
+                r.backend().origin(1, 0, 0);
+                r.session().frame(1, 0, 0);
+            } catch (RuntimeException e) {
+                fail = e.getMessage();
+            }
+            dev.failAllocationIn = 0;
+            try {
+                r.session().disable();   // RtFrameHooks.fallBack -> stop -> disable
+            } catch (RuntimeException e) {
+                release = e.toString();
+            }
+            dev.flush();
+            boolean ok = fail != null && release == null && r.backend().liveObjects() == 0 && r.mem().usedBytes() == 0 && dev.allocatedBytes() == base;
+            if (ok) pass++;
+            System.out.println((ok ? "ok   " : "FAIL ") + "C failed TLAS rebuild then release: frame threw [" + fail + "], release threw [" + release + "], live "
+                    + r.backend().liveObjects() + ", owner " + r.mem().usedBytes() + " B, device bytes over the baseline " + (dev.allocatedBytes() - base));
+        }
+
+        // D: every allocation step of a frame's builds fails once in turn (index grow, transforms, scratch, structure, the
+        // second BLAS, the TLAS instance buffer, TLAS scratch, TLAS storage...); after each failure the release path runs:
+        // no acceleration structure and no device memory may be left
+        {
+            int steps = 0, bad = 0;
+            String first = null;
+            for (int k = 1; k <= 16; k++) {
+                total++;
+                long base = dev.allocatedBytes();
+                Rig r = rig(dev, helper.address(vb), 8);
+                RtAccel acc = accelOf(r.backend());
+                r.session().queue.sectionBuilt(sec(0, 8, 1));
+                r.backend().origin(0, 0, 0);
+                dev.failAllocationIn = k;
+                String fail = null, release = null;
+                try {
+                    r.session().frame(0, 0, 0);
+                } catch (RuntimeException e) {
+                    fail = e.getMessage();
+                }
+                boolean fired = dev.failAllocationIn == 0;
+                dev.failAllocationIn = 0;
+                try {
+                    r.session().disable();
+                } catch (RuntimeException e) {
+                    release = e.toString();
+                }
+                dev.flush();
+                int live = acc.liveStructures();
+                boolean ok = release == null && live == 0 && dev.allocatedBytes() == base && r.mem().usedBytes() == 0 && (fired == (fail != null));
+                if (fired) steps++;
+                if (ok) pass++;
+                else {
+                    bad++;
+                    if (first == null) first = "step " + k + ": frame threw [" + fail + "], release threw [" + release + "], live structures " + live
+                            + ", device bytes over the baseline " + (dev.allocatedBytes() - base) + ", owner " + r.mem().usedBytes();
+                }
+                if (!fired) break;   // past the last allocation of the frame: the clean frame was checked too
+            }
+            System.out.println((bad == 0 ? "ok   " : "FAIL ") + "D allocation failure at each of " + steps + " steps of a build frame: " + bad + " leaking"
+                    + (first == null ? "" : "; first: " + first));
+        }
+
+        // E: the size query records nothing (outside a frame, or inside a render pass); an input write inside a pass is refused
+        total++;
+        {
+            RtAccel acc = new RtAccel(dev);
+            long before = dev.allocatedBytes();
+            Object img = dev.createImage("e", 8, 8, VK_FORMAT_R8G8B8A8_UNORM, false);
+            long withImg = dev.allocatedBytes();
+            dev.beginRendering(img, null, new float[4], 1f, true);
+            long[] sz = acc.blasSizes(List.of(new RtAccel.Geometry(vb, 0, 16, 8, new float[12], true)), false);
+            long grew = dev.allocatedBytes() - withImg;
+            String refused = null;
+            try {
+                acc.quadIndices(100_000);   // a grow would record vkCmdUpdateBuffer + a barrier inside the pass
+            } catch (IllegalStateException e) {
+                refused = e.getMessage();
+            }
+            dev.endRendering();
+            dev.flush();
+            dev.destroyImage(img);
+            acc.close();
+            dev.flush();
+            boolean ok = sz[0] > 0 && grew == 0 && refused != null && dev.allocatedBytes() == before;
+            if (ok) pass++;
+            System.out.println((ok ? "ok   " : "FAIL ") + "E size query inside a render pass: sizes " + sz[0] + "/" + sz[1] + ", device bytes it allocated " + grew
+                    + ", in-pass index grow " + (refused == null ? "RECORDED" : "refused") + ", leftover " + (dev.allocatedBytes() - before));
+        }
+
+        dev.destroyBuffer(vb);
+        helper.close();
+        dev.flush();
+        return new int[]{pass, total};
+    }
+
+    static RtAccel accelOf(VkRtBackend b) {
+        try {
+            java.lang.reflect.Field f = VkRtBackend.class.getDeclaredField("accel");
+            f.setAccessible(true);
+            return (RtAccel) f.get(b);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 }

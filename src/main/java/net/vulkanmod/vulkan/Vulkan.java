@@ -176,6 +176,8 @@ public class Vulkan {
 
         Pipeline.destroyPipelineCache();
 
+        // R1-REV (review 5cb221b #4): RT's acceleration structures and buffers through the api-4 device, before it goes
+        if (dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled) dev.elemore.iroh.rt.game.RtFrameHooks.shutdown();
         dev.elemore.iroh.gpu.game.GpuLifecycle.shutdown(); // api 4: mods' GPU objects before Iroh's teardown
         // PACK-FULL: the pack path's objects (released into the frame ops / deferred frees that run below) and the
         // -Diroh.profile timestamp pool: both were never destroyed (vkDestroyDevice leak report in pack full mode)

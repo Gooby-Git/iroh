@@ -95,6 +95,12 @@ public final class IrohGpuDevice extends VkGpuDevice {
         return !inRendering && Renderer.getInstance().getBoundRenderPass() == null && Renderer.recordingCommandBuffer("api4") != null;
     }
 
+    /** R1-REV: pure (no pass is closed): Iroh's dynamic rendering or a bound VulkanMod render pass */
+    @Override
+    public boolean insideRenderPass() {
+        return inRendering || Renderer.getInstance().getBoundRenderPass() != null;
+    }
+
     @Override protected VkDevice device() { return Vulkan.getVkDevice(); }
     @Override protected long pipelineCache() { return net.vulkanmod.vulkan.shader.Pipeline.pipelineCacheHandle(); }
     @Override

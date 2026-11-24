@@ -177,6 +177,7 @@ public final class RtAdapterTest {
             @Override public long usedBytes() { return used; }
             @Override public boolean reserve(long b) { if (used + b > budget[0]) return false; used += b; return true; }
             @Override public void release(long b) { used -= b; }
+            @Override public void charge(long b) { used += b; }
         }, RtMemoryModel.radvAssumed(), w2, f2);
         s2.enable(320, 180);
         RtGameBridge b2 = new RtGameBridge(s2.queue, w2);

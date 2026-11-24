@@ -64,9 +64,10 @@ public final class RtFrameHooks {
         if (now < nextStats) return;
         nextStats = now + 5_000_000_000L;
         long blas = backend instanceof VkRtBackend vk ? vk.blasBuilds : -1, tlas = backend instanceof VkRtBackend vk2 ? vk2.tlasBuilds : -1;
+        long live = backend == null ? -1 : backend.liveBytes() >> 20;   // R1-REV (review #7): the real device bytes next to the owner's count
         RtDeviceFeatures.log(String.format("[iroh-rt] frames %d builds %d tris %d (max/frame %d builds, %d tris) | resident %d pending %d refused %d"
-                        + " | used %d MiB | BLAS builds %d TLAS builds %d | ranges refused %d | %s", frames, builtSum, trisSum, session.queue.maxBuilds,
-                session.queue.maxTriangles, last.resident(), last.pending(), last.refused(), last.usedBytes() >> 20, blas, tlas,
+                        + " | used %d MiB live %d MiB | BLAS builds %d TLAS builds %d | ranges refused %d | %s", frames, builtSum, trisSum, session.queue.maxBuilds,
+                session.queue.maxTriangles, last.resident(), last.pending(), last.refused(), last.usedBytes() >> 20, live, blas, tlas,
                 VulkanModSections.skippedRanges, dev.elemore.iroh.rt.RtLimits.describe(RtSwitch.settings().preset())));
         builtSum = trisSum = frames = 0;
     }
@@ -95,17 +96,40 @@ public final class RtFrameHooks {
         }
     }
 
+    /**
+     * R1-REV (review 5cb221b #4): Vulkan.cleanUp, after vkDeviceWaitIdle and before the device's objects go: the session's
+     * BLASes, TLAS, RT targets, index and transform buffers are released through the device (deferred frees that
+     * MemoryManager.freeAllBuffers runs), so no acceleration structure reaches vkDestroyDevice. Records nothing.
+     */
+    public static void shutdown() {
+        if (session == null && backend == null && frameReg == null) return;
+        try {
+            stop(false);
+        } catch (Throwable t) {
+            RtDeviceFeatures.log("Iroh: rt shutdown release failed: " + t);
+        }
+    }
+
     /** Look switched away from RT at runtime, or shutdown: release everything (owner iroh-rt back to 0). */
     public static void stop() {
+        stop(true);
+    }
+
+    private static void stop(boolean rebuild) {
         RtSession s = session;
         session = null;
         if (sectionReg != null) { sectionReg.close(); sectionReg = null; }
         if (frameReg != null) { frameReg.close(); frameReg = null; }
-        if (s != null) s.disable();
+        RtSession.Backend b = backend;
         backend = null;
-        if (RtMeshMode.tintOnly) {
-            RtMeshMode.tintOnly = false;
-            requestRebuild();
+        try {
+            if (s != null) s.disable();
+            else if (b != null) b.close();   // R1-REV: a backend whose session never started (targets refused) still owns its accel
+        } finally {
+            if (RtMeshMode.tintOnly) {
+                RtMeshMode.tintOnly = false;
+                if (rebuild) requestRebuild();
+            }
         }
     }
 
@@ -137,7 +161,8 @@ public final class RtFrameHooks {
         RtSwitch.fallBack(step, t);
         try {
             stop();
-        } catch (Throwable ignored) {
+        } catch (Throwable t2) {   // R1-REV: no longer silent (a failed release used to hide leaks)
+            RtDeviceFeatures.log("Iroh: rt release after the failure also failed: " + t2);
         }
     }
 

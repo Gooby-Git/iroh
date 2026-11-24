@@ -32,7 +32,7 @@ public final class MemoryShares {
     public enum Owner {
         API4_EACH("api-4 owner (each)", Double.parseDouble(System.getProperty("iroh.gpu.ownerShare", "0.40")), Long.MAX_VALUE),
         PACK("pack", 0.35, Long.MAX_VALUE),
-        RT("iroh-rt", 0.25, Long.getLong("iroh.rt.capMiB", Boolean.getBoolean("iroh.rt.safe") ? 256 : 1536) << 20), // R1-HANG safe mode = RtLimits
+        RT("iroh-rt", 0.25, rtCapMiB() << 20), // R1-HANG safe mode = RtLimits; R1-REV: ceiling() reads it live
         FSR("upscaler", 0.10, Long.MAX_VALUE);
 
         public final String id;
@@ -49,8 +49,21 @@ public final class MemoryShares {
         /** this owner's ceiling for an Iroh cap of {@code capBytes} (0 when the cap is not known yet) */
         public long ceiling(long capBytes) {
             if (capBytes <= 0) return 0;
-            return Math.min((long) (capBytes * fraction), absolute);
+            return Math.min((long) (capBytes * fraction), this == RT ? rtCapMiB() << 20 : absolute);
         }
+    }
+
+    /** RT's absolute ceiling bounds in MiB (R1-REV, review 5cb221b #8: 0, negative or huge values cannot break the guard) */
+    public static final long RT_CAP_MIN_MIB = 64, RT_CAP_MAX_MIB = 16_384;
+
+    /**
+     * RT's absolute ceiling in MiB, read LIVE (R1-REV, review 5cb221b #8: the enum's value was frozen at class init while
+     * RtLimits read the properties live): {@code -Diroh.rt.capMiB} clamped to [64, 16384], else 256 in safe mode
+     * ({@code -Diroh.rt.safe}), else 1536.
+     */
+    public static long rtCapMiB() {
+        long v = Long.getLong("iroh.rt.capMiB", Boolean.getBoolean("iroh.rt.safe") ? 256 : 1536);
+        return Math.max(RT_CAP_MIN_MIB, Math.min(RT_CAP_MAX_MIB, v));
     }
 
     /** the WARN fraction the live optional ceilings must stay under (rule in the class javadoc) */

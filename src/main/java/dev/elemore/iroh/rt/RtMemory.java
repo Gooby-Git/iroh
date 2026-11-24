@@ -16,6 +16,12 @@ public interface RtMemory {
 
     void release(long bytes);
 
+    /**
+     * R1-REV: counts {@code bytes} that already exist (a built BLAS larger than its estimate) without asking: never
+     * refused, may pass the cap; later {@link #reserve} calls are refused until enough is released.
+     */
+    void charge(long bytes);
+
     /** A plain counter with a fixed cap (offline tests, and the fallback when no guard exists). */
     final class Counter implements RtMemory {
         private final long cap;
@@ -40,6 +46,11 @@ public interface RtMemory {
         @Override
         public synchronized void release(long bytes) {
             used = Math.max(0, used - bytes);
+        }
+
+        @Override
+        public synchronized void charge(long bytes) {
+            used += Math.max(0, bytes);
         }
     }
 }

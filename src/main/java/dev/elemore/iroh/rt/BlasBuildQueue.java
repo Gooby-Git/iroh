@@ -23,11 +23,16 @@ public final class BlasBuildQueue implements RtGeometryFeed {
     private final RtMemoryModel model;
     private final Map<Long, SectionGeometry> pending = new HashMap<>();
     private final Map<Long, Resident> resident = new HashMap<>();
+    /** R1-REV: the geometry each resident was built from, re-queued when the camera leaves it behind (see {@link #camera}) */
+    private final Map<Long, SectionGeometry> builtFrom = new HashMap<>();
     private final List<Resident> toFree = new ArrayList<>();
     public int maxBuilds = 8, maxTriangles = 200_000;
     /** Residency radius in sections (3D, Chebyshev horizontally, half that vertically). */
     public int radius = 12;
+    /** R1-REV: a resident is evicted only past radius + this (a camera on a section edge does not rebuild a slab per step) */
+    public static final int EVICT_MARGIN = 1;
     private int camX, camY, camZ;
+    private boolean camSet;
     public int refusedThisFrame;
 
     public BlasBuildQueue(RtMemory memory, RtMemoryModel model) {
@@ -35,14 +40,42 @@ public final class BlasBuildQueue implements RtGeometryFeed {
         this.model = model;
     }
 
+    /**
+     * The camera section for this frame. R1-REV (review 5cb221b #1): when it moved, residents farther than the residency
+     * radius + {@link #EVICT_MARGIN} are evicted (BLAS freed by the next {@link #drainFrees}, memory released) and their
+     * geometry goes back to the pending queue (rebuilt if the camera returns). Before this, a resident left only on a
+     * section reset (render distance, never vertical), so residency grew with every section ever visited.
+     */
     public void camera(int sx, int sy, int sz) {
+        boolean moved = !camSet || sx != camX || sy != camY || sz != camZ;
         camX = sx;
         camY = sy;
         camZ = sz;
+        camSet = true;
+        if (!moved || resident.isEmpty()) return;
+        for (Resident r : new ArrayList<>(resident.values())) {
+            SectionGeometry g = builtFrom.get(r.key());
+            if (g == null || within(g.sx(), g.sy(), g.sz(), EVICT_MARGIN)) continue;
+            resident.remove(r.key());
+            builtFrom.remove(r.key());
+            toFree.add(r);
+            pending.merge(r.key(), g, (queued, built) -> queued.version() >= built.version() ? queued : built);   // newest wins
+        }
     }
 
     private boolean inRange(SectionGeometry g) {
-        return Math.max(Math.abs(g.sx() - camX), Math.abs(g.sz() - camZ)) <= radius && Math.abs(g.sy() - camY) <= Math.max(2, radius / 2);
+        return within(g.sx(), g.sy(), g.sz(), 0);
+    }
+
+    /** within the residency box grown by {@code margin} sections (Chebyshev horizontally, half the radius (min 2) vertically) */
+    private boolean within(int sx, int sy, int sz, int margin) {
+        return Math.max(Math.abs(sx - camX), Math.abs(sz - camZ)) <= radius + margin && Math.abs(sy - camY) <= Math.max(2, radius / 2) + margin;
+    }
+
+    /** Most residents this queue can hold at {@code radius}: the residency box grown by {@link #EVICT_MARGIN}. */
+    public static long maxResident(int radius) {
+        long h = 2L * (radius + EVICT_MARGIN) + 1, v = 2L * (Math.max(2, radius / 2) + EVICT_MARGIN) + 1;
+        return h * h * v;
     }
 
     private int distance(SectionGeometry g) {
@@ -76,6 +109,7 @@ public final class BlasBuildQueue implements RtGeometryFeed {
     }
 
     private void evict(long key) {
+        builtFrom.remove(key);
         Resident r = resident.remove(key);
         if (r != null) toFree.add(r);
     }
@@ -99,11 +133,26 @@ public final class BlasBuildQueue implements RtGeometryFeed {
             }
             pending.remove(g.key());
             Resident old = resident.put(g.key(), new Resident(g.key(), bytes, g.version()));
+            builtFrom.put(g.key(), g);
             if (old != null) toFree.add(old);
             out.add(new Pending(g, bytes));
             tris += t;
         }
         return out;
+    }
+
+    /**
+     * R1-REV (review #7): the BLAS of {@code r} was built and really takes {@code actualBytes}; the reservation follows the
+     * real size (the model is an estimate). Growth is charged even past the cap: the memory exists, later reservations
+     * are refused until it is released. Returns the record that now stands for the resident (release uses its bytes).
+     */
+    public Resident reconcile(Resident r, long actualBytes) {
+        if (actualBytes < 0 || actualBytes == r.bytes() || !r.equals(resident.get(r.key()))) return r;
+        if (actualBytes > r.bytes()) memory.charge(actualBytes - r.bytes());
+        else memory.release(r.bytes() - actualBytes);
+        Resident n = new Resident(r.key(), actualBytes, r.version());
+        resident.put(r.key(), n);
+        return n;
     }
 
     /** BLASes to destroy (after the GPU finished frames that used them); their memory is released here. */
