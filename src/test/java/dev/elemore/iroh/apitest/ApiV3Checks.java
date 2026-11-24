@@ -77,6 +77,39 @@ final class ApiV3Checks {
         }
         check.accept("throwing hook: never propagates, removed after 3 failures", !escaped && runs[0] == 3 && FrameHooks.count(FrameStage.AFTER_SKY) == 0);
 
+        // ---- R-OOMHOOK: IrohOutOfMemory in a hook reaches the render guard (a stand-in catch) and is no strike
+        {
+            List<String> ran = new ArrayList<>();
+            var a = IrohFrame.addHook(FrameStage.AFTER_ENTITIES, 0, EnumSet.allOf(RenderPath.class), c -> { ran.add("a"); throw new dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory("test"); });
+            var b = IrohFrame.addHook(FrameStage.AFTER_ENTITIES, 1, EnumSet.allOf(RenderPath.class), c -> ran.add("b"));
+            boolean reached = false;
+            for (int i = 0; i < 4; i++) {
+                try { FrameHooks.dispatch(FrameStage.AFTER_ENTITIES); }
+                catch (dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory oom) { reached = true; }
+            }
+            check.accept("IrohOutOfMemory in a hook at a guarded stage reaches the render guard, rest of stage skipped, never a strike",
+                    reached && ran.equals(List.of("a", "a", "a", "a")) && FrameHooks.count(FrameStage.AFTER_ENTITIES) == 2);
+            a.close(); b.close();
+
+            // stages outside the guard (endFrame / beginFrame) contain it: no escape, the other hooks of the stage skipped
+            List<String> ran2 = new ArrayList<>();
+            var d = IrohFrame.addHook(FrameStage.AFTER_PRESENT, 0, EnumSet.allOf(RenderPath.class), c -> { ran2.add("a"); throw new dev.elemore.iroh.memory.MemoryGuard.IrohOutOfMemory("test"); });
+            var e2 = IrohFrame.addHook(FrameStage.AFTER_PRESENT, 1, EnumSet.allOf(RenderPath.class), c -> ran2.add("b"));
+            boolean esc = false;
+            try { FrameHooks.dispatch(FrameStage.AFTER_PRESENT); } catch (Throwable t) { esc = true; }
+            check.accept("IrohOutOfMemory at an unguarded stage is contained, no strike", !esc && ran2.equals(List.of("a")) && FrameHooks.count(FrameStage.AFTER_PRESENT) == 2);
+            d.close(); e2.close();
+
+            // an ordinary RuntimeException at a guarded stage is still contained and the next hook still runs
+            List<String> ran3 = new ArrayList<>();
+            var f = IrohFrame.addHook(FrameStage.AFTER_ENTITIES, 0, EnumSet.allOf(RenderPath.class), c -> { ran3.add("a"); throw new RuntimeException("buggy mod"); });
+            var g = IrohFrame.addHook(FrameStage.AFTER_ENTITIES, 1, EnumSet.allOf(RenderPath.class), c -> ran3.add("b"));
+            boolean esc3 = false;
+            try { FrameHooks.dispatch(FrameStage.AFTER_ENTITIES); } catch (Throwable t) { esc3 = true; }
+            check.accept("RuntimeException in a hook at a guarded stage stays contained, next hook runs", !esc3 && ran3.equals(List.of("a", "b")));
+            f.close(); g.close();
+        }
+
         // ---- zero cost when empty, and zero allocation with a hook registered
         for (int i = 0; i < 20_000; i++) FrameHooks.dispatch(FrameStage.AFTER_WEATHER);
         long a0 = allocated();

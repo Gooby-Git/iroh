@@ -6,6 +6,7 @@ import dev.elemore.iroh.api.FrameStage;
 import dev.elemore.iroh.api.IrohApi;
 import dev.elemore.iroh.api.IrohFrame;
 import dev.elemore.iroh.api.RenderPath;
+import dev.elemore.iroh.memory.MemoryGuard;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3d;
@@ -108,6 +109,7 @@ public final class FrameHooks {
         RenderPath path = IrohApi.renderPath();
         for (int i = 0; i < hooks.length; i++) {
             Entry e = hooks[i];
+            boolean aborted = false;
             if (!e.paths.contains(path)) continue;
             StateGuard.capture();
             DrawImpl.insideHook = true;
@@ -119,6 +121,13 @@ public final class FrameHooks {
             try {
                 e.hook.run(c);
                 if (c.gui != null) c.gui.flush();
+            } catch (MemoryGuard.IrohOutOfMemory oom) {
+                // R-OOMHOOK: Iroh's own out-of-memory is not the hook's fault (no strike). The guard already logged and
+                // scheduled leaving the world. Stages under MinecraftMixin.iroh$guardRender abandon the frame (the
+                // remaining hooks of this stage are skipped); stages outside it are contained here, also skipping the rest.
+                if (abandonsFrame(stage)) throw oom;
+                net.vulkanmod.Initializer.LOGGER.warn("Iroh: out of memory in frame hook {} at {}; remaining hooks of the stage skipped", e.hook.getClass().getName(), stage);
+                aborted = true;
             } catch (Throwable t) {
                 if (++e.failures >= 3) {
                     net.vulkanmod.Initializer.LOGGER.error("Iroh: frame hook {} at {} failed 3 times; removed", e.hook.getClass().getName(), stage, t);
@@ -136,7 +145,17 @@ public final class FrameHooks {
                     dev.elemore.iroh.diag.SlowFrames.hook(e.hook, dev.elemore.iroh.diag.SlowFrames.now() - hookT0);
                 }
             }
+            if (aborted) return;
         }
+    }
+
+    /**
+     * True for the stages that run inside {@code GameRenderer.render}, where MinecraftMixin.iroh$guardRender catches
+     * IrohOutOfMemory and abandons the frame. BEFORE_MAIN_PASS / FRAME_BEGIN run in beginFrame (also reached unguarded from
+     * disconnect) and AFTER_PRESENT in endFrame (unguarded): a throw there would crash, so those are contained.
+     */
+    static boolean abandonsFrame(FrameStage stage) {
+        return stage != FrameStage.BEFORE_MAIN_PASS && stage != FrameStage.FRAME_BEGIN && stage != FrameStage.AFTER_PRESENT;
     }
 
     static boolean inWorld() { return CONTEXT.inWorld; }
