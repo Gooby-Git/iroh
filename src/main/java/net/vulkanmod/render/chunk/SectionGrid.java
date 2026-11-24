@@ -80,7 +80,11 @@ public class SectionGrid {
      * This method has been optimized with circular lists to remove costly modulo computations
      * and to reduce section repositioning to only the necessary.
      */
+    /** P2-6: bumped on every reposition (sections move and reset); the async visibility graph keys results on it. */
+    public long repositionCount;
+
     public void repositionCamera(double x, double z) {
+        this.repositionCount++;
         int secX = Mth.floor(x) >> 4;
         int secZ = Mth.floor(z) >> 4;
 

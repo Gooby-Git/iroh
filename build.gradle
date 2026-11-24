@@ -202,6 +202,16 @@ tasks.register('streamingTest', JavaExec) {
 	jvmArgs '-ea', '-Xmx1g'
 }
 
+// P2-6 (L3): async visibility graph vs the synchronous walk on recorded camera paths. ./gradlew graphAsyncTest ; "# graphasync PASS n/n".
+tasks.register('graphAsyncTest', JavaExec) {
+	group = 'verification'
+	description = 'Async visibility graph: 0 missing sections vs SectionGraph walk (fast turns, streaming, races), relax exactness, negative controls'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.graph.GraphAsyncTest'
+	jvmArgs '-ea', '-Xmx2g'
+}
+
 // perf/frame-attrib: -Diroh.slowFrames ring/record/summary on a fake clock. ./gradlew slowFramesTest
 tasks.register('slowFramesTest', JavaExec) {
 	group = 'verification'
