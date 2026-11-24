@@ -34,6 +34,11 @@ public class SortTransparencyTask extends ChunkTask {
 
         CompiledSection compiledSection = this.section.getCompiledSection();
         QuadSorter.SortState transparencyState = compiledSection.transparencyState;
+        // Upstream VulkanMod e5dad79: a rebuild can swap in a compiled section without translucent quads between
+        // scheduling and running this task; restoreSortState(null) then threw on the builder thread.
+        if (transparencyState == null) {
+            return Result.CANCELLED;
+        }
 
         TerrainBuilder bufferBuilder = builderPack.builder(TerrainRenderType.TRANSLUCENT);
         bufferBuilder.begin();
