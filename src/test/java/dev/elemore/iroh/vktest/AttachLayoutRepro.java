@@ -283,8 +283,8 @@ public final class AttachLayoutRepro {
                     VK_IMAGE_ASPECT_COLOR_BIT, W, H, 1, 0), VK_IMAGE_ASPECT_COLOR_BIT, false);
             Img depth = new Img(FreshTextureLayoutRepro.image(s, env.dev, env.mem, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, W, H, 1, 0), VK_IMAGE_ASPECT_DEPTH_BIT, true);
-            name(s, env.dev, color.img, tag + " colour");
-            name(s, env.dev, depth.img, tag + " depth");
+            name(s, env.dev, color.img, fixed ? tag + " colour" : "v0-negative-control");
+            name(s, env.dev, depth.img, fixed ? tag + " depth" : "v0-negative-control");
             // Iroh's RenderPass for a GL framebuffer: initial = attachment layouts (barriers come from the tracker), LOAD
             VkAttachmentDescription.Buffer at = VkAttachmentDescription.calloc(2, s);
             at.get(0).format(VK_FORMAT_R8G8B8A8_UNORM).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
@@ -443,9 +443,9 @@ public final class AttachLayoutRepro {
                 int cl = (mask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : COLOR, dl = (mask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : DEPTH;
                 VkAttachmentDescription.Buffer at = VkAttachmentDescription.calloc(2, s);
                 at.get(0).format(VK_FORMAT_R8G8B8A8_UNORM).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
-                        .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(cl).finalLayout(READ);
+                        .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(cl).finalLayout((mask & 1) != 0 ? VK_IMAGE_LAYOUT_GENERAL : READ); // mirrors RenderPass.createRenderPass: GENERAL attachments end GENERAL
                 at.get(1).format(VK_FORMAT_D32_SFLOAT).samples(1).loadOp(VK_ATTACHMENT_LOAD_OP_LOAD).storeOp(VK_ATTACHMENT_STORE_OP_STORE)
-                        .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(dl).finalLayout(DEPTH);
+                        .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE).initialLayout(dl).finalLayout((mask & 2) != 0 ? VK_IMAGE_LAYOUT_GENERAL : DEPTH);
                 VkAttachmentReference.Buffer cref = VkAttachmentReference.calloc(1, s).attachment(0).layout(cl);
                 VkAttachmentReference dref = VkAttachmentReference.calloc(s).attachment(1).layout(dl);
                 VkSubpassDescription.Buffer sp = VkSubpassDescription.calloc(1, s).pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS)
@@ -506,6 +506,7 @@ public final class AttachLayoutRepro {
             vkCmdEndRenderPass(f);
             color.layout = READ;
             depth.layout = DEPTH;
+            if (r.fixed) t.layout = VK_IMAGE_LAYOUT_GENERAL; // the variant pass ends GENERAL (RenderPass.endRenderPass tracker)
         }
 
         void destroy() {
