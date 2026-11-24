@@ -968,6 +968,9 @@ public final class FrameExecutor {
         return h;
     }
 
+    /** negative control for the PACK-FULL leak counter (packFullVkRepro -Pmode=old): the pre-fix close kept the SSBOs */
+    static boolean keepStorageBuffersForTest;
+
     /** negative control for the V-6 repro (packThreadRepro -PoldCreate): the pre-V-6 untracked creation clear */
     static boolean untrackedCreateForTest;
 
@@ -2168,6 +2171,11 @@ public final class FrameExecutor {
         for (Integer vb : vertexBuffers.values())
             gpu.freeBuffer(vb);
         vertexBuffers.clear();
+        // PACK-FULL: the pack's SSBOs (set 1) belong to this executor too; every rebuild (resize, dimension) leaked them
+        if (!keepStorageBuffersForTest)
+            for (Integer b : uniformBuffers.values())
+                gpu.freeStorageBuffer(b);
+        uniformBuffers.clear();
         forgetAccesses();
         sync.reset();
         passCache.clear();
@@ -2348,6 +2356,11 @@ public final class FrameExecutor {
     }
 
     /** P3-11: attachments, bindings and uniform scratch of a pack geometry pass for substituted draws; null when it cannot serve */
+    /** PACK-FULL: {@link #substPass} would return a cached pass (no images created, nothing recorded) */
+    public boolean substPassBuilt(String passId) {
+        return substPasses.containsKey(passId);
+    }
+
     public SubstPass substPass(String passId, PackFrameInputs in) {
         SubstPass sp = substPasses.get(passId);
         if (sp != null)

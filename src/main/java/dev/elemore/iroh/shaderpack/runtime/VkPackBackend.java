@@ -58,7 +58,103 @@ public abstract class VkPackBackend implements GpuBackend {
         int get();
 
         void set(int layout);
+
+        /** PACK-FULL: move the image to its sampling layout (owner's rule, recorded outside every render pass) */
+        default void toSampled() {
+        }
+
+        /** PACK-FULL (review #3): the owner has uploads for it queued but not recorded yet (game: in-frame batch) */
+        default boolean pending() {
+            return false;
+        }
+
+        /** PACK-FULL (review #3): the frame command buffer samples it now (game: markFrameUse: later uploads this frame follow it) */
+        default void noteSampled() {
+        }
     }
+
+    /** PACK-FULL: the device was created with vertexPipelineStoresAndAtomics / fragmentStoresAndAtomics */
+    protected abstract boolean vertexStoresEnabled();
+
+    protected abstract boolean fragmentStoresEnabled();
+
+    /** PACK-FULL negative control (packFullVkRepro -Pmode=old): create the pipeline whatever the device's store features */
+    static boolean skipStoreCheckForTest;
+
+    /**
+     * PACK-FULL (VUID-RuntimeSpirv-NonWritable-06341): a vertex (fragment) stage that may write a storage image or
+     * buffer is only legal with vertexPipelineStoresAndAtomics (fragmentStoresAndAtomics). On a device without the bit
+     * the pipeline is refused by name (the executor reports it; the pack path degrades) instead of being created
+     * invalid. Every desktop driver in the hw matrix offers both; DeviceManager enables them (PackDeviceFeatures).
+     */
+    private void storeFeatureCheck(PipelineDesc d) {
+        if (skipStoreCheckForTest || d.computeSpirv() != null)
+            return;
+        if (!vertexStoresEnabled()) {
+            List<String> w = dev.elemore.iroh.shaderpack.SpirvReflect.writableStorage(d.vertexSpirv());
+            if (!w.isEmpty())
+                throw new IllegalStateException(d.id() + ": vertex stage writes " + w + " but the device has no vertexPipelineStoresAndAtomics");
+        }
+        if (!fragmentStoresEnabled()) {
+            List<String> w = dev.elemore.iroh.shaderpack.SpirvReflect.writableStorage(d.fragmentSpirv());
+            if (!w.isEmpty())
+                throw new IllegalStateException(d.id() + ": fragment stage writes " + w + " but the device has no fragmentStoresAndAtomics");
+        }
+    }
+
+    /** PACK-FULL: the device was created with independentBlend (per-attachment blend states) */
+    protected abstract boolean independentBlendEnabled();
+
+    private static boolean differs(VkPipelineColorBlendAttachmentState a, VkPipelineColorBlendAttachmentState b) {
+        return a.blendEnable() != b.blendEnable() || a.srcColorBlendFactor() != b.srcColorBlendFactor() || a.dstColorBlendFactor() != b.dstColorBlendFactor()
+                || a.srcAlphaBlendFactor() != b.srcAlphaBlendFactor() || a.dstAlphaBlendFactor() != b.dstAlphaBlendFactor()
+                || a.colorBlendOp() != b.colorBlendOp() || a.alphaBlendOp() != b.alphaBlendOp() || a.colorWriteMask() != b.colorWriteMask();
+    }
+
+    private final Map<Integer, Boolean> blendableFormats = new HashMap<>();
+
+    /** PACK-FULL: the format has VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT (optimal tiling); cached per format */
+    private boolean blendable(int format) {
+        return blendableFormats.computeIfAbsent(format, f -> {
+            try (MemoryStack s = stackPush()) {
+                VkFormatProperties fp = VkFormatProperties.calloc(s);
+                vkGetPhysicalDeviceFormatProperties(phys(), f, fp);
+                return (fp.optimalTilingFeatures() & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) != 0;
+            }
+        });
+    }
+
+    /** PACK-FULL: a layout a sampled-image descriptor may name */
+    static boolean samplingLayout(int l) {
+        return l == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || l == VK_IMAGE_LAYOUT_GENERAL
+                || l == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    }
+
+    @Override
+    public boolean sampleReady(int image) {
+        Img im = img(image);
+        return im.imported == null || samplingLayout(im.imported.get()) && !im.imported.pending();
+    }
+
+    @Override
+    public void prepareSample(int image) {
+        Img im = img(image);
+        if (im.imported == null)
+            return;
+        if (!samplingLayout(im.imported.get()) || im.imported.pending())
+            im.imported.toSampled();
+        im.imported.noteSampled();
+    }
+
+    @Override
+    public void noteSampled(int image) {
+        Img im = img(image);
+        if (im.imported != null)
+            im.imported.noteSampled();
+    }
+
+    /** PACK-FULL: descriptors that named an imported image in a non-sampling layout (a missed prepareSample; logged once) */
+    public int unpreparedSamples;
 
     protected record HostBuf(long buffer, Object alloc, long size, ByteBuffer mapped) {}
 
@@ -313,6 +409,37 @@ public abstract class VkPackBackend implements GpuBackend {
         return bufs.size() - 1;
     }
 
+    @Override
+    public void freeStorageBuffer(int buffer) {
+        HostBuf b = buffer >= 0 && buffer < bufs.size() ? bufs.get(buffer) : null;
+        if (b == null)
+            return;
+        bufs.set(buffer, null); // the index is never reused (handles are list positions)
+        freeHostBufferAfterFrame(b);
+    }
+
+    /**
+     * PACK-FULL leak counter: live objects this backend owns, by kind (owned images, pipelines, storage / vertex
+     * buffers, framebuffers, render passes, samplers, UBO chunks, imported entries not yet forgotten). An executor
+     * rebuild (resize, dimension) must leave every count where the same plan at the same size had it.
+     */
+    public java.util.Map<String, Integer> liveCounts() {
+        java.util.Map<String, Integer> m = new java.util.LinkedHashMap<>();
+        int imported = 0;
+        for (Img im : imgs)
+            if (!im.freed && im.alloc == null)
+                imported++;
+        m.put("images", liveImages());
+        m.put("imported", imported);
+        m.put("pipelines", (int) pipes.stream().filter(java.util.Objects::nonNull).count());
+        m.put("storageBuffers", (int) bufs.stream().filter(java.util.Objects::nonNull).count());
+        m.put("vertexBuffers", (int) vbufs.stream().filter(java.util.Objects::nonNull).count());
+        m.put("framebuffers", framebuffers.size());
+        m.put("renderPasses", renderPasses.size());
+        m.put("samplers", samplers.size());
+        return m;
+    }
+
     // ------------------------------------------------------------------------------------------------ pipelines
 
     private long module(byte[] spirv) {
@@ -432,6 +559,7 @@ public abstract class VkPackBackend implements GpuBackend {
 
     @Override
     public int createPipeline(PipelineDesc d) {
+        storeFeatureCheck(d);
         try (MemoryStack s = stackPush()) {
             long l0 = setLayout(d.slots(), 0), l1 = setLayout(d.slots(), 1);
             LongBuffer lb = s.mallocLong(1);
@@ -509,12 +637,28 @@ public abstract class VkPackBackend implements GpuBackend {
                 cb.get(i).colorWriteMask(0xF);
                 Object b = i < d.blend().size() ? d.blend().get(i) : "off";
                 boolean integer = f.endsWith("INT");
-                if (b instanceof List<?> l && l.size() == 4 && !integer) {
+                // PACK-FULL (VUID-vkCmdDraw-blendEnable-04727): a format without COLOR_ATTACHMENT_BLEND cannot blend
+                // (lavapipe: R8G8B8A8_SNORM = Navidson colortex4 under the substituted translucent states); GL ignores
+                // blending for such formats too, so the attachment is written unblended
+                if (b instanceof List<?> l && l.size() == 4 && !integer && blendable(formats[i])) {
                     cb.get(i).blendEnable(true).srcColorBlendFactor(blendFactor(String.valueOf(l.get(0))))
                             .dstColorBlendFactor(blendFactor(String.valueOf(l.get(1)))).colorBlendOp(VK_BLEND_OP_ADD)
                             .srcAlphaBlendFactor(blendFactor(String.valueOf(l.get(2)))).dstAlphaBlendFactor(blendFactor(String.valueOf(l.get(3))))
                             .alphaBlendOp(VK_BLEND_OP_ADD);
                 }
+            }
+            if (!independentBlendEnabled() && n > 1) {
+                // PACK-FULL: without independentBlend every attachment takes attachment 0's state; if one of them cannot
+                // blend (format), none blends
+                boolean all = true;
+                for (int i = 0; i < n; i++)
+                    all &= blendable(formats[i]) && !d.colourFormats().get(i).endsWith("INT");
+                for (int i = 1; i < n; i++)
+                    if (differs(cb.get(0), cb.get(i)))
+                        cb.get(i).set(cb.get(0));
+                if (!all)
+                    for (int i = 0; i < n; i++)
+                        cb.get(i).blendEnable(false);
             }
             VkPipelineColorBlendStateCreateInfo cbs = VkPipelineColorBlendStateCreateInfo.calloc(s).sType$Default().pAttachments(cb);
             VkPipelineDynamicStateCreateInfo dyn = VkPipelineDynamicStateCreateInfo.calloc(s).sType$Default()
@@ -800,6 +944,8 @@ public abstract class VkPackBackend implements GpuBackend {
                     } else {
                         Img im = img(b.image());
                         boolean storage = "STORAGE".equals(b.sampler());
+                        if (im.imported != null && !samplingLayout(im.imported.get()) && unpreparedSamples++ == 0)
+                            log.add("imported " + im.d.name() + " sampled in layout " + im.imported.get() + " (no prepareSample before its descriptor)");
                         VkDescriptorImageInfo.Buffer ii = VkDescriptorImageInfo.calloc(1, s)
                                 .imageView(storage ? im.viewMip0 : im.viewAll)
                                 // P3-6: an imported image (the block atlas) is sampled in the layout Iroh keeps it in
@@ -1084,7 +1230,10 @@ public abstract class VkPackBackend implements GpuBackend {
                 ps.add(p);
         List<Long> sm = new ArrayList<>(samplers.values());
         List<Long> rps = new ArrayList<>(renderPasses.values());
-        List<HostBuf> bs = new ArrayList<>(bufs);
+        List<HostBuf> bs = new ArrayList<>();
+        for (HostBuf b : bufs)
+            if (b != null) // PACK-FULL: freeStorageBuffer leaves null slots
+                bs.add(b);
         for (List<HostBuf> l : uboChunks)
             bs.addAll(l);
         uboChunks.clear();

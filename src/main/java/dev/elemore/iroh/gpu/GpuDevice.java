@@ -60,6 +60,10 @@ public interface GpuDevice {
         throw new UnsupportedOperationException("in-frame upload");
     }
 
+    /** UPLOAD-SYNC: records other queued in-frame copies (game: VulkanImage's in-frame image queue) while a pass is broken. */
+    default void flushQueuedInFrame() {
+    }
+
 
     /** set 0: {@code storageBuffers} storage buffers, then {@code sampledTextures} combined image samplers (api 4.1). */
     Object createComputePipeline(String name, ByteBuffer spirv, int storageBuffers, int sampledTextures, int pushBytes);

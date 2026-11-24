@@ -71,13 +71,46 @@ public final class HeadlessVkBackend extends VkPackBackend {
         this(allowGpu, capBytes, validation, 1);
     }
 
+    /**
+     * PACK-FULL: the device's feature set. ALL = every core feature the device offers (the replays' default: blind to a
+     * feature the game does not enable); GAME = what DeviceManager enables (rc14 set + indirect bits + the pack's
+     * {@link PackDeviceFeatures}); GAME_NO_PACK = the game set before PACK-FULL (negative control: no store features).
+     */
+    public enum Features { ALL, GAME, GAME_NO_PACK }
+
+    /** -Diroh.vkval.stacks=true: each validation message carries the recording call stack (harness debugging) */
+    static final boolean STACKS = Boolean.getBoolean("iroh.vkval.stacks");
+
+    private boolean vertexStores = true, fragmentStores = true;
+
+    @Override
+    protected boolean vertexStoresEnabled() {
+        return vertexStores;
+    }
+
+    @Override
+    protected boolean fragmentStoresEnabled() {
+        return fragmentStores;
+    }
+
+    private boolean independentBlend = true;
+
+    @Override
+    protected boolean independentBlendEnabled() {
+        return independentBlend;
+    }
+
     /** {@code inFlight}: frames in flight (V-7; 1 = submit and wait every frame) */
     public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation, int inFlight) {
+        this(allowGpu, capBytes, validation, inFlight, Features.ALL);
+    }
+
+    public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation, int inFlight, Features features) {
         this.cap = capBytes;
         this.inFlight = Math.max(1, inFlight);
         try (MemoryStack s = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(s).sType$Default().pApplicationName(s.UTF8("iroh-pack-replay"))
-                    .apiVersion(VK_API_VERSION_1_3);
+                    .apiVersion(features == Features.ALL ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2); // PACK-FULL review #4: the game's instance is 1.2
             VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(s).sType$Default().pApplicationInfo(app);
             if (validation)
                 ici.ppEnabledLayerNames(s.pointers(s.UTF8("VK_LAYER_KHRONOS_validation")))
@@ -87,7 +120,12 @@ public final class HeadlessVkBackend extends VkPackBackend {
             instance = new VkInstance(pp.get(0), ici);
             if (validation) {
                 messengerCb = VkDebugUtilsMessengerCallbackEXT.create((sev, type, data, user) -> {
-                    validationErrors.add(VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString());
+                    String msg = VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString();
+                    if (STACKS) // PACK-FULL harness debugging: where the offending command was recorded
+                        msg += " @ " + java.util.Arrays.stream(Thread.currentThread().getStackTrace()).skip(2)
+                                .filter(f -> f.getClassName().startsWith("dev.elemore")).limit(8).map(f -> f.getClassName().replaceAll(".*\\.", "") + "." + f.getMethodName() + ":" + f.getLineNumber())
+                                .collect(java.util.stream.Collectors.joining(" < "));
+                    validationErrors.add(msg);
                     return VK_FALSE;
                 });
                 LongBuffer ml = s.mallocLong(1);
@@ -138,6 +176,24 @@ public final class HeadlessVkBackend extends VkPackBackend {
             // enable the core 1.0 features the device supports (the in-game device does the same for what packs need)
             VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default();
             vkGetPhysicalDeviceFeatures2(phys, f2);
+            if (features != Features.ALL) { // PACK-FULL: DeviceManager's set (core bits; the 1.1/1.2 bits the pack does not use stay off)
+                VkPhysicalDeviceFeatures a = f2.features(), e = VkPhysicalDeviceFeatures.calloc(s);
+                e.samplerAnisotropy(a.samplerAnisotropy()).logicOp(a.logicOp()).wideLines(a.wideLines())
+                        .multiDrawIndirect(a.multiDrawIndirect()).drawIndirectFirstInstance(a.drawIndirectFirstInstance());
+                if (features == Features.GAME)
+                    PackDeviceFeatures.apply(a, e);
+                f2.features().set(e);
+                // DeviceManager also enables shaderDrawParameters (IndirectDrawCaps, Vulkan 1.1 struct) where offered
+                VkPhysicalDeviceVulkan11Features q11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default();
+                VkPhysicalDeviceFeatures2 probe = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(q11.address());
+                vkGetPhysicalDeviceFeatures2(phys, probe);
+                VkPhysicalDeviceVulkan11Features e11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default()
+                        .shaderDrawParameters(q11.shaderDrawParameters() && a.multiDrawIndirect());
+                f2.pNext(e11.address());
+            }
+            vertexStores = f2.features().vertexPipelineStoresAndAtomics();
+            fragmentStores = f2.features().fragmentStoresAndAtomics();
+            independentBlend = f2.features().independentBlend();
             VkDeviceQueueCreateInfo.Buffer qci = VkDeviceQueueCreateInfo.calloc(1, s).sType$Default().queueFamilyIndex(family)
                     .pQueuePriorities(s.floats(1f));
             VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(s).sType$Default().pNext(f2.address()).pQueueCreateInfos(qci);
@@ -403,19 +459,16 @@ public final class HeadlessVkBackend extends VkPackBackend {
                 waitSlot(i);
             return;
         }
-        // RQ-R1-b: nothing recorded still drains what was queued since the last submit (every submit here was waited, so
-        // the GPU reads none of it): host buffers freed "after the frame" between frames (FrameExecutor.close ->
-        // freeBuffer) were otherwise never freed and leaked at vkDestroyDevice (packBarrierBench, 9 buffers + 9 memories)
-        if (recording) {
-            try (MemoryStack s = stackPush()) {
-                vkEndCommandBuffer(cmd);
-                recording = false;
-                vkResetFences(device, fence);
-                check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(cmd)), fence), "vkQueueSubmit");
-                int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
-                if (r != VK_SUCCESS)
-                    throw new IllegalStateException("replay frame did not finish in 120 s (VkResult " + r + ")");
-            }
+        if (!recording)
+            return;
+        try (MemoryStack s = stackPush()) {
+            vkEndCommandBuffer(cmd);
+            recording = false;
+            vkResetFences(device, fence);
+            check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(cmd)), fence), "vkQueueSubmit");
+            int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
+            if (r != VK_SUCCESS)
+                throw new IllegalStateException("replay frame did not finish in 120 s (VkResult " + r + ")");
         }
         for (HostBuf b : frameBufs)
             freeHostBuffer(b);
@@ -423,6 +476,22 @@ public final class HeadlessVkBackend extends VkPackBackend {
         for (Runnable r : later)
             r.run();
         later.clear();
+    }
+
+    /**
+     * PACK-FULL harness: false = close() destroys only the backend's own frame objects, not the pack's (images,
+     * pipelines, render passes, ...): what the pack owner did not release shows up as a validation leak report at
+     * vkDestroyDevice, as in game when nothing released the pack at shutdown.
+     */
+    public boolean releaseOnClose = true;
+
+    /** PACK-FULL harness: everything recorded is submitted and complete, every deferred release has run */
+    public void submitAndDrain() {
+        submitWait();
+        if (inFlight == 1)
+            return;
+        for (int i = 0; i < inFlight; i++)
+            waitSlot(i);
     }
 
     @Override
@@ -557,11 +626,17 @@ public final class HeadlessVkBackend extends VkPackBackend {
         if (queryPool != 0)
             vkDestroyQueryPool(device, queryPool, null);
         queryPool = 0;
-        destroyShared();
+        if (releaseOnClose)
+            destroyShared();
         submitWait();
         for (Runnable r : later)
             r.run();
         later.clear();
+        // PACK-FULL: submitWait returns early when nothing is recording, so host buffers freed "after the frame" since
+        // the last submit (staging, SSBOs) were never released: packBarrierBench leaked 18 objects at vkDestroyDevice
+        for (HostBuf b : frameBufs)
+            freeHostBuffer(b);
+        frameBufs.clear();
         vkDeviceWaitIdle(device);
         if (inFlight > 1)
             for (int i = 0; i < inFlight; i++) {

@@ -73,7 +73,9 @@ public final class PackDefaultOffTest {
                 hooks++;
         check("WorldStages calls onWorldEnd", ws.contains("PackRuntime.onWorldEnd()"));
         check("LevelRendererMixin calls onSetLevel", lr.contains("PackRuntime.onSetLevel()"));
-        check("exactly 6 files outside the runtime reference PackRuntime (WorldStages, mixin, IrohDebug, TemporalRuntime + UpscaleSettings: pack wins over render scale until P4-8, WorldRenderer: P3-11 translucent hook): " + hooks, hooks == 6);
+        check("exactly 7 files outside the runtime reference PackRuntime (WorldStages, mixin, IrohDebug, TemporalRuntime + UpscaleSettings: pack wins over render scale until P4-8, WorldRenderer: P3-11 translucent hook, Vulkan: PACK-FULL shutdown): " + hooks, hooks == 7);
+        String vk = Files.readString(Path.of("src/main/java/net/vulkanmod/vulkan/Vulkan.java"));
+        check("Vulkan.cleanUp calls PackRuntime.shutdown (PACK-FULL; a no-op when the pack never ran)", vk.contains("PackRuntime.shutdown()"));
         // P3-11: the renderer's per-bind and per-draw paths read Substitution.HOOK once and nothing else of the pack path
         String rd = Files.readString(Path.of("src/main/java/net/vulkanmod/vulkan/Renderer.java"));
         String bindBody = rd.substring(rd.indexOf("public void bindGraphicsPipeline("), rd.indexOf("public void uploadAndBindUBOs("));

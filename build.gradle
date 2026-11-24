@@ -1098,3 +1098,25 @@ tasks.register('syncPlanTest', JavaExec) {
 	mainClass = 'dev.elemore.iroh.shaderpack.runtime.SyncPlanTest'
 	workingDir = projectDir
 }
+
+// PACK-FULL (td-c6e4f8, RQ-T2-a): the pack FULL world pass on lavapipe (validation core + sync, 2 frames in flight, the
+// GAME device feature set) through resizes, a dimension change, a reload and the shutdown, with a live-object leak counter.
+// ./gradlew packFullVkRepro [-Pmode=old|new|both]; last line "# packfullvk PASS|FAIL" (old = every T-2 class reproduced).
+tasks.register('packFullVkRepro', JavaExec) {
+	group = 'verification'
+	description = 'Pack FULL world pass + resizes/reload/shutdown on lavapipe: no in-pass transfers, no transfer-layout descriptors, no store-feature VUID, no leaks'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.shaderpack.runtime.PackFullVkRepro'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	ext.syncval = true
+	doFirst {
+		systemProperty 'pfv.mode', project.findProperty('mode') ?: 'new'
+		if (project.hasProperty('stacks')) systemProperty 'iroh.vkval.stacks', 'true'
+		if (project.hasProperty('neg')) systemProperty 'pfv.neg', project.property('neg')
+		if (project.hasProperty('noDraw')) systemProperty 'pfv.noDraw', 'true'
+		if (project.hasProperty('features')) systemProperty 'pfv.features', project.property('features')
+		useLavapipe(it)
+	}
+}
