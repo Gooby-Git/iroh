@@ -35,6 +35,15 @@ public final class MemoryBudgetTest {
         check("driver budget bounds the cap: iroh 1 GiB + (14 - 12 - 1.5) GiB = 1.5 GiB (" + b.cap() / MiB + " MiB)", b.cap() == 1536 * MiB);
         check("1 GiB of 1.5 GiB cap = 67%: OK", b.state() == MemoryBudget.State.OK);
 
+        // P2-12 (RQ-RD2a-a): the automatic cap follows the driver's budget, not the heap size (8 GiB card, RADV-like 6.9 GiB budget, nothing used)
+        MemoryBudget small = new MemoryBudget(0);
+        small.sample(8 * GiB, (long) (6.9 * GiB), 0, 0);
+        check("auto cap from the BUDGET: 8 GiB heap, 6.9 GiB budget -> 3.45 GiB, not 4 GiB (" + small.cap() / MiB + " MiB)", small.cap() == (long) (6.9 * GiB) / 2);
+        small.sample(8 * GiB, 0, 0, 0);
+        check("no budget reading (0): auto cap from the heap size, 4 GiB", small.cap() == 4 * GiB);
+        small.sample(16 * GiB, 20 * GiB, 0, 0);
+        check("a budget above the heap never raises the cap past heap/2 and 6 GiB", small.cap() == 6 * GiB);
+
         MemoryBudget.State t = b.sample(heap, 0, 0, (long) (5.3 * GiB));
         check("5.3 GiB of 6 GiB = 88%: WARN transition", t == MemoryBudget.State.WARN && b.state() == MemoryBudget.State.WARN);
         check("WARN reported once per episode", b.takeWarn() && !b.takeWarn());

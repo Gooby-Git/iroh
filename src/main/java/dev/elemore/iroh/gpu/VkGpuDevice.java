@@ -250,7 +250,7 @@ public abstract class VkGpuDevice implements GpuDevice {
                     .newLayout(VK_IMAGE_LAYOUT_GENERAL).srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .image(img.image);
             b.subresourceRange().aspectMask(img.aspect).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-            vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, b);
+            vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, GpuCore.TARGET_STAGES, 0, null, null, b); // P2-12: targets are only used in these stages
         }
         return img;
     }

@@ -3,6 +3,7 @@ package dev.elemore.iroh.vktest;
 import dev.elemore.iroh.temporal.DeviceCaps;
 import dev.elemore.iroh.upscale.fsr.FsrUpscaler;
 import net.vulkanmod.vulkan.device.IndirectDrawCaps;
+import net.vulkanmod.vulkan.device.SyncMemCaps;
 import net.vulkanmod.vulkan.util.VkEnum;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -75,7 +76,7 @@ public final class HwCapsRepro {
             tier = upTier;
             extra = " fsr3=" + (natives && DeviceCaps.fsrCapable() ? "available" : natives ? "needs-device-features" : "needs-native-library")
                 + " fsrCtx=" + (fsrMade ? "created" : "n/a") + " dlss=" + (nvidia ? "notYet(nvidia)" : "needsNvidia")
-                + rtTier(s, phys, exts) + terrainTier(s, phys);
+                + rtTier(s, phys, exts) + terrainTier(s, phys) + syncMemPath(s, phys, exts);
             for (String e : Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size())) {
                 System.out.println("    ! " + e.substring(0, Math.min(170, e.length())).replace("\n", " "));
             }
@@ -206,9 +207,58 @@ public final class HwCapsRepro {
         return " terrainDraw=" + real + (t == IndirectDrawCaps.TerrainTier.INDIRECT ? "(firstInstance)" : "(T-C fallback)") + " terrainFallback=direct";
     }
 
-    /** Branch hook: extra feature structs the branch's own device code chains behind the 1.2 struct (none on 2b). */
-    static void extendChain(MemoryStack s, VkPhysicalDevice phys, VkPhysicalDeviceVulkan12Features e12) {}
+    static SyncMemCaps.Decision lastSyncMem;
 
-    /** Branch hook: device extensions the branch's own device code enables (none on 2b). */
-    static void deviceExtensions(MemoryStack s, VkDeviceCreateInfo dci) {}
+    /** Branch hook: extra feature structs the branch's own device code chains behind the 1.2 struct (P2-12: timeline semaphore, memory priority). */
+    static void extendChain(MemoryStack s, VkPhysicalDevice phys, VkPhysicalDeviceVulkan12Features e12) {
+        Set<String> exts = VkEnum.deviceExtensions(phys);
+        VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
+        vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a12.address()));
+        lastSyncMem = SyncMemCaps.apply(exts, a12.timelineSemaphore(), SyncMemCaps.priorityFeatureOffered(s, phys, exts), e12);
+        if (lastSyncMem.priority()) SyncMemCaps.chainPriority(e12, VkPhysicalDeviceMemoryPriorityFeaturesEXT.calloc(s));
+    }
+
+    /** Branch hook: device extensions the branch's own device code enables (P2-12: memory budget / priority when offered). */
+    static void deviceExtensions(MemoryStack s, VkDeviceCreateInfo dci) {
+        List<String> names = SyncMemCaps.extensionNames();
+        if (names.isEmpty()) return;
+        PointerBuffer pb = s.mallocPointer(names.size());
+        for (String n : names) pb.put(s.UTF8(n));
+        dci.ppEnabledExtensionNames(pb.flip());
+    }
+
+    /**
+     * P2-12: the sync / memory path this device takes (timeline vs binary semaphores, VK_EXT_memory_budget, VK_EXT_memory_priority), checked
+     * against a raw query (used only when offered) and with each switch off (the fallback creates a clean device). Returns the tier-line fragment.
+     */
+    static String syncMemPath(MemoryStack s, VkPhysicalDevice phys, Set<String> exts) {
+        SyncMemCaps.Decision real = lastSyncMem;
+        boolean rawTl;
+        try (MemoryStack f = s.push()) {
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(f).sType$Default();
+            vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(f).sType$Default().pNext(a12.address()));
+            rawTl = a12.timelineSemaphore();
+        }
+        boolean rawBudget = exts.contains(SyncMemCaps.EXT_BUDGET), rawPrio = exts.contains(SyncMemCaps.EXT_PRIORITY) && SyncMemCaps.priorityFeatureOffered(s, phys, exts);
+        check(real != null && real.timeline() == rawTl && real.budget() == rawBudget && real.priority() == rawPrio,
+            "sync/memory decision " + real + " != raw (timeline=" + rawTl + " budget=" + rawBudget + " priority=" + rawPrio + ")");
+        String path = real == null ? "?" : real.path();
+        String oldT = System.getProperty("iroh.sync.timeline"), oldM = System.getProperty("iroh.memory.ext");
+        try {
+            System.setProperty("iroh.sync.timeline", "off");
+            System.setProperty("iroh.memory.ext", "off");
+            create(s, false);
+            check(lastSyncMem != null && !lastSyncMem.timeline() && !lastSyncMem.budget() && !lastSyncMem.priority(), "switches off: decision still " + lastSyncMem);
+        } finally {
+            restore("iroh.sync.timeline", oldT);
+            restore("iroh.memory.ext", oldM);
+        }
+        create(s, false); // leave the real decision behind
+        check(lastSyncMem != null && lastSyncMem.equals(real), "sync/memory decision not restored: " + lastSyncMem);
+        return " syncPath=" + path.replace(' ', ',');
+    }
+
+    private static void restore(String k, String v) {
+        if (v == null) System.clearProperty(k); else System.setProperty(k, v);
+    }
 }

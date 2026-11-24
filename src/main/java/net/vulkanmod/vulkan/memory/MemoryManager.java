@@ -269,6 +269,11 @@ public class MemoryManager {
 
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack);
             allocationInfo.requiredFlags(memProperties);
+            // P2-12 (L10, RQ-APP1-e): large render targets get their own allocation; priority 1.0 only with VK_EXT_memory_priority enabled
+            if (net.vulkanmod.vulkan.device.SyncMemCaps.imageDedicated(usage, width, height, format))
+                allocationInfo.flags(org.lwjgl.util.vma.Vma.VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+            float prio = net.vulkanmod.vulkan.device.SyncMemCaps.imagePriority(usage);
+            if (prio >= 0f) allocationInfo.priority(prio);
 
             dev.elemore.iroh.memory.MemoryGuard.beforeAllocation("image " + width + "x" + height);
             int result = dev.elemore.iroh.memory.MemoryGuard.check(vmaCreateImage(ALLOCATOR, imageInfo, allocationInfo, pTextureImage, pTextureImageMemory, null), "vmaCreateImage " + width + "x" + height);
