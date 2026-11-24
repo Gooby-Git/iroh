@@ -640,6 +640,11 @@ public final class GpuCore {
             height = Math.max(1, Math.round((worldPhase ? worldH : screenH) * scale));
         }
         if (width < 1 || height < 1 || width > 16384 || height > 16384) throw new IllegalArgumentException("target size " + width + "x" + height);
+        if (!device.frameRecording()) { // V-M31: a clear code, no image created (was: IllegalStateException after the image existed)
+            lastRefusal = "OUTSIDE_FRAME: " + ownerId + ": target " + name + " needs a recording frame; create targets from a "
+                    + "FrameStage hook (FrameStage.BEFORE_MAIN_PASS), not from a client tick or init";
+            return null;
+        }
         long bytes = (long) width * height * format.bytesPerTexel;
         if (o.bytes + bytes > ownerShareBytes()) {
             lastRefusal = ownerId + ": target " + name + " (" + (bytes >> 20) + " MiB) would exceed its share " + (ownerShareBytes() >> 20)

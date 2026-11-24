@@ -254,7 +254,38 @@ public final class ApiReplay {
         MemoryUtil.memFree(white);
     }
 
+    /** V-M31: a target constructor that fails mid-way frees everything it made; outside a frame it refuses with a code. */
+    static void failedConstructor() {
+        HeadlessGpuDevice dev = new HeadlessGpuDevice(1L << 30, false);
+        long base = dev.allocatedBytes();
+        GpuCore core = GpuCore.install(dev);
+        core.resize(W, H);
+        try {
+            dev.setOutsideFrame(true);
+            RenderTargetHandle t0 = IrohTargets.create(OWNER, "tick", IrohTargets.Format.RGBA8, 64, 64);
+            check("target from outside a frame: null + OUTSIDE_FRAME code, no image made (" + IrohBuffers.lastRefusal() + ")",
+                    t0 == null && IrohBuffers.lastRefusal().startsWith("OUTSIDE_FRAME") && dev.allocatedBytes() == base);
+            dev.setOutsideFrame(false);
+            dev.failNextCmds(1); // image exists, the layout transition cannot record
+            boolean threw = false;
+            try {
+                IrohTargets.create(OWNER, "boom", IrohTargets.Format.RGBA16F, 256, 256);
+            } catch (IllegalStateException e) {
+                threw = true;
+            }
+            dev.flush(); // deferred frees run
+            check("constructor failing after the image exists: threw, image/view/memory freed (" + (dev.allocatedBytes() - base) + " bytes left), owner holds 0",
+                    threw && dev.allocatedBytes() == base && IrohBuffers.ownerBytes(OWNER) == 0);
+            RenderTargetHandle ok = IrohTargets.create(OWNER, "after", IrohTargets.Format.RGBA8, 64, 64);
+            check("device usable after both failures", ok != null);
+        } finally {
+            GpuCore.uninstall();
+            dev.close(); // validation layer reports any object still alive here
+        }
+    }
+
     public static void main(String[] args) throws Exception {
+        failedConstructor();
         int[] ref = reference(quads());
         StringBuilder h1 = new StringBuilder(), h2 = new StringBuilder();
         long[] left = new long[1];

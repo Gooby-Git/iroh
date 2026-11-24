@@ -202,8 +202,23 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         return uploadCmd;
     }
 
+    private int failCmds;
+    private boolean outsideFrame;
+
+    /** V-M31 test seam: the next n cmd() calls throw (a recording that fails after the image exists). */
+    public void failNextCmds(int n) { failCmds = n; }
+
+    /** V-M31 test seam: frameRecording() answers false (a client tick). */
+    public void setOutsideFrame(boolean v) { outsideFrame = v; }
+
+    @Override public boolean frameRecording() { return !outsideFrame; }
+
     @Override
     protected VkCommandBuffer cmd() {
+        if (failCmds > 0) {
+            failCmds--;
+            throw new IllegalStateException("injected: no frame is recording");
+        }
         if (!recording) {
             try (MemoryStack s = stackPush()) {
                 vkResetCommandBuffer(cmd, 0);
