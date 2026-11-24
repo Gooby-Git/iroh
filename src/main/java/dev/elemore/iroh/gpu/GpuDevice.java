@@ -21,6 +21,12 @@ public interface GpuDevice {
     /** True where compute and off-screen passes may be recorded now (outside the main render pass). */
     boolean canRecordOutsideMainPass();
 
+    /**
+     * V-M31: true while a frame command buffer is recording (a FrameStage callback). Creating a render target needs it (the
+     * layout transition is recorded); from a client tick it is false and createTarget refuses with {@code OUTSIDE_FRAME}.
+     */
+    default boolean frameRecording() { return true; }
+
     Object createBuffer(long bytes, int usage);
 
     long bufferSize(Object buffer);

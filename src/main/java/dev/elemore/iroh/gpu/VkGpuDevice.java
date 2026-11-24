@@ -276,6 +276,9 @@ public abstract class VkGpuDevice implements GpuDevice {
                     .image(img.image);
             b.subresourceRange().aspectMask(img.aspect).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
             vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, b);
+        } catch (RuntimeException | Error e) { // V-M31: a failed constructor frees what it made (image, view, memory)
+            destroyImage(img);
+            throw e;
         }
         return img;
     }
@@ -402,15 +405,20 @@ public abstract class VkGpuDevice implements GpuDevice {
 
     private long pool(int slot) {
         if (queryPools == null) {
-            queryPools = new long[framesInFlight()];
+            long[] made = new long[framesInFlight()];
+            int n = 0;
             try (MemoryStack s = stackPush()) {
-                for (int i = 0; i < queryPools.length; i++) {
+                for (; n < made.length; n++) {
                     LongBuffer lb = s.mallocLong(1);
                     check(vkCreateQueryPool(device(), VkQueryPoolCreateInfo.calloc(s).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP)
                             .queryCount(QUERIES), null, lb), "query pool");
-                    queryPools[i] = lb.get(0);
+                    made[n] = lb.get(0);
                 }
+            } catch (RuntimeException | Error e) { // V-M31: all-or-nothing, reverse order
+                for (int i = n - 1; i >= 0; i--) vkDestroyQueryPool(device(), made[i], null);
+                throw e;
             }
+            queryPools = made;
         }
         return queryPools[slot];
     }

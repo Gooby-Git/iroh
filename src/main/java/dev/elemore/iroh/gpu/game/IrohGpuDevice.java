@@ -213,6 +213,11 @@ public final class IrohGpuDevice extends VkGpuDevice {
     }
 
     @Override
+    public boolean frameRecording() {
+        return Renderer.recordingCommandBuffer("api4") != null;
+    }
+
+    @Override
     protected VkCommandBuffer cmd() {
         closePackWorldPass(); // INT-3: never record inside the pack world pass's attachments
         VkCommandBuffer c = Renderer.recordingCommandBuffer("api4");
