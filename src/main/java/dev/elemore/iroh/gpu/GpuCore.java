@@ -166,7 +166,7 @@ public final class GpuCore {
             if (!o.live.isEmpty()) b.append(' ').append(o.id).append(' ').append(o.live.size()).append(" objects ").append(o.bytes >> 20).append(" MiB");
         long[] r = routeCounts; // UPLOAD-SYNC: how uploads were placed (in-pass hazards should stay 0 in play)
         b.append(" | uploads in-stream ").append(r[0]).append(" pre-frame ").append(r[1]).append(" deferred ").append(r[3])
-                .append(" in-pass ").append(r[4]).append(" hazards ").append(uploadHazards);
+                .append(" in-pass ").append(r[4]).append(" coalesced ").append(coalesced).append(" hazards ").append(uploadHazards);
         return b.toString();
     }
 
@@ -216,6 +216,8 @@ public final class GpuCore {
         long lastUseSerial = Long.MIN_VALUE;
         /** UPLOAD-SYNC: deferred uploads not yet recorded */
         int deferred;
+        /** US-REV: the drain run that already noted this buffer's transfer write */
+        long drainEpoch;
         /** UPLOAD-SYNC check: recent pre-frame upload ranges {serial, offset, end} (only on the in-pass path) */
         long[][] recent;
 
@@ -330,7 +332,10 @@ public final class GpuCore {
      *   <li>PRE-FRAME: no GPU work of this frame or of a frame in flight touched the buffer: the transfer batch that runs
      *       before the frame (game: UploadManager at endFrame, waited by the frame submit). No frame-buffer barrier.</li>
      *   <li>DEFERRED: no frame records (client tick, AFTER_PRESENT) and a frame in flight uses the buffer: copied now and
-     *       recorded in-stream at the next frame start, before FrameStage.BEFORE_MAIN_PASS.</li>
+     *       recorded in-stream at the next frame start, before FrameStage.BEFORE_MAIN_PASS, or at the next api-4 GPU work
+     *       that can record outside a pass, whichever comes first (US-REV).</li>
+     *   <li>A buffer with a deferred upload keeps deferring (an upload never overtakes an earlier one into the same buffer);
+     *       an older deferred upload whose bytes a newer one fully covers is dropped (counted: {@code coalesced}).</li>
      *   <li>Inside a render pass (an IrohTargets pass, or the main pass in a world stage; api 4.0 cannot break it): PRE-FRAME
      *       as before: write only bytes nothing earlier in this frame or in flight reads (per-slot elements). The check
      *       (-Diroh.api4.uploadCheck) reports a used buffer here.</li>
@@ -339,6 +344,9 @@ public final class GpuCore {
      */
     public void upload(GpuBuffer target, long offset, ByteBuffer src) {
         Buf b = buf(target);
+        Thread rt = renderThread; // US-REV (review m5): render thread only; the queue and the frame buffer are not thread-safe
+        if (rt != null && Thread.currentThread() != rt && CHECK > 0)
+            hazard(b, "uploaded from thread " + Thread.currentThread().getName() + ", not the render thread (api 4 is render-thread only)");
         int len = src == null ? -1 : src.remaining();
         if (len <= 0 || (len & 3) != 0 || offset < 0 || (offset & 3) != 0 || offset + len > b.bytes)
             throw new IllegalArgumentException("upload " + len + " bytes at " + offset + " into " + b.name + " (" + b.bytes + " bytes): sizes and offsets in 4-byte units, inside the buffer");
@@ -368,8 +376,14 @@ public final class GpuCore {
     private long uploadHazards;
     private final java.util.Set<String> hazardLogged = new java.util.HashSet<>();
     private long frameSerial, completedSerial = -1;
+    /** US-REV: uploads that wait for an in-stream point (deferred between frames), FIFO */
     private final List<Object[]> deferredUploads = new ArrayList<>(); // {Buf, Long offset, ByteBuffer copy}
-    private boolean draining;
+    private boolean draining, pendingWarned;
+    private long pendingBytes, coalesced;
+    /** US-REV: the thread that runs frames (set at the first frameStart; null offline until then) */
+    private Thread renderThread;
+    /** US-REV (review M1): queued bytes above this log once; they stay queued (no data is dropped) */
+    static final long PENDING_WARN_BYTES = 64L << 20;
 
     public long[] uploadRoutes() {
         return routeCounts.clone();
@@ -379,6 +393,11 @@ public final class GpuCore {
         return uploadHazards;
     }
 
+    /** US-REV: bytes waiting in the upload queue */
+    public long pendingUploadBytes() {
+        return pendingBytes;
+    }
+
     /** test seam: the route {@link #upload} would take for {@code target} now */
     public int uploadRoute(GpuBuffer target) {
         return route(buf(target));
@@ -386,6 +405,7 @@ public final class GpuCore {
 
     /** start of a frame (game: beginFrame after the slot fence): frames up to serial - framesInFlight have finished */
     public void frameStart() {
+        if (renderThread == null) renderThread = Thread.currentThread();
         frameSerial++;
         completedSerial = frameSerial - Math.max(1, device.framesInFlight());
         drainDeferred(); // offline; in game the frame buffer is not begun yet (frameRecordingStarted)
@@ -398,7 +418,10 @@ public final class GpuCore {
     private int route(Buf b) {
         if (LEGACY_PREFRAME) return ROUTE_PRE_FRAME;
         boolean recording = device.frameRecording();
-        if (recording && !apiPassOpen() && device.inFrameCopyPossible()) return ROUTE_IN_STREAM;
+        if (recording && !apiPassOpen() && device.inFrameCopyPossible()) return ROUTE_IN_STREAM; // the queue was drained first
+        // US-REV (review m1): an earlier upload into it still waits in the queue: queue behind it (a pre-frame copy would
+        // land BEFORE it and the older bytes would win); drained at the next point that can record outside a pass
+        if (b.deferred > 0) return ROUTE_DEFERRED;
         if (b.lastUseSerial <= completedSerial) return ROUTE_PRE_FRAME; // nothing recorded or in flight touches it
         return recording ? ROUTE_IN_PASS : ROUTE_DEFERRED;
     }
@@ -409,13 +432,38 @@ public final class GpuCore {
         routeCounts[r]++;
         switch (r) {
             case ROUTE_IN_STREAM -> inStream(b, offset, d);
-            case ROUTE_DEFERRED -> {
-                ByteBuffer copy = MemoryUtil.memAlloc(d.remaining());
-                copy.put(d.duplicate()).flip();
-                deferredUploads.add(new Object[]{b, offset, copy});
-                b.deferred++;
-            }
+            case ROUTE_DEFERRED -> queue(b, offset, d);
             default -> preFrame(b, offset, d, r == ROUTE_IN_PASS);
+        }
+    }
+
+    private void queue(Buf b, long offset, ByteBuffer d) {
+        int len = d.remaining();
+        // US-REV (review M1): an older queued upload whose bytes this one fully covers is dead: every reader drains the queue
+        // before it records (use()), so no GPU work lies between the two
+        if (b.deferred > 0)
+            for (java.util.Iterator<Object[]> it = deferredUploads.iterator(); it.hasNext(); ) {
+                Object[] e = it.next();
+                long from = (Long) e[1];
+                ByteBuffer c = (ByteBuffer) e[2];
+                if (e[0] == b && from >= offset && from + c.remaining() <= offset + len) {
+                    it.remove();
+                    b.deferred--;
+                    pendingBytes -= c.remaining();
+                    MemoryUtil.memFree(c);
+                    coalesced++;
+                }
+            }
+        ByteBuffer copy = MemoryUtil.memAlloc(len);
+        copy.put(d.duplicate()).flip();
+        deferredUploads.add(new Object[]{b, offset, copy});
+        b.deferred++;
+        pendingBytes += len;
+        if (pendingBytes > PENDING_WARN_BYTES && !pendingWarned) {
+            pendingWarned = true;
+            System.err.println("Iroh api4 UPLOAD-SYNC: " + (pendingBytes >> 20) + " MiB of uploads wait for the next frame (" + b.owner.id + "/"
+                    + b.name + "): a frame in flight still uses the buffers and no frame records (minimised?); upload into per-slot"
+                    + " buffers (IrohBuffers.frameSlot) or from FrameStage.BEFORE_MAIN_PASS (logged once)");
         }
     }
 
@@ -450,7 +498,6 @@ public final class GpuCore {
         for (int i = 0; i < rec.length; i++) {
             long[] e = rec[i];
             if (e == null || e[0] <= completedSerial) {
-                rec[i] = null;
                 if (free < 0) free = i;
                 continue;
             }
@@ -462,7 +509,11 @@ public final class GpuCore {
             }
         }
         if (free < 0) free = (int) (frameSerial & 15);
-        rec[free] = new long[]{frameSerial, from, to};
+        long[] e = rec[free]; // US-REV (review m4): slots are reused, no allocation per upload
+        if (e == null) e = rec[free] = new long[3];
+        e[0] = frameSerial;
+        e[1] = from;
+        e[2] = to;
     }
 
     private void hazard(Buf b, String what) {
@@ -482,25 +533,59 @@ public final class GpuCore {
         if (deferredUploads.isEmpty() || draining || apiPassOpen() || !device.frameRecording() || !device.inFrameCopyPossible()) return;
         draining = true;
         try {
-            for (Object[] e : deferredUploads) {
-                Buf b = (Buf) e[0];
-                ByteBuffer copy = (ByteBuffer) e[2];
-                b.deferred--;
-                try {
-                    if (b.alive) inStream(b, (Long) e[1], copy);
-                } finally {
-                    MemoryUtil.memFree(copy);
+            // US-REV (review M2): one barrier for a run of copies, not one per copy: a run ends only where a copy overlaps
+            // bytes an earlier copy of the run writes (that WAW needs its own barrier); FIFO order is kept
+            int n = deferredUploads.size();
+            for (int from = 0; from < n; ) {
+                int to = from + 1;
+                while (to < n && to - from < 64 && !overlapsRun(from, to)) to++; // runs of at most 64: the overlap test stays O(64 n)
+                drainEpoch++;
+                for (int i = from; i < to; i++) {
+                    Buf b = (Buf) deferredUploads.get(i)[0];
+                    if (b.alive && b.drainEpoch != drainEpoch) {
+                        b.drainEpoch = drainEpoch;
+                        use(b, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true);
+                    }
                 }
+                flushBarrier();
+                for (int i = from; i < to; i++) {
+                    Object[] e = deferredUploads.get(i);
+                    Buf b = (Buf) e[0];
+                    if (!b.alive) continue;
+                    device.uploadInFrame(b.dev, (Long) e[1], (ByteBuffer) e[2]);
+                }
+                from = to;
+            }
+        } finally {
+            for (Object[] e : deferredUploads) {
+                ((Buf) e[0]).deferred--;
+                MemoryUtil.memFree((ByteBuffer) e[2]);
             }
             deferredUploads.clear();
-        } finally {
+            pendingBytes = 0;
             draining = false;
         }
+    }
+
+    private long drainEpoch;
+
+    /** entry {@code j} writes bytes of the same buffer an entry in [from, j) writes */
+    private boolean overlapsRun(int from, int j) {
+        Object[] e = deferredUploads.get(j);
+        long a = (Long) e[1], z = a + ((ByteBuffer) e[2]).remaining();
+        for (int i = from; i < j; i++) {
+            Object[] f = deferredUploads.get(i);
+            if (f[0] != e[0]) continue;
+            long fa = (Long) f[1];
+            if (fa < z && a < fa + ((ByteBuffer) f[2]).remaining()) return true;
+        }
+        return false;
     }
 
     private void dropDeferred(Buf b) {
         deferredUploads.removeIf(e -> {
             if (e[0] != b) return false;
+            pendingBytes -= ((ByteBuffer) e[2]).remaining();
             MemoryUtil.memFree((ByteBuffer) e[2]);
             return true;
         });
@@ -513,7 +598,7 @@ public final class GpuCore {
 
     /** Notes one use of {@code b}; the barrier it needs is collected until {@link #flushBarrier}. */
     private void use(Buf b, int stage, int access, boolean write) {
-        if (b.deferred > 0 && !draining) { // UPLOAD-SYNC: a use while an upload into it waits for the next frame start
+        if (!draining && !deferredUploads.isEmpty()) { // US-REV: queued uploads are recorded before any later GPU work
             drainDeferred();
             if (b.deferred > 0 && CHECK > 0)
                 hazard(b, "used while an upload into it is still deferred (recorded at the next frame start): this use reads the OLD bytes");

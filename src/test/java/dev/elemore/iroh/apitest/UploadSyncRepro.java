@@ -23,6 +23,15 @@ import java.nio.ByteOrder;
  *   <li>D, upload inside an open api-4 pass (Vista's per-use uniform elements): pre-frame as in api 4.1; distinct bytes
  *       are fine, the same bytes twice in one frame is reported by the check.</li>
  * </ol>
+ * US-REV (review of 9793f7d), on a second device with TWO frames in flight ({@link HeadlessGpuDevice#setFramesInFlight}:
+ * frame command buffers are held until their slot comes round, the pre-frame batch is submitted at once, the worst legal
+ * schedule of the game's async transfer queue), so in-flight ordering is exercised, not only program order:
+ * <ol start="5">
+ *   <li>B2, B with the frame really in flight: the frame in flight reads the OLD bytes, the next frame the NEW.</li>
+ *   <li>G, a deferred upload still queued (its drain skipped: the main pass already bound when the frame's first api-4
+ *       call came) and a second upload into the same buffer once the frame that used it has finished: the second must
+ *       win (review m1).</li>
+ * </ol>
  */
 public final class UploadSyncRepro {
     static int pass, total;
@@ -65,7 +74,7 @@ public final class UploadSyncRepro {
 
     static String routes(GpuCore core) {
         long[] r = core.uploadRoutes();
-        return "routes in-stream " + r[0] + " pre-frame " + r[1] + " pass-break " + r[2] + " deferred " + r[3] + " in-pass " + r[4];
+        return "routes in-stream " + r[0] + " pre-frame " + r[1] + " deferred " + r[3] + " in-pass " + r[4];
     }
 
     public static void main(String[] args) {
@@ -158,14 +167,112 @@ public final class UploadSyncRepro {
             GpuCore.uninstall();
             dev.close();
         }
+        long legacyHazards = core.uploadHazards();
+        wrong += inFlight();
         if (LEGACY) {
-            // negative control: the old path must show the wrong order (A, C) and the check must see the hazards
-            boolean reproduced = wrong >= 2 && core.uploadHazards() >= 2;
-            System.out.println("# uploadsync " + (reproduced ? "PASS" : "FAIL") + " legacy negative control: wrong reads " + wrong + ", hazards " + core.uploadHazards()
+            // negative control: the old path must show the wrong order (A, C, B2) and the check must see the hazards
+            boolean reproduced = wrong >= 2 && legacyHazards >= 2;
+            System.out.println("# uploadsync " + (reproduced ? "PASS" : "FAIL") + " legacy negative control: wrong reads " + wrong + ", hazards " + legacyHazards
                     + (reproduced ? " (reproduced)" : " (NOT reproduced)"));
             System.exit(reproduced ? 0 : 1);
         }
         System.out.println("# uploadsync " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
+    }
+
+    // ============================================================================================ US-REV: frames in flight
+
+    static HeadlessGpuDevice fdev;
+    static GpuCore fcore;
+
+    /** the game's frame order: fence wait, GpuLifecycle.frameStart, vkBeginCommandBuffer, frameRecordingStarted */
+    static void begin(boolean drainBlocked) {
+        fdev.beginFrame();
+        fdev.betweenFrames = true;      // GpuLifecycle.frameStart runs before the frame buffer is begun
+        fcore.frameStart();
+        fdev.betweenFrames = false;
+        fdev.mainPassBound = drainBlocked; // no in-frame copy possible at frame start
+        fcore.frameRecordingStarted();
+        fdev.mainPassBound = false;
+    }
+
+    static void end() {
+        fdev.mainPassBound = false;
+        fdev.endFrame();
+    }
+
+    /** B2 and G on a device with two frames in flight; returns the wrong reads (legacy counts them). */
+    static int inFlight() {
+        int wrong = 0;
+        fdev = new HeadlessGpuDevice(1L << 30, false);
+        fdev.setFramesInFlight(2);
+        fcore = GpuCore.install(fdev);
+        fcore.resize(4, 4);
+        try {
+            begin(false);
+            ComputePipelineHandle cp = IrohCompute.pipeline(OWNER, "copy", COPY, 2, 0);
+            GpuBuffer xb = buf("b2"), xg = buf("g"), out = buf("out"), out2 = buf("out2");
+            IrohBuffers.upload(xb, 0, words(5));
+            end();
+            inFlightB2(cp, xb, out, out2);
+            wrong += lastWrong;
+            inFlightG(cp, xg, out);
+            wrong += lastWrong;
+            fcore.freeOwner(OWNER);
+            fdev.flush();
+            check("frames in flight: all device memory returned", fcore.ownerResources(OWNER) == 0);
+        } finally {
+            GpuCore.uninstall();
+            fdev.close();
+        }
+        return wrong;
+    }
+
+    static int lastWrong;
+
+    /** B2: an upload between frames while the frame that read the buffer is really in flight */
+    static void inFlightB2(ComputePipelineHandle cp, GpuBuffer xb, GpuBuffer out, GpuBuffer out2) {
+        begin(false);
+        copy(cp, xb, out);                    // frame N reads xb (5)
+        end();                                // in flight
+        fdev.betweenFrames = true;            // client tick
+        int route = fcore.uploadRoute(xb);
+        IrohBuffers.upload(xb, 0, words(6));
+        fdev.betweenFrames = false;
+        begin(false);
+        copy(cp, xb, out2);
+        end();
+        int b1 = read(fdev, fcore, out), b2 = read(fdev, fcore, out2);
+        boolean ok = b1 == 5 && b2 == 6;
+        lastWrong = ok ? 0 : 1;
+        if (LEGACY) System.out.println("     B2 legacy: the frame in flight read " + b1 + " (want 5), the next " + b2);
+        else check("B2 upload between frames, the frame that read it really in flight: route " + route + ", that frame read " + b1
+                + " (want 5), the next " + b2 + " (want 6)", ok && route == GpuCore.ROUTE_DEFERRED);
+    }
+
+    /** G: a deferred upload whose drain was skipped, then a second upload into the same buffer */
+    static void inFlightG(ComputePipelineHandle cp, GpuBuffer xg, GpuBuffer out) {
+        begin(false);
+        copy(cp, xg, out);
+        end();                                // xg used by the frame now in flight
+        fdev.betweenFrames = true;
+        IrohBuffers.upload(xg, 0, words(50)); // U1: deferred
+        fdev.betweenFrames = false;
+        begin(true);                          // no in-frame copy at frame start: U1 cannot drain
+        end();
+        fdev.beginFrame();
+        fdev.betweenFrames = true;
+        fcore.frameStart();                   // the frame that used xg has finished now
+        int route = fcore.uploadRoute(xg);
+        IrohBuffers.upload(xg, 0, words(60)); // U2, before the frame buffer is begun
+        fdev.betweenFrames = false;
+        fcore.frameRecordingStarted();
+        copy(cp, xg, out);
+        int g = read(fdev, fcore, out);
+        end();
+        lastWrong = g == 60 ? 0 : 1;
+        if (LEGACY) System.out.println("     G legacy: last upload 60, the frame read " + g);
+        else check("G deferred upload still queued, second upload into the same buffer: route " + route + ", the frame read " + g
+                + " (want 60: program order)", g == 60);
     }
 }
