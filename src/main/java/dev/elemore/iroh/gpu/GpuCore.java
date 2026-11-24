@@ -786,7 +786,6 @@ public final class GpuCore {
     Target target(RenderTargetHandle h) {
         if (!(h instanceof Target t) || t.core() != this) throw new IllegalArgumentException("not an api 4 render target of this device");
         t.checkAlive();
-        targetsDirty = true; // every use of a target goes through here (attachments, sampled textures, native handle, readback)
         return t;
     }
 
@@ -803,8 +802,6 @@ public final class GpuCore {
     public static final int TARGET_ACCESS = TARGET_WRITE_ACCESS | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
             | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
     private static final boolean LEGACY_TARGET_BARRIER = Boolean.getBoolean("iroh.api4.legacyTargetBarrier");
-    /** a target may have been touched since the last target barrier (starts true: the first pass of a device orders against anything before it) */
-    private boolean targetsDirty = true;
 
     /** The device's object behind a buffer (offline readback in tests: HeadlessGpuDevice.readBuffer). */
     public Object nativeBuffer(GpuBuffer b) {
@@ -935,12 +932,10 @@ public final class GpuCore {
         // the targets themselves: earlier writes (a previous pass / a MainDepth copy) become visible, and earlier reads of them
         // (sampled by a previous pass) finish before this pass writes. P2-12 (RQ-APP1-a): the target stage/access sets, not ALL_COMMANDS
         // -> ALL_COMMANDS (targets are only ever attachments, sampled textures and copy targets; buffers have their own tracking in use()).
-        // Skipped when no target was touched since the last such barrier (nothing to order).
         if (LEGACY_TARGET_BARRIER) // -Diroh.api4.legacyTargetBarrier=true: the pre-P2-12 global barrier (A/B counts in apiReplay)
             device.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                     VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
-        else if (targetsDirty) device.barrier(TARGET_STAGES, TARGET_WRITE_ACCESS, TARGET_STAGES, TARGET_ACCESS);
-        targetsDirty = true; // this pass writes its attachments
+        else device.barrier(TARGET_STAGES, TARGET_WRITE_ACCESS, TARGET_STAGES, TARGET_ACCESS);
         flushBarrier();
         settleReads(passReads.toArray(new Buf[0]));
         device.beginRendering(c == null ? null : c.dev, d == null ? null : d.dev, clearRgba == null ? new float[4] : clearRgba, clearDepth, clear);

@@ -71,6 +71,9 @@ public class ImageUploadHelper {
             this.regions.free();
             this.regions = bigger;
         }
+        if ((this.pendingCount + 1) * 5 > this.pendingRects.length) this.pendingRects = java.util.Arrays.copyOf(this.pendingRects, this.pendingRects.length * 2);
+        int ro = this.pendingCount * 5;
+        this.pendingRects[ro] = mipLevel; this.pendingRects[ro + 1] = x; this.pendingRects[ro + 2] = y; this.pendingRects[ro + 3] = width; this.pendingRects[ro + 4] = height;
         var r = this.regions.get(this.pendingCount++);
         r.bufferOffset(bufferOffset).bufferRowLength(rowLength).bufferImageHeight(height);
         r.imageSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, 0, 1);
@@ -78,13 +81,15 @@ public class ImageUploadHelper {
         r.imageExtent().set(width, height, 1);
     }
 
+    /** P2-12: pending regions as {mip, x, y, w, h} (no allocation: LWJGL's Buffer.get(i) creates a wrapper per call) */
+    private int[] pendingRects = new int[64 * 5];
+
     /** P2-12: does a new region overlap a pending region of the same mip level (same image, same command)? */
     private boolean overlapsPending(int mipLevel, int width, int height, int x, int y) {
-        for (int i = 0, n = this.pendingCount; i < n; i++) {
-            var r = this.regions.get(i);
-            if (r.imageSubresource().mipLevel() != mipLevel) continue;
-            int rx = r.imageOffset().x(), ry = r.imageOffset().y();
-            if (x < rx + r.imageExtent().width() && rx < x + width && y < ry + r.imageExtent().height() && ry < y + height) return true;
+        int[] r = this.pendingRects;
+        for (int i = 0, n = this.pendingCount * 5; i < n; i += 5) {
+            if (r[i] != mipLevel) continue;
+            if (x < r[i + 1] + r[i + 3] && r[i + 1] < x + width && y < r[i + 2] + r[i + 4] && r[i + 2] < y + height) return true;
         }
         return false;
     }
