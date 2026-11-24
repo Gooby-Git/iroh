@@ -22,10 +22,10 @@ import java.util.List;
  * lands up to 2n-1 bytes into a buffer of size + n and the build writes up to n-1 bytes past its end. Lavapipe
  * addresses are host pointers (positive), where the formula is right. Check A, no device.</li>
  * <li>RtAccel wrote its build inputs (geometry transforms, TLAS instance records, the shared quad index buffer) with
- * {@code dev.upload}: in the game that is VulkanMod's UploadManager, whose batch is submitted at the NEXT beginFrame on
- * the transfer family (here the async-compute family), so the frame's AS builds read the buffers before they are
- * written. HeadlessGpuDevice always submitted uploads first, so offline never saw it. Check B models the game order
- * ({@link HeadlessGpuDevice#uploadsAfterFrame}).</li>
+ * {@code dev.upload}. UPLOAD-SYNC correction (2026-11-24): the game submits that UploadManager batch at endFrame BEFORE
+ * the frame (the frame waits on it), so check B's {@link HeadlessGpuDevice#uploadsAfterFrame} is a STRICTER order than
+ * the game's, not the game's; the in-frame writes it demands are still right (program order). Whether this defect
+ * contributed to the in-game loss is therefore unproven: the scratch overrun (A) is the evidenced cause.</li>
  * </ol>
  */
 public final class RtHangRepro {

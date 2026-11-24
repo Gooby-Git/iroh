@@ -47,11 +47,20 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private record Mem(long memory, long size) {}
 
     /**
-     * R1-HANG test switch: submit the upload batch AFTER the frame's command buffer, the order the game gives an upload
-     * recorded mid-frame (VulkanMod's UploadManager is flushed at the next beginFrame, on another queue). Work that
-     * reads such an upload in the same frame reads stale memory; RT build inputs must be written in the frame instead.
+     * R1-HANG test switch: submit the upload batch AFTER the frame's command buffer. NOT the game's order (UPLOAD-SYNC,
+     * corrected 2026-11-24: VulkanMod's UploadManager batch of a frame is submitted at endFrame BEFORE the frame submit,
+     * which waits on it; Renderer.endFrame -> StagingBuffer.flushConsumers -> submitFrame). Kept as a strict negative
+     * control: under it any same-frame read of a pre-frame upload reads stale memory.
      */
     public boolean uploadsAfterFrame;
+
+    /**
+     * UPLOAD-SYNC test switches. {@code betweenFrames}: no frame is recording (game: a client tick, AFTER_PRESENT; GpuCore
+     * then uses the pre-frame path or defers). {@code mainPassBound}: emulates the game's main pass being bound (no
+     * in-frame copy possible; {@link #runOutsideMainPass} lifts it for the work and counts {@link #passBreaks}).
+     */
+    public boolean betweenFrames, mainPassBound;
+    public int passBreaks;
 
     /** {@code forceNoIndirectCount}: test the fallback path even where the feature exists. */
     public HeadlessGpuDevice(long capBytes, boolean forceNoIndirectCount) {
@@ -177,7 +186,9 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     @Override public boolean supportsDeviceAddress() { return rayTracing; }
     @Override public boolean supportsDrawIndirectCount() { return drawIndirectCount; }
     @Override public long capBytes() { return cap; }
-    @Override public boolean canRecordOutsideMainPass() { return !inRendering; }
+    @Override public boolean canRecordOutsideMainPass() { return !inRendering && !mainPassBound; }
+    @Override public boolean inFrameCopyPossible() { return !inRendering && !mainPassBound && !betweenFrames; }
+    @Override public boolean frameRecording() { return !betweenFrames; }
     @Override protected VkDevice device() { return device; }
     @Override protected long pipelineCache() { return VK_NULL_HANDLE; }
     @Override protected long sampler(boolean linear) { return linear ? samplerLinear : sampler; }
@@ -223,12 +234,23 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
 
     @Override
     public void runOutsideMainPass(Runnable work) {
-        work.run(); // offline there is no main pass to suspend
+        if (!mainPassBound) {
+            work.run(); // offline there is no main pass to suspend
+            return;
+        }
+        passBreaks++;
+        mainPassBound = false;
+        try {
+            work.run();
+        } finally {
+            mainPassBound = true;
+        }
     }
 
     /**
-     * Uploads go into a separate command buffer submitted BEFORE the frame's (see {@link #flush}): the game's order (Iroh's
-     * UploadManager submits a frame's uploads ahead of the frame), so a replay catches code that relies on in-stream order.
+     * Pre-frame uploads go into a separate command buffer submitted BEFORE the frame's (see {@link #flush}): the game's
+     * order (UploadManager's batch is submitted at endFrame ahead of the frame, which waits on it), so a replay catches
+     * code that relies on in-stream order of the PRE-FRAME path. In-stream uploads: {@link #uploadInFrame}.
      */
     private VkCommandBuffer uploadCmd() {
         if (!uploadRecording) {
@@ -343,6 +365,21 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         staging.add(st);
     }
 
+    /** UPLOAD-SYNC: host staging (freed at {@link #flush} after the wait) copied in the frame command buffer */
+    @Override
+    public void uploadInFrame(Object buffer, long offset, ByteBuffer src) {
+        int len = src.remaining();
+        VkBuf st = buffer(len, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        try (MemoryStack s = stackPush()) {
+            PointerBuffer pp = s.mallocPointer(1);
+            vkMapMemory(device, ((Mem) st.alloc()).memory(), 0, len, 0, pp);
+            MemoryUtil.memCopy(MemoryUtil.memAddress(src), pp.get(0), len);
+            vkUnmapMemory(device, ((Mem) st.alloc()).memory());
+            vkCmdCopyBuffer(cmd(), st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
+        }
+        staging.add(st);
+    }
+
     @Override
     protected VkImg allocImage(String name, int width, int height, int format, int usage, int aspect) {
         try (MemoryStack s = stackPush()) {
@@ -449,8 +486,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
                     vkEndCommandBuffer(uploadCmd);
                     uploadRecording = false;
                     uploadDsts.clear();
-                    // the frame's uploads first; R1-HANG: uploadsAfterFrame models the game's UploadManager for uploads
-                    // recorded DURING a frame (transfer queue, submitted at the next beginFrame: after this frame's work)
+                    // the frame's pre-frame uploads first (the game's order); uploadsAfterFrame = a stricter negative control
                     bufs = uploadsAfterFrame ? s.pointers(cmd, uploadCmd) : s.pointers(uploadCmd, cmd);
                 } else bufs = s.pointers(cmd);
                 vkResetFences(device, fence);

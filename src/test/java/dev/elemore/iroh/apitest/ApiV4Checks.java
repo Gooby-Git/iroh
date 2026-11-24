@@ -32,6 +32,9 @@ final class ApiV4Checks {
         @Override public long bufferSize(Object b) { return 0; }
         @Override public void destroyBuffer(Object b) { destroyed++; log.add("free " + b); }
         @Override public void upload(Object b, long off, ByteBuffer src) { log.add("upload " + src.remaining()); }
+        // UPLOAD-SYNC: like the game, an in-stream copy where no pass is bound
+        @Override public boolean inFrameCopyPossible() { return !inPass && !mainBound; }
+        @Override public void uploadInFrame(Object b, long off, ByteBuffer src) { log.add("upload " + src.remaining() + " in-frame"); }
         @Override public Object createComputePipeline(String n, ByteBuffer spv, int s, int t, int p) { log.add("compute " + n + " spv " + spv.remaining() + " tex " + t); return "cp" + log.size(); }
         @Override public Object createDrawPipeline(String n, ByteBuffer v, ByteBuffer f, int s, int t, int p, int c, int d, int cmp, boolean dw, int bl) {
             log.add("draw pipeline " + n + " blend " + bl);
@@ -128,7 +131,7 @@ final class ApiV4Checks {
                     && throwsIae(() -> IrohBuffers.upload(a, 2, ByteBuffer.allocateDirect(4)))
                     && throwsIae(() -> IrohBuffers.upload(a, (100L << 20) - 4, ByteBuffer.allocateDirect(8))));
             IrohBuffers.upload(a, 0, ByteBuffer.allocate(16)); // heap buffer: copied to direct
-            check.accept("upload recorded (heap buffers copied)", rec.count("upload 16") == 1);
+            check.accept("upload recorded in-stream outside a pass (heap buffers copied)", rec.count("upload 16 in-frame") == 1);
 
             // ---- compute: validation, barriers from declared access
             ComputePipelineHandle cp = IrohCompute.pipeline("vista", "c", CS, 1, 0);

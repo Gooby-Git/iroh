@@ -19,9 +19,9 @@ import java.util.*;
 /**
  * R1-HANG: a world-scale replay of the in-game R1 scenario, offline on lavapipe ({@code ./gradlew rtWorldReplay}; last line
  * "# rtworld PASS n/n"). It drives the GAME's RT classes (RtSession + RtGameBridge + BlasBuildQueue + VkRtBackend +
- * RtAccel) over a terrain arena in Iroh's 16-byte vertex format, with the game's upload order
- * ({@link HeadlessGpuDevice#uploadsAfterFrame}: arena edits land in an earlier submit, "beginFrame"; anything recorded
- * during the frame lands after it). Per frame: section events (load ring around the camera, edits, unloads), the
+ * RtAccel) over a terrain arena in Iroh's 16-byte vertex format, with uploads recorded during a frame landing AFTER it
+ * ({@link HeadlessGpuDevice#uploadsAfterFrame}; arena edits land in an earlier submit). UPLOAD-SYNC: that is stricter
+ * than the game, where the batch lands before the frame; passing under it covers both orders. Per frame: section events (load ring around the camera, edits, unloads), the
  * session's budgeted BLAS builds + TLAS, then one ray-query dispatch of downward rays against
  * {@link VkRtBackend#tlasForTrace}, each compared with the height the resident section was built from.
  * Phase 1 = R1's settings (MEDIUM, residency 8: 8 builds / 200k triangles per frame), camera parked until everything
@@ -348,7 +348,7 @@ public final class RtWorldReplay {
         int pass = 0, total = 0;
         StringBuilder log = new StringBuilder();
         try (HeadlessGpuDevice dev = new HeadlessGpuDevice(1L << 30, false, true)) {
-            dev.uploadsAfterFrame = true;   // the game's order for anything recorded during a frame
+            dev.uploadsAfterFrame = true;   // stricter than the game (UPLOAD-SYNC): in-frame uploads land after the frame
             RtCompute comp = new RtCompute(dev);
             RtCompute.Pass p = comp.create("rtworld", Glsl.compile("rtworld", SH, Glsl.COMPUTE), true, 2, 0);
             String[][] phases = {{"r1-medium-r8", null}, {"safe-r2", "true"}};

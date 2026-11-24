@@ -21,6 +21,12 @@ public interface GpuDevice {
     /** True where compute and off-screen passes may be recorded now (outside the main render pass). */
     boolean canRecordOutsideMainPass();
 
+    /**
+     * V-M31: true while a frame command buffer is recording (a FrameStage callback). Creating a render target needs it (the
+     * layout transition is recorded); from a client tick it is false and createTarget refuses with {@code OUTSIDE_FRAME}.
+     */
+    default boolean frameRecording() { return true; }
+
     Object createBuffer(long bytes, int usage);
 
     long bufferSize(Object buffer);
@@ -28,8 +34,32 @@ public interface GpuDevice {
     /** Deferred under the device's frame rule (in game: the rc12 epoch rule). */
     void destroyBuffer(Object buffer);
 
-    /** Copies {@code src} (position..limit) to {@code buffer} at {@code offset}; visible to later recorded work. */
+    /**
+     * PRE-FRAME upload: copies {@code src} (position..limit, copied at the call) to {@code buffer} at {@code offset} in a
+     * batch that runs BEFORE all GPU work of the next frame submit (game: VulkanMod's UploadManager, submitted at endFrame
+     * on the transfer family, the frame waits on its semaphore; offline: a separate command buffer submitted first). NOT
+     * ordered against work already recorded in the frame, nor against frames still in flight: {@link GpuCore#upload} picks
+     * this path only where neither can see it (UPLOAD-SYNC).
+     */
     void upload(Object buffer, long offset, ByteBuffer src);
+
+    /**
+     * UPLOAD-SYNC: true when a copy can be recorded into the frame command buffer NOW: a frame is recording and no render
+     * pass (main, mod, api-4 or the shader pack's world pass) is bound. No side effects (unlike
+     * {@link #canRecordOutsideMainPass}, which closes the pack world pass). Default false: the pre-frame path only.
+     */
+    default boolean inFrameCopyPossible() {
+        return false;
+    }
+
+    /**
+     * UPLOAD-SYNC IN-STREAM upload: records the copy into the frame command buffer at this point (only where
+     * {@link #inFrameCopyPossible}); ordered with recorded work by the caller's barriers ({@link GpuCore}).
+     */
+    default void uploadInFrame(Object buffer, long offset, ByteBuffer src) {
+        throw new UnsupportedOperationException("in-frame upload");
+    }
+
 
     /** set 0: {@code storageBuffers} storage buffers, then {@code sampledTextures} combined image samplers (api 4.1). */
     Object createComputePipeline(String name, ByteBuffer spirv, int storageBuffers, int sampledTextures, int pushBytes);

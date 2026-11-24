@@ -403,16 +403,19 @@ public final class HeadlessVkBackend extends VkPackBackend {
                 waitSlot(i);
             return;
         }
-        if (!recording)
-            return;
-        try (MemoryStack s = stackPush()) {
-            vkEndCommandBuffer(cmd);
-            recording = false;
-            vkResetFences(device, fence);
-            check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(cmd)), fence), "vkQueueSubmit");
-            int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
-            if (r != VK_SUCCESS)
-                throw new IllegalStateException("replay frame did not finish in 120 s (VkResult " + r + ")");
+        // RQ-R1-b: nothing recorded still drains what was queued since the last submit (every submit here was waited, so
+        // the GPU reads none of it): host buffers freed "after the frame" between frames (FrameExecutor.close ->
+        // freeBuffer) were otherwise never freed and leaked at vkDestroyDevice (packBarrierBench, 9 buffers + 9 memories)
+        if (recording) {
+            try (MemoryStack s = stackPush()) {
+                vkEndCommandBuffer(cmd);
+                recording = false;
+                vkResetFences(device, fence);
+                check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(cmd)), fence), "vkQueueSubmit");
+                int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
+                if (r != VK_SUCCESS)
+                    throw new IllegalStateException("replay frame did not finish in 120 s (VkResult " + r + ")");
+            }
         }
         for (HostBuf b : frameBufs)
             freeHostBuffer(b);

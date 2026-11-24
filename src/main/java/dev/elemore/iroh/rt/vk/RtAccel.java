@@ -128,7 +128,7 @@ public final class RtAccel {
         }
         b.flip();
         VkBuf nb = inputBuffer(b.remaining());
-        writeInFrame(nb, b);   // R1-HANG: never dev.upload (in game it lands after this frame's builds)
+        writeInFrame(nb, b);   // R1-HANG: in program order (dev.upload lands before the whole frame: UPLOAD-SYNC)
         MemoryUtil.memFree(b);
         dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                 STAGE_AS_BUILD | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
@@ -241,9 +241,10 @@ public final class RtAccel {
 
     /**
      * R1-HANG: writes build inputs INTO the frame's command buffer (vkCmdUpdateBuffer, 64 KiB per call, ordered by the
-     * caller's TRANSFER -> AS_BUILD barrier). {@code dev.upload} is wrong here: in the game it is VulkanMod's UploadManager,
-     * flushed at the next beginFrame on another queue family, so this frame's builds would read stale memory (stale TLAS
-     * instance records name destroyed BLASes: lavapipe SIGSEGVs, the GPU hangs). Must be called outside a render pass.
+     * caller's TRANSFER -> AS_BUILD barrier), in program order. UPLOAD-SYNC correction (2026-11-24): {@code dev.upload} in
+     * the game is VulkanMod's UploadManager, submitted at endFrame BEFORE the frame (which waits on it), not after it; it is
+     * still out of program order (lands before every command of the frame) and not ordered against frames in flight, so
+     * in-frame writes stay right here. Must be called outside a render pass.
      */
     void writeInFrame(VkBuf b, ByteBuffer data) {
         int len = data.remaining();

@@ -214,6 +214,11 @@ public final class IrohGpuDevice extends VkGpuDevice {
     }
 
     @Override
+    public boolean frameRecording() {
+        return Renderer.isRecordingSafe(); // UPLOAD-SYNC: no "outside a recording frame" log (uploads ask between frames)
+    }
+
+    @Override
     protected VkCommandBuffer cmd() {
         closePackWorldPass(); // INT-3: never record inside the pack world pass's attachments
         VkCommandBuffer c = Renderer.recordingCommandBuffer("api4");
@@ -250,7 +255,28 @@ public final class IrohGpuDevice extends VkGpuDevice {
 
     @Override
     public void upload(Object buffer, long offset, ByteBuffer src) {
+        // pre-frame: submitted at endFrame (StagingBuffer.flushConsumers) BEFORE the frame submit, which waits on it
+        // (Renderer.submitFrame, ALL_COMMANDS); recorded between frames: at the next preInitFrame. Never after the frame.
         UploadManager.INSTANCE.recordUpload((Buffer) ((VkBuf) buffer).alloc(), offset, src.remaining(), src);
+    }
+
+    @Override
+    public boolean inFrameCopyPossible() {
+        // no side effects: an upload never closes the pack world pass (it takes the pre-frame / pass-break path instead)
+        return !inRendering && Renderer.isRecordingSafe() && Renderer.getInstance().getBoundRenderPass() == null
+                && (dev.elemore.iroh.shaderpack.runtime.Substitution.HOOK & dev.elemore.iroh.shaderpack.runtime.Substitution.WORLD) == 0;
+    }
+
+    /** UPLOAD-SYNC: ring staging read by the FRAME command buffer (consumedByFrame: released with the frame, rc12). */
+    @Override
+    public void uploadInFrame(Object buffer, long offset, ByteBuffer src) {
+        VkCommandBuffer c = cmd();
+        long len = src.remaining();
+        var alloc = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.stage(len, 4, org.lwjgl.system.MemoryUtil.memAddress(src));
+        try (MemoryStack s = stackPush()) {
+            vkCmdCopyBuffer(c, alloc.bufferId, ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(alloc.offset).dstOffset(offset).size(len));
+        }
+        net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring().consumedByFrame(alloc);
     }
 
     @Override
