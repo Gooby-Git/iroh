@@ -28,7 +28,8 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private final VkDevice device;
     private final VkQueue queue;
     private final long cmdPool, fence, descPool, sampler, samplerLinear;
-    private final VkCommandBuffer cmd, uploadCmd;
+    private VkCommandBuffer cmd;
+    private final VkCommandBuffer uploadCmd;
     private final double timestampNs;
     private final VkPhysicalDeviceMemoryProperties memProps;
     private final boolean drawIndirectCount;
@@ -43,6 +44,22 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     private final List<Runnable> later = new ArrayList<>();
     private final java.util.Set<Long> uploadDsts = new java.util.HashSet<>(); // V-0: buffers written by the open upload batch
     private final List<VkBuf> staging = new ArrayList<>();
+    private final List<VkBuf> uploadStaging = new ArrayList<>(); // US-REV: the pre-frame batch's own staging
+
+    /**
+     * US-REV: frames in flight (default 1: every {@link #flush} waits, the behaviour every other harness relies on). With
+     * {@link #setFramesInFlight} 2 or 3 the harness calls {@link #beginFrame} / {@link #endFrame} around each frame:
+     * a frame's command buffer is HELD and submitted only when its slot comes round again (the beginFrame of the frame
+     * framesInFlight later, as the game's fence wait), while the frame's pre-frame upload batch is submitted at endFrame
+     * at once. That is the worst legal schedule of the game's async transfer queue (UploadManager's batch is ordered
+     * before its own frame, never against frames already in flight), so an upload that overwrites bytes a frame in
+     * flight still reads shows up as a wrong VALUE, deterministically.
+     */
+    private int inFlight = 1, slot;
+    private final java.util.ArrayDeque<Object[]> held = new java.util.ArrayDeque<>(); // {VkCommandBuffer or null, List<VkBuf>}
+    private final java.util.ArrayDeque<VkCommandBuffer> freeCmds = new java.util.ArrayDeque<>();
+    /** US-REV counters (tests): every {@link #barrier}, and those of them ALL_COMMANDS -> ALL_COMMANDS */
+    public int barriers, globalBarriers;
 
     private record Mem(long memory, long size) {}
 
@@ -193,8 +210,93 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     @Override protected long pipelineCache() { return VK_NULL_HANDLE; }
     @Override protected long sampler(boolean linear) { return linear ? samplerLinear : sampler; }
     @Override protected double timestampPeriodNs() { return timestampNs; }
-    @Override public int framesInFlight() { return 1; }
-    @Override public int frameSlot() { return 0; }
+    @Override public int framesInFlight() { return inFlight; }
+    @Override public int frameSlot() { return slot; }
+
+    /** US-REV: 1 (default) .. 3; before the first frame. */
+    public void setFramesInFlight(int n) {
+        if (n < 1 || n > 3) throw new IllegalArgumentException("frames in flight 1..3");
+        if (recording || uploadRecording || !held.isEmpty()) throw new IllegalStateException("set frames in flight before recording");
+        inFlight = n;
+        slot = 0;
+    }
+
+    /** US-REV: the game's beginFrame fence wait: the frame that last used this slot has finished (frames in flight > 1). */
+    public void beginFrame() {
+        while (held.size() > inFlight - 1) retire(held.pollFirst());
+    }
+
+    /**
+     * US-REV: the game's endFrame + submit. Frames in flight 1: {@link #flush} (submit and wait). Otherwise the pre-frame
+     * upload batch is submitted now (it runs ahead of every held frame) and the frame's command buffer is held.
+     */
+    public void endFrame() {
+        if (inFlight == 1) {
+            flush();
+            return;
+        }
+        submitUploadsNow();
+        VkCommandBuffer c = null;
+        if (recording) {
+            vkEndCommandBuffer(cmd);
+            recording = false;
+            c = cmd;
+            cmd = freeCmds.isEmpty() ? newCmd() : freeCmds.pollFirst();
+        }
+        held.addLast(new Object[]{c, new ArrayList<>(staging)});
+        staging.clear();
+        slot = (slot + 1) % inFlight;
+    }
+
+    /** US-REV: frames recorded but not submitted yet (in flight in the emulated schedule) */
+    public int heldFrames() {
+        return held.size();
+    }
+
+    private VkCommandBuffer newCmd() {
+        try (MemoryStack s = stackPush()) {
+            PointerBuffer pp = s.mallocPointer(1);
+            check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(s).sType$Default().commandPool(cmdPool)
+                    .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), pp), "cmd");
+            return new VkCommandBuffer(pp.get(0), device);
+        }
+    }
+
+    private void submitWait(VkCommandBuffer c) {
+        try (MemoryStack s = stackPush()) {
+            vkResetFences(device, fence);
+            check(vkQueueSubmit(queue, VkSubmitInfo.calloc(s).sType$Default().pCommandBuffers(s.pointers(c)), fence), "vkQueueSubmit");
+            int r = vkWaitForFences(device, fence, true, 120_000_000_000L);
+            if (r != VK_SUCCESS) throw new IllegalStateException("headless work did not finish in 120 s (VkResult " + r + ")");
+        }
+    }
+
+    private void submitUploadsNow() {
+        if (!uploadRecording) return;
+        vkEndCommandBuffer(uploadCmd);
+        uploadRecording = false;
+        uploadDsts.clear();
+        submitWait(uploadCmd);
+        for (VkBuf b : uploadStaging) freeBuf(b);
+        uploadStaging.clear();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void retire(Object[] h) {
+        VkCommandBuffer c = (VkCommandBuffer) h[0];
+        if (c != null) {
+            submitWait(c);
+            freeCmds.addLast(c);
+        }
+        for (VkBuf b : (List<VkBuf>) h[1]) freeBuf(b);
+    }
+
+    @Override
+    public void barrier(int srcStages, int srcAccess, int dstStages, int dstAccess) {
+        barriers++;
+        if (srcStages == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT && dstStages == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT) globalBarriers++;
+        super.barrier(srcStages, srcAccess, dstStages, dstAccess);
+    }
 
     @Override
     protected VkImg resolveExternal(String key) {
@@ -376,7 +478,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             }
             vkCmdCopyBuffer(uc, st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
         }
-        staging.add(st);
+        uploadStaging.add(st);
     }
 
     /** UPLOAD-SYNC: host staging (freed at {@link #flush} after the wait) copied in the frame command buffer */
@@ -490,6 +592,10 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
 
     @Override
     public void flush() {
+        if (inFlight > 1) { // US-REV: the pre-frame batch first (it may run ahead), then every held frame in order, then this one
+            submitUploadsNow();
+            while (!held.isEmpty()) retire(held.pollFirst());
+        }
         if (recording || uploadRecording) {
             try (MemoryStack s = stackPush()) {
                 cmd(); // a frame with uploads only still submits an (empty) frame buffer after them
@@ -512,6 +618,8 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         }
         for (VkBuf b : staging) freeBuf(b);
         staging.clear();
+        for (VkBuf b : uploadStaging) freeBuf(b);
+        uploadStaging.clear();
         for (Runnable r : later) r.run();
         later.clear();
     }
