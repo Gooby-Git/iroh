@@ -67,8 +67,8 @@ public final class PackThreadRepro {
         if (mode.equals("both")) {
             String old = runChild("old", trials);
             String neu = runMode("new", trials);
-            boolean oldBug = old.contains("BUG");
-            boolean newClean = neu.contains("CLEAN");
+            boolean oldBug = old.startsWith("BUG");
+            boolean newClean = neu.startsWith("CLEAN"); // not "NOT-CLEAN"
             System.out.println("# old: " + old);
             System.out.println("# new: " + neu);
             System.out.println("# packthread " + (oldBug && newClean ? "PASS" : "FAIL") + " (old " + (oldBug ? "shows the bug" : "did NOT show the bug")
