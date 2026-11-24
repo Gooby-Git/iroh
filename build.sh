@@ -3,8 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Loom 1.9 / Gradle 8.12 need JDK 21 (the system default, Java 27, is too new for Gradle 8.12).
-export JAVA_HOME="${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
+# Gradle 9.7.1 + Loom 1.17 build Java 25 bytecode (J-25d); JDK 25 LTS (temurin, mise install). The system default is Java 27.
+export JAVA_HOME="${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}"
 export PATH="$JAVA_HOME/bin:$PATH"
 
 INSTANCE="$HOME/.local/share/atlauncher/instances/Vulkan"
