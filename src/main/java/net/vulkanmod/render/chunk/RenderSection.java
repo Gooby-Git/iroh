@@ -323,8 +323,15 @@ public class RenderSection {
             AreaBuffer areaBuffer = drawBuffers.getAreaBuffer(renderType);
             int vertexOffset = DrawParametersBuffer.getVertexOffset(ptr);
             if (areaBuffer != null && vertexOffset != -1) {
-                int segmentOffset = vertexOffset * DrawBuffers.VERTEX_SIZE;
-                areaBuffer.setSegmentFree(segmentOffset);
+                if (dev.elemore.iroh.perf.AreaArena.on()) { // same condition as the arena path in AreaBuffer (review a64133f #5)
+                    // P2-4 (RQ-P24-a): setSegmentFree takes ELEMENT offsets (it multiplies by the element size); the
+                    // byte offset below looked up offset*16*16, so the segment leaked (or, rarely, a live one at that
+                    // offset was freed). Freed after the frames in flight, like an upload's replaced segment.
+                    areaBuffer.freeSegmentDeferred(vertexOffset);
+                } else {
+                    int segmentOffset = vertexOffset * DrawBuffers.VERTEX_SIZE;
+                    areaBuffer.setSegmentFree(segmentOffset);
+                }
             }
 
             DrawParametersBuffer.resetParameters(ptr);

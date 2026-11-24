@@ -287,6 +287,37 @@ public class SectionGrid {
         renderSection.setDirty(playerChanged);
     }
 
+    /**
+     * P2-4 (iroh.chunk.bulkDirty): the 27 marks of LevelRenderer.setSectionDirtyWithNeighbors in one pass: the same
+     * sections (same floorMod wrap as {@link #setDirty}) get setDirty(false), with each axis index computed once.
+     */
+    public void setDirtyNeighbours(int sectionX, int sectionY, int sectionZ) {
+        int[] idx = this.neighbourScratch;
+        neighbourIndices(sectionX, sectionY, sectionZ, this.gridWidth, this.gridHeight, this.level.getMinSection(), idx);
+        for (int n = 0; n < 27; n++)
+            this.sections[idx[n]].setDirty(false);
+    }
+
+    private final int[] neighbourScratch = new int[27];
+
+    /** Grid index of section (x, y, z): the wrap of {@link #setDirty}. */
+    public static int gridIndex(int x, int y, int z, int width, int height, int minSection) {
+        return (Math.floorMod(z, width) * height + Math.floorMod(y - minSection, height)) * width + Math.floorMod(x, width);
+    }
+
+    /** P2-4: the 27 grid indices of the 3x3x3 block around (x, y, z), axis wraps computed once (tests compare with gridIndex). */
+    public static void neighbourIndices(int x, int y, int z, int width, int height, int minSection, int[] out) {
+        int n = 0;
+        for (int dz = -1; dz <= 1; dz++) {
+            int k = Math.floorMod(z + dz, width) * height;
+            for (int dx = -1; dx <= 1; dx++) {
+                int i = Math.floorMod(x + dx, width);
+                for (int dy = -1; dy <= 1; dy++)
+                    out[n++] = (k + Math.floorMod(y + dy - minSection, height)) * width + i;
+            }
+        }
+    }
+
     @Nullable
     public RenderSection getSectionAtBlockPos(BlockPos blockPos) {
         return this.getSectionAtBlockPos(blockPos.getX(), blockPos.getY(), blockPos.getZ());

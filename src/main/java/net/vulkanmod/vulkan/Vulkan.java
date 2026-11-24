@@ -193,6 +193,7 @@ public class Vulkan {
         }
 
         freeStagingBuffers();
+        dev.elemore.iroh.perf.AreaArena.worldUnloaded(); // P2-4: prefetch thread stopped, pool freed before the device goes
 
         try {
             MemoryManager.getInstance().freeAllBuffers();

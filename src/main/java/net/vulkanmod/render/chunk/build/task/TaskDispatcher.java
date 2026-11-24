@@ -261,25 +261,43 @@ public class TaskDispatcher {
         return this.compileResults.size();
     }
 
+    /** P2-4: per-section cost model of the intake ({@code iroh.intake.budget}). */
+    private final dev.elemore.iroh.perf.IntakeBudget intakeBudget = new dev.elemore.iroh.perf.IntakeBudget();
+
     private boolean updateSections0(boolean unlimited) {
         long t0 = System.nanoTime();
         long bytes0 = dev.elemore.iroh.diag.UploadStats.chunkBytes;
         CompileResult result;
         boolean flag = false;
         int n = 0;
+        // P2-4: predict the next section's cost and stop BEFORE it crosses the budget (the old rule checks after)
+        boolean predict = !unlimited && dev.elemore.iroh.perf.IntakeBudget.enabled();
         while ((result = this.compileResults.peek()) != null) {
-            if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > uploadBudgetBytes())) {
+            long nextBytes = 0;
+            if (predict) {
+                nextBytes = result.byteSize();
+                if (!this.intakeBudget.admit(System.nanoTime() - t0, UPLOAD_BUDGET_NS, approxBytes, uploadBudgetBytes(), nextBytes, n)) {
+                    this.intakeBudget.deferredSections += this.compileResults.size();
+                    if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.INTAKE_DEFERRED, this.compileResults.size());
+                    if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.sectionsDeferred += this.compileResults.size();
+                    break;
+                }
+            } else if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > uploadBudgetBytes())) {
                 if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.sectionsDeferred += this.compileResults.size();
                 break;
             }
             this.compileResults.poll();
             flag = true;
             n++;
+            long s0 = predict ? System.nanoTime() : 0;
+            long grows0 = predict ? net.vulkanmod.render.chunk.buffer.AreaBuffer.bufferEvents : 0;
             try {
                 doSectionUpdate(result);
             } finally {
                 releaseAll(result); // idempotent: whatever the upload did not consume goes back
             }
+            if (predict)
+                this.intakeBudget.observe(nextBytes, System.nanoTime() - s0, net.vulkanmod.render.chunk.buffer.AreaBuffer.bufferEvents != grows0);
         }
         if (dev.elemore.iroh.diag.SlowFrames.ON) {
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SECTIONS, n);
