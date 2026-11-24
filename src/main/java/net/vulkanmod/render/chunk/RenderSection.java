@@ -64,7 +64,11 @@ public class RenderSection {
     public byte steps;
     public byte directionChanges;
 
+    /** P2-6: stable slot in SectionGrid.sections (the async visibility graph indexes by it). */
+    public final int gridIndex;
+
     public RenderSection(int index, int x, int y, int z) {
+        this.gridIndex = index;
         this.xOffset = x;
         this.yOffset = y;
         this.zOffset = z;
@@ -354,11 +358,18 @@ public class RenderSection {
     }
 
     public void setVisibility(long visibility) {
+        long old = this.visibility;
         this.visibility = visibility;
+        if (old != visibility) // P2-6: async graph repairs openings, re-walks after closings
+            net.vulkanmod.render.chunk.graph.AsyncVisibility.inputChanged(this.gridIndex,
+                    net.vulkanmod.render.chunk.graph.VisibilityWalk.opens(old, false, visibility, false));
     }
 
     public void setCompletelyEmpty(boolean b) {
+        boolean old = this.completelyEmpty;
         this.completelyEmpty = b;
+        if (old != b)
+            net.vulkanmod.render.chunk.graph.AsyncVisibility.inputChanged(this.gridIndex, b);
     }
 
     public void setContainsBlockEntities(boolean b) {

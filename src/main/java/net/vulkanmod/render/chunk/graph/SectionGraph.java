@@ -110,8 +110,29 @@ public class SectionGraph {
         this.minecraft.getProfiler().push("partial_update");
 
         int secX = blockpos.getX() >> 4, secY = blockpos.getY() >> 4, secZ = blockpos.getZ() >> 4;
+
+        // P2-6: async visibility graph. Serves this frame from the worker's walk when one exists for the camera
+        // section (repaired for openings), else falls through to the synchronous walk below (pruned, as without it).
+        boolean asyncOn = asyncEnabled();
+        if (asyncOn || this.async != null)
+            asyncSwitch(asyncOn);
+        if (asyncOn && flag) {
+            RenderSection cam = this.sectionGrid.getSectionAtBlockPos(blockpos);
+            if (cam != null && this.async.prepare(cam.gridIndex, this.sectionGrid.repositionCount,
+                    Initializer.CONFIG.advCulling - 1, System.nanoTime())) {
+                if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.GRAPH_FILTER_ONLY, 1);
+                this.filterAsync(this.async.front());
+                if (VERIFY && ++this.verifyTick % 120 == 0) this.verifyAsync(camera);
+                this.logAsyncStats();
+                this.scheduleRebuilds();
+                this.minecraft.getProfiler().pop();
+                return;
+            }
+            this.logAsyncStats();
+        }
+
         boolean wasOn = this.cacheOn;
-        this.cacheOn = cacheEnabled();
+        this.cacheOn = cacheEnabled() && !asyncOn; // the async fallback walk is the plain pruned one
         if (this.cacheOn != wasOn) this.cacheValid = false; // switched at runtime
         boolean full = !this.cacheOn || !this.cacheValid || structureRefresh || flag != this.cacheSmartCull
                 || secX != this.cacheSecX || secY != this.cacheSecY || secZ != this.cacheSecZ;
@@ -140,6 +161,162 @@ public class SectionGraph {
         this.scheduleRebuilds();
 
         this.minecraft.getProfiler().pop();
+    }
+
+    /** P2-6 runtime switch (PerfSwitches iroh.graph.async, default off). */
+    public static boolean asyncEnabled() {
+        return dev.elemore.iroh.perf.PerfSwitches.graphAsyncOn;
+    }
+
+    /** Created on first use (its scratch is two ints per section). */
+    private AsyncVisibility async;
+    private static final boolean ASYNC_STATS = Boolean.getBoolean("iroh.graph.asyncStats");
+    private long asyncStatsLast;
+
+    private void asyncSwitch(boolean on) {
+        if (this.async == null) {
+            this.async = new AsyncVisibility(new GridView(this.sectionGrid.sections), true);
+        }
+        if (this.async.isOn() != on)
+            this.async.setOn(on);
+    }
+
+    private void logAsyncStats() {
+        if (!ASYNC_STATS) return;
+        long now = System.currentTimeMillis();
+        if (now - this.asyncStatsLast < 5000) return;
+        this.asyncStatsLast = now;
+        Initializer.LOGGER.info("[iroh-graph-async] {}", this.async.stats());
+    }
+
+    /** Per-frame copy of every ChunkArea's 64 sub-cube frustum verdicts, indexed by Graph.cullKey. */
+    private byte[] areaFrustum = new byte[0];
+
+    /**
+     * The frame's visible set from the worker's walk: the frustum test of SectionGraph's walk applied to the result in
+     * level order, with the same per-section work. Out-of-frustum entries are rejected from {@link #areaFrustum}
+     * without loading the section.
+     */
+    private void filterAsync(VisibilityWalk.Result r) {
+        this.unbuiltSections = 0;
+        ChunkAreaManager areas = this.sectionGrid.getChunkAreaManager();
+        areas.resetQueues();
+        this.chunkAreaQueue.clear();
+        this.blockEntitiesSections.clear();
+        this.rebuildQueue.clear();
+        this.sectionQueue.clear();
+        this.lastFrame++;
+        this.nonEmptyChunks = 0;
+
+        int areaCount = areas.size;
+        if (this.areaFrustum.length != areaCount << 6) this.areaFrustum = new byte[areaCount << 6];
+        byte[] fr = this.areaFrustum;
+        for (int a = 0; a < areaCount; a++)
+            System.arraycopy(areas.getChunkArea(a).getFrustumBuffer(), 0, fr, a << 6, 64);
+
+        RenderSection[] sections = this.sectionGrid.sections;
+        int[] order = r.order, cull = r.cull;
+        int n = r.count;
+        this.sectionQueue.ensureCapacity(n);
+        for (int k = 0; k < n; k++) {
+            int slot = order[k];
+            byte res = fr[cull[slot]];
+            if (res > FrustumIntersection.INTERSECT)
+                continue; // outside (notInFrustum, first branch)
+            RenderSection renderSection = sections[slot];
+            if (res == FrustumIntersection.INTERSECT && !this.frustum.testFrustum(renderSection.xOffset, renderSection.yOffset,
+                    renderSection.zOffset, renderSection.xOffset + 16, renderSection.yOffset + 16, renderSection.zOffset + 16))
+                continue;
+            this.sectionQueue.add(renderSection); // visible sections, nearest first (translucent resort, stats)
+            this.visitVisible(renderSection, true);
+        }
+    }
+
+    /** Debug (-Diroh.graph.verify=true with iroh.graph.async): the async set against a fresh synchronous walk. */
+    private void verifyAsync(Camera camera) {
+        java.util.Set<RenderSection> served = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (int i = 0; i < this.sectionQueue.size(); i++) {
+            RenderSection s = this.sectionQueue.get(i);
+            if (s.lastVisibleFrame == this.lastFrame) served.add(s);
+        }
+        // the synchronous pruned walk; this frame then draws its result
+        this.cacheOn = false;
+        this.cacheValid = false;
+        this.initUpdate();
+        this.initializeQueueForFullUpdate(camera);
+        this.updateRenderChunks();
+        int missing = 0, missingDrawable = 0, extra = 0, fresh = 0;
+        for (int i = 0; i < this.sectionQueue.size(); i++) {
+            RenderSection s = this.sectionQueue.get(i);
+            if (s.lastVisibleFrame != this.lastFrame) continue;
+            fresh++;
+            if (!served.contains(s)) {
+                missing++;
+                if (!s.isCompletelyEmpty()) missingDrawable++;
+            }
+        }
+        extra = served.size() - (fresh - missing);
+        Initializer.LOGGER.info("[iroh-graph-verify] async filter vs sync walk: visible {} vs {}, missing {} (drawable {}), extra {}; {}",
+                served.size(), fresh, missing, missingDrawable, extra, this.async.stats());
+    }
+
+    /** RenderSection grid as the async walk reads it. Plain reads except visibility (opaque: no torn long). */
+    static final class GridView implements VisibilityWalk.Graph {
+        private static final java.lang.invoke.VarHandle VIS;
+
+        static {
+            try {
+                VIS = java.lang.invoke.MethodHandles.lookup().findVarHandle(RenderSection.class, "visibility", long.class);
+            } catch (ReflectiveOperationException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
+
+        private final RenderSection[] s;
+
+        GridView(RenderSection[] sections) {
+            this.s = sections;
+        }
+
+        @Override
+        public int size() {
+            return this.s.length;
+        }
+
+        @Override
+        public int adj(int i, int dir) {
+            RenderSection r = this.s[i];
+            RenderSection a = switch (dir) {
+                case GraphDirections.DOWN -> r.adjDown;
+                case GraphDirections.UP -> r.adjUp;
+                case GraphDirections.NORTH -> r.adjNorth;
+                case GraphDirections.SOUTH -> r.adjSouth;
+                case GraphDirections.WEST -> r.adjWest;
+                default -> r.adjEast;
+            };
+            return a == null ? -1 : a.gridIndex;
+        }
+
+        @Override
+        public byte adjDirs(int i) {
+            return this.s[i].adjDirs;
+        }
+
+        @Override
+        public long vis(int i) {
+            return (long) VIS.getOpaque(this.s[i]);
+        }
+
+        @Override
+        public boolean empty(int i) {
+            return this.s[i].isCompletelyEmpty();
+        }
+
+        @Override
+        public int cullKey(int i) {
+            RenderSection r = this.s[i];
+            return (r.getChunkArea().index << 6) | (r.frustumIndex & 63);
+        }
     }
 
     /** The cached walk is no longer valid (sections moved, world changed). */

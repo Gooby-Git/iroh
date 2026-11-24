@@ -13,6 +13,8 @@ import dev.elemore.iroh.debug.DebugSwitches.Switch;
 public final class PerfSwitches {
     public static final String TASKS_BUDGET = "iroh.tasks.budget";
     public static final String GRAPH_CACHE = "iroh.graph.cache";
+    /** P2-6 (L3): visibility walk on a worker, frustum per frame on the render thread (net.vulkanmod...graph.AsyncVisibility). */
+    public static final String GRAPH_ASYNC = "iroh.graph.async";
     public static final String CLONE_CACHE = "iroh.graph.cloneCache";
     public static final String REBUILD_BUDGET = "iroh.graph.rebuildBudget";
     public static final String THREADS_TUNE = "iroh.threads.tune";
@@ -28,6 +30,7 @@ public final class PerfSwitches {
      */
     public static volatile boolean tasksBudgetOn = prop(TASKS_BUDGET);
     public static volatile boolean graphCacheOn = prop(GRAPH_CACHE);
+    public static volatile boolean graphAsyncOn = prop(GRAPH_ASYNC);
     public static volatile boolean cloneCacheOn = prop(CLONE_CACHE);
     public static volatile boolean rebuildBudgetOn = prop(REBUILD_BUDGET);
 
@@ -40,6 +43,7 @@ public final class PerfSwitches {
     static String refreshFlags() {
         tasksBudgetOn = DebugSwitches.on(TASKS_BUDGET);
         graphCacheOn = DebugSwitches.on(GRAPH_CACHE);
+        graphAsyncOn = DebugSwitches.on(GRAPH_ASYNC);
         cloneCacheOn = DebugSwitches.on(CLONE_CACHE);
         rebuildBudgetOn = DebugSwitches.on(REBUILD_BUDGET);
         return "ok";
@@ -53,6 +57,7 @@ public final class PerfSwitches {
             if (registered) return;
             reg(TASKS_BUDGET, "time-budgeted packet/task drain v2 (perf/TaskBudget)", v -> refreshFlags());
             reg(GRAPH_CACHE, "visibility walk cached per camera section, frustum per frame (exact)", v -> refreshFlags());
+            reg(GRAPH_ASYNC, "visibility walk on a worker thread, frustum per frame; sync walk until a result for the camera section exists", v -> refreshFlags());
             reg(CLONE_CACHE, "share region block copies within a rebuild batch", v -> refreshFlags());
             reg(REBUILD_BUDGET, "cap async rebuilds scheduled per update while builders are backed up", v -> refreshFlags());
             reg(THREADS_TUNE, "renice builders +4 and keep them off the render core (cannot be undone at runtime)",
