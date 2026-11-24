@@ -38,6 +38,7 @@ logs/
 run/
 iroh-native/natives/
 iroh-native/build-fsr/
+iroh-native/build-windows/
 iroh-native/fsr/sdk-src/
 iroh-native/fsr/.sdk-cache/
 iroh-native/natives-nv/
