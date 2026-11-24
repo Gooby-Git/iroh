@@ -7,7 +7,7 @@
 # Offline only: lavapipe, no game, no Proctor, no GPU.
 set -uo pipefail
 WT=$(readlink -f "${1:-.}"); FILTER=${2:-.}; cd "$WT"
-export JAVA_HOME=${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}; export PATH=$JAVA_HOME/bin:$PATH
+export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}; export PATH=$JAVA_HOME/bin:$PATH
 OUT=$WT/build/vkval-extra; mkdir -p "$OUT"
 ALLOW=$WT/tools/vkval-gpuav-allowlist.txt
 TASKS=("terrainIndirectRepro" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "packFullVkRepro" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
