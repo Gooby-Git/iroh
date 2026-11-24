@@ -177,6 +177,16 @@ public final class RecordingBackend implements GpuBackend {
         return h;
     }
 
+    /** V-6: a renderer-owned image of a given shape (in game imported, e.g. Iroh's scene colour/depth): never zeroed by
+     *  this backend, so it carries no creation write; counted as imported */
+    public int external(ImageDesc d) {
+        int h = createImage(d);
+        imported.add(h);
+        dirty.remove(h);
+        createdOutside.remove(h);
+        return h;
+    }
+
     /** owned images created and not freed */
     public int live() {
         int n = 0;

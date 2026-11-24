@@ -181,8 +181,8 @@ public final class WorldPassTest {
         // ---------------------------------------------------------------- the whole frame, twice (second = steady state)
         RecordingBackend rec = new RecordingBackend();
         FrameExecutor ex = new FrameExecutor(data, plan, folder, rec, FrameExecutor.cap(1L << 30));
-        int sceneColour = rec.createImage(new GpuBackend.ImageDesc("scene colour", "R8G8B8A8_UNORM", 160, 90, 1, 1, Set.of("COLOR_ATTACHMENT", "TRANSFER_DST", "TRANSFER_SRC")));
-        int sceneDepth = rec.createImage(new GpuBackend.ImageDesc("scene depth", "D32_SFLOAT", 160, 90, 1, 1, Set.of("TRANSFER_DST", "TRANSFER_SRC")));
+        int sceneColour = rec.external(new GpuBackend.ImageDesc("scene colour", "R8G8B8A8_UNORM", 160, 90, 1, 1, Set.of("COLOR_ATTACHMENT", "TRANSFER_DST", "TRANSFER_SRC")));
+        int sceneDepth = rec.external(new GpuBackend.ImageDesc("scene depth", "D32_SFLOAT", 160, 90, 1, 1, Set.of("TRANSFER_DST", "TRANSFER_SRC")));
         ex.presentTo = sceneColour;
         ex.rasterOver = sceneColour;
         FakeIroh iroh = new FakeIroh();
