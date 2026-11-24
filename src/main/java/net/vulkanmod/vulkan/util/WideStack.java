@@ -46,12 +46,16 @@ public final class WideStack {
         }, "iroh-wide-stack");
         t.setDaemon(true);
         t.start();
-        try {
-            t.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted while creating the Vulkan object", e);
+        // review (gemini 71f9e93 #1): the worker reads the caller's native create-info; never leave the caller (which frees it) before the worker is done
+        boolean interrupted = false;
+        while (t.isAlive()) {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
         }
+        if (interrupted) Thread.currentThread().interrupt();
         Throwable e = err.get();
         if (e instanceof RuntimeException r) throw r;
         if (e instanceof Error r) throw r;
