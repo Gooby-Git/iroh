@@ -1246,6 +1246,7 @@ tasks.register('packThreadRepro', JavaExec) {
 		systemProperty 'pt.mode', project.findProperty('mode') ?: 'both'
 		systemProperty 'pt.trials', project.findProperty('trials') ?: '40'
 		if (project.hasProperty('oldCreate')) systemProperty 'pt.oldCreate', 'true'
-		useLavapipe(it)
+		// V-6: -PoldCreate (negative control) logs under its own vkval label: its WAW hazards are meant to fail that label only
+		useLavapipe(it, project.hasProperty('oldCreate') ? 'packThreadRepro-oldCreate' : null)
 	}
 }
