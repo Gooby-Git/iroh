@@ -39,6 +39,24 @@ public abstract class ChunkTask {
 
     public abstract Result runTask(BuilderResources builderResources);
 
+    /** R-P213BC: packed section position, the failure tracker's key (0 without a section). */
+    long sectionKey() {
+        var s = this.section;
+        return s == null ? 0L : ((long) (s.xOffset() >> 4) & 0x3FFFFF) << 42 | ((long) (s.zOffset() >> 4) & 0x3FFFFF) << 20 | ((long) (s.yOffset() >> 4) & 0xFFFFF);
+    }
+
+    String describeSection() {
+        var s = this.section;
+        return s == null ? "?" : (s.xOffset() >> 4) + "," + (s.yOffset() >> 4) + "," + (s.zOffset() >> 4);
+    }
+
+    /** R-P213BC: the task threw on a builder thread; ask for the section to be meshed again (the dispatcher bounds how often). */
+    void markForRebuild() {
+        var s = this.section;
+        if (s != null)
+            s.setDirty(false);
+    }
+
     public void cancel() {
         this.cancelled.set(true);
     }
