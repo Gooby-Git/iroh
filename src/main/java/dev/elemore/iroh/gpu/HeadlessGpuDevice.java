@@ -104,6 +104,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             VkPhysicalDeviceVulkan12Features want12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default().drawIndirectCount(drawIndirectCount);
             VkPhysicalDeviceFeatures2 want = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(want12.address());
             want.features().multiDrawIndirect(have.features().multiDrawIndirect());
+            want.features().drawIndirectFirstInstance(have.features().drawIndirectFirstInstance()); // as the game device (H1C, gpuav VUID firstInstance-00554)
             PointerBuffer exts = null;
             if (rayTracing) {
                 VkPhysicalDeviceAccelerationStructureFeaturesKHR haveAs = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default();

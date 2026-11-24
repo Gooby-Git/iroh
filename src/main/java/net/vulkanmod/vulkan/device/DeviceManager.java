@@ -187,6 +187,9 @@ public abstract class DeviceManager {
             deviceFeatures.features().logicOp(device.availableFeatures.features().logicOp());
             // TODO: Disable indirect draw option if unsupported.
             deviceFeatures.features().multiDrawIndirect(device.isDrawIndirectSupported());
+            // H1C (RQ-APP1-c, gpuav): api 4 multiDrawIndirectCount commands may carry a firstInstance (gl_InstanceIndex = per-draw id);
+            // VUID-VkDrawIndexedIndirectCommand-firstInstance-00554 needs this feature for any non-zero value (every desktop GPU offers it)
+            deviceFeatures.features().drawIndirectFirstInstance(device.availableFeatures.features().drawIndirectFirstInstance());
 
             // Must not set line width to anything other than 1.0 if this is not supported
             if (device.availableFeatures.features().wideLines()) {

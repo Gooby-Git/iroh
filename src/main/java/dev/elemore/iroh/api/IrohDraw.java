@@ -92,6 +92,7 @@ public final class IrohDraw {
      * VkDrawIndexedIndirectCommand records ({@code stride} >= 20), {@code count} the number to draw (uint at
      * {@code countOffset}), capped at {@code maxDraws}. Every buffer read must have been declared at beginRendering.
      * Capability {@link Capability#MULTI_DRAW_INDIRECT_COUNT} (with a fallback, see {@link #prepareIndirectCount}).
+     * {@code firstInstance} (gl_InstanceIndex) is honoured: the device enables drawIndirectFirstInstance wherever the GPU offers it (all desktop GPUs).
      */
     public static void multiDrawIndirectCount(IndirectPipelineHandle pipeline, IrohCompute.Binding[] storage, GpuTexture[] textures,
                                               java.nio.ByteBuffer push, GpuBuffer index, boolean index32, GpuBuffer commands, long commandOffset,
