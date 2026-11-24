@@ -141,6 +141,17 @@ public class StagingBuffer extends Buffer {
     }
 
     /**
+     * UPLOAD-SYNC: the ONE staging path for copies recorded into the FRAME command buffer (in-frame image uploads,
+     * VulkanImage.uploadInFrame / PACK-FULL's flush; api-4 in-stream buffer uploads, IrohGpuDevice.uploadInFrame): ring
+     * staging released only after the frame (rc12 consumedByFrame).
+     */
+    public static net.vulkanmod.vulkan.memory.staging.StagingRing.Alloc stageForFrame(long size, int align, long src) {
+        var a = stage(size, align, src);
+        RING.consumedByFrame(a);
+        return a;
+    }
+
+    /**
      * End of frame (perf/uploads): submits every upload command buffer of this frame and closes the frame's epoch. No
      * wait: the ring releases the blocks once those command buffers and the frame have finished.
      */

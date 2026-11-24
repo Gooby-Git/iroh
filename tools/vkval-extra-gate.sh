@@ -10,7 +10,7 @@ WT=$(readlink -f "${1:-.}"); FILTER=${2:-.}; cd "$WT"
 export JAVA_HOME=${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}; export PATH=$JAVA_HOME/bin:$PATH
 OUT=$WT/build/vkval-extra; mkdir -p "$OUT"
 ALLOW=$WT/tools/vkval-gpuav-allowlist.txt
-TASKS=("terrainIndirectRepro" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
+TASKS=("terrainIndirectRepro" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "packFullVkRepro" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
 have() { grep -q "register('$1'" build.gradle; }
 allowed() { # task id -> 0 when allowlisted
   [ -f "$ALLOW" ] && grep -v '^#' "$ALLOW" | awk -F' [|] ' -v t="$1" -v id="$2" '$1==id && ($2=="*" || $2=="task="t) {f=1} END {exit !f}'

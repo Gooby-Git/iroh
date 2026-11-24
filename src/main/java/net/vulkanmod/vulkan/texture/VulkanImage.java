@@ -336,10 +336,9 @@ public class VulkanImage {
     private void uploadInFrame(int mipLevel, int width, int height, int xOffset, int yOffset, int rowLength, long srcPtr, long uploadSize) {
         if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.inFrameUploads++;
         ImageUploadHelper.INSTANCE.flushPendingCopies(); // rc6: keep upload-buffer order for this image
-        var alloc = StagingBuffer.stage(uploadSize, this.formatSize, srcPtr);
+        var alloc = StagingBuffer.stageForFrame(uploadSize, this.formatSize, srcPtr); // read by this frame's command buffer: released after the frame
         long bufferId = alloc.bufferId;
         long srcOffset = alloc.offset;
-        StagingBuffer.ring().consumedByFrame(alloc); // read by this frame's command buffer: released after the frame
 
         Framebuffer boundFb = Renderer.getInstance().getBoundFramebuffer();
         if (boundFb != null && (boundFb.getColorAttachment() == this || boundFb.getDepthAttachment() == this)) {

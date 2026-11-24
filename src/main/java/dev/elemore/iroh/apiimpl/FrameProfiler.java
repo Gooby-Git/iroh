@@ -80,6 +80,14 @@ public final class FrameProfiler {
         currentSlot = frameSlot;
     }
 
+    /** PACK-FULL: Vulkan.cleanUp (device idle): the timestamp pool was never destroyed (leaked at vkDestroyDevice) */
+    public static void shutdown() {
+        if (pool != 0L && pool != -1L)
+            vkDestroyQueryPool(Vulkan.getVkDevice(), pool, null);
+        pool = 0L;
+        gpuOk = false;
+    }
+
     private static boolean init() {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             slots = Renderer.getFramesNum();

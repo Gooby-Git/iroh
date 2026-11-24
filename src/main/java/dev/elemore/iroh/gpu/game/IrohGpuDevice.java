@@ -132,11 +132,10 @@ public final class IrohGpuDevice extends VkGpuDevice {
     public void uploadInFrame(Object buffer, long offset, ByteBuffer src) {
         VkCommandBuffer c = cmd();
         long len = src.remaining();
-        var alloc = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.stage(len, 4, org.lwjgl.system.MemoryUtil.memAddress(src));
+        var alloc = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.stageForFrame(len, 4, org.lwjgl.system.MemoryUtil.memAddress(src));
         try (MemoryStack s = stackPush()) {
             vkCmdCopyBuffer(c, alloc.bufferId, ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(alloc.offset).dstOffset(offset).size(len));
         }
-        net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring().consumedByFrame(alloc);
     }
 
     @Override

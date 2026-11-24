@@ -312,6 +312,7 @@ final class PackRuntimeImpl {
                     };
                 else
                     lc.executor().afterInputs = () -> startCapture(cap, f, false);
+            prepImported();
             ok[0] = lc.frame(inputs, f, present, skip);
             if (lc.executor() != null) {
                 lc.executor().afterInputs = null;
@@ -369,6 +370,16 @@ final class PackRuntimeImpl {
         }
     }
 
+    /**
+     * PACK-FULL: the block atlas (imported, sampled by the pack's terrain programs) in a sampling layout before a
+     * frame records descriptors naming it: an atlas upload earlier in the frame leaves it in TRANSFER_DST
+     * (compare-and-skip when it is already SHADER_READ_ONLY). The frame runs inside endPassRunResume: outside every pass.
+     */
+    private void prepImported() {
+        if (gpu != null && hAtlas >= 0)
+            gpu.prepareSample(hAtlas);
+    }
+
     private void fail(String why) {
         failed = true;
         PackRuntime.deactivate();
@@ -390,8 +401,20 @@ final class PackRuntimeImpl {
         importedColour = importedDepth = null;
     }
 
+    /** PACK-FULL: Vulkan.cleanUp (device idle; the frame command buffer may be gone): release everything, record nothing */
+    void shutdown() {
+        disable(); // int-2b has no world pass: nothing is recorded on this path
+    }
+
     void disable() {
-        unload();
+        try {
+            unload();
+        } finally { // review #1: a failing unload must not skip the executor and backend release
+            disableRest();
+        }
+    }
+
+    private void disableRest() {
         if (lc != null)
             lc.disable();
         if (gpu != null)
@@ -399,6 +422,10 @@ final class PackRuntimeImpl {
         dev.elemore.iroh.apiimpl.FrameProfiler.EXTRA = null;
         gpu = null;
         lc = null;
+        // PACK-FULL: handles of the closed backend: a reload made a new backend but kept the atlas handle (no re-import:
+        // same VulkanImage)
+        hAtlas = -1;
+        importedAtlas = null;
         lastFolder = null;
         log("disabled: pack images, pipelines and buffers freed (deferred)");
         if (dev.elemore.iroh.diag.ImageTrace.ON) // the frees land when the frame slots come round: report then

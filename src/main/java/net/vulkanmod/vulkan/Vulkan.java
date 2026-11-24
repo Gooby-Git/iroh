@@ -177,6 +177,10 @@ public class Vulkan {
         Pipeline.destroyPipelineCache();
 
         dev.elemore.iroh.gpu.game.GpuLifecycle.shutdown(); // api 4: mods' GPU objects before Iroh's teardown
+        // PACK-FULL: the pack path's objects (released into the frame ops / deferred frees that run below) and the
+        // -Diroh.profile timestamp pool: both were never destroyed (vkDestroyDevice leak report in pack full mode)
+        dev.elemore.iroh.shaderpack.runtime.PackRuntime.shutdown();
+        dev.elemore.iroh.apiimpl.FrameProfiler.shutdown();
         Renderer.getInstance().cleanUpResources();
 
         // rc15 (td-05108a): objects the owners never closed, before the frame ops and leftovers below run
