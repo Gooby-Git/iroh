@@ -529,25 +529,30 @@ public abstract class Pipeline {
         }
 
         private void createDescriptorSets(MemoryStack stack) {
-            LongBuffer layout = stack.mallocLong(this.poolSize);
-//            layout.put(0, descriptorSetLayout);
+            // Upstream VulkanMod 397186a: the layout array is poolSize longs and poolSize doubles with the draws per frame
+            // of this pipeline; on the 64 KB thread MemoryStack (already holding the caller's frame) a pool of a few
+            // thousand sets overflowed it ("Out of stack space", an OutOfMemoryError that halts the integrated server).
+            LongBuffer layouts = MemoryUtil.memAllocLong(this.poolSize);
+            try {
+                for (int i = 0; i < this.poolSize; ++i) {
+                    layouts.put(i, pipeline.descriptorSetLayout);
+                }
 
-            for (int i = 0; i < this.poolSize; ++i) {
-                layout.put(i, pipeline.descriptorSetLayout);
-            }
+                VkDescriptorSetAllocateInfo allocInfo = VkDescriptorSetAllocateInfo.calloc(stack);
+                allocInfo.sType$Default();
+                allocInfo.descriptorPool(descriptorPool);
+                allocInfo.pSetLayouts(layouts);
 
-            VkDescriptorSetAllocateInfo allocInfo = VkDescriptorSetAllocateInfo.calloc(stack);
-            allocInfo.sType$Default();
-            allocInfo.descriptorPool(descriptorPool);
-            allocInfo.pSetLayouts(layout);
+                // Not hot: only on pool creation / growth. The base allocated a native LongBuffer here and never freed it
+                // (not on growth, not in cleanUp).
+                this.sets = new long[this.poolSize];
 
-            // Not hot: only on pool creation / growth. The base allocated a native LongBuffer here and never freed it
-            // (not on growth, not in cleanUp).
-            this.sets = new long[this.poolSize];
-
-            int result = dev.elemore.iroh.memory.MemoryGuard.check(vkAllocateDescriptorSets(DEVICE, allocInfo, this.sets), "vkAllocateDescriptorSets");
-            if (result != VK_SUCCESS) {
-                throw new RuntimeException("Failed to allocate descriptor sets. Result:" + result);
+                int result = dev.elemore.iroh.memory.MemoryGuard.check(vkAllocateDescriptorSets(DEVICE, allocInfo, this.sets), "vkAllocateDescriptorSets");
+                if (result != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to allocate descriptor sets. Result:" + result);
+                }
+            } finally {
+                MemoryUtil.memFree(layouts);
             }
         }
 
