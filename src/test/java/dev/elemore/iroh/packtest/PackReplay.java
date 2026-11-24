@@ -298,6 +298,11 @@ public final class PackReplay {
                     report.append("no golden at ").append(golden).append(" (run -Pgolden=update)\n");
                 }
             }
+            int dbg = dev.elemore.iroh.shaderpack.runtime.SyncPlan.DEBUG_VIOLATIONS_ALL.get();
+            if (dbg > 0) { // B-3B debug mode: the compiled schedule left a hazard the old tracker or SyncCheck sees
+                report.append("BAD  sync debug violations ").append(dbg).append(": ").append(dev.elemore.iroh.shaderpack.runtime.SyncPlan.DEBUG_SAMPLE).append('\n');
+                ok = false;
+            }
             System.out.print(report);
             System.out.println("# output " + out.resolve("final.png") + " sha256 " + hash);
             System.out.println("# replay " + (ok ? "PASS" : "FAIL") + " " + name + " " + folder + " " + w + "x" + h + " frames " + frames

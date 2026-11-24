@@ -103,11 +103,26 @@ public interface GpuBackend extends AutoCloseable {
     void beginFrame();
 
     /**
-     * declares a hazard on {@code image}. V-7 contract: a barrier orders EVERY earlier access of every image (earlier frames
-     * included) before every later one; VkPackBackend records one full memory barrier. FrameExecutor's cross-frame carry
-     * relies on it (an image-only barrier here would need the carry to drop only that image).
+     * A FULL barrier (the global fallback): it orders EVERY earlier access of every image (earlier frames included)
+     * before every later one; VkPackBackend records one ALL_COMMANDS -> ALL_COMMANDS, MEMORY_WRITE -> MEMORY_READ|WRITE
+     * memory barrier. {@code image}/{@code from}/{@code to} only name it (logs). B-3B: FrameExecutor uses it only to
+     * isolate a command its compiled schedule does not know yet and to fence after a recompile; its own hazards go
+     * through {@link #barrier(Barrier)}.
      */
     void barrier(int image, String from, String to);
+
+    /**
+     * B-3B: one pipeline barrier with synchronization1 masks ({@link Sync}: VK_PIPELINE_STAGE_* / VK_ACCESS_* values).
+     * Execution dependency {@code srcStages -> dstStages} for everything; memory dependencies only for the listed owned
+     * images (GENERAL -> GENERAL, every level, both aspects of a depth/stencil format) and buffers (whole range). Empty
+     * lists = an execution-only barrier (write after read).
+     */
+    record Barrier(int srcStages, int dstStages, int[] images, int[] imageSrc, int[] imageDst, int[] buffers, int[] bufferSrc, int[] bufferDst) {}
+
+    /** B-3B: records {@code b}; a backend without masks falls back to the full barrier */
+    default void barrier(Barrier b) {
+        barrier(-1, "ANY", "ANY");
+    }
 
     void clear(int image, float[] rgba);
 

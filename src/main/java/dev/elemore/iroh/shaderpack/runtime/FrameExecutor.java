@@ -34,8 +34,9 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li>Images from the resource plan at the input's render size, named {@code pack:<target>} ({@code #main}/{@code #alt}
  *       for pairs), allocated through a {@link MemoryGate} (MemoryGuard non-essential in game), zeroed by the backend.</li>
- *   <li>Halves come from the plan (no flip logic here: the plan froze it). Barriers: any read after a write, any write
- *       after a read or write of the same image.</li>
+ *   <li>Halves come from the plan (no flip logic here: the plan froze it). Barriers (B-3B): decided ahead of time by
+ *       {@link SyncPlan} from every command site of the plan (tight sync1 masks, one barrier per site at most,
+ *       cross-frame state solved once) and replayed per site; the old per-access tracker runs only in debug mode.</li>
  *   <li>Passes before {@link PackFrameInputs#startStage()} are supplied by the inputs (captured or synthetic images);
  *       geometry passes after it need the game and are skipped offline (named in the trace).</li>
  *   <li>Fullscreen passes draw a 0..1 quad: iris_Vertex / gl_MultiTexCoord0 = (x, y, 0, 1), compat matrices identity
@@ -188,6 +189,108 @@ public final class FrameExecutor {
             throw new IllegalArgumentException("no folder " + folder + " in the plan (have " + pp.frames.keySet() + ")");
         this.gpu = gpu;
         this.gate = gate;
+        this.syncDebug = syncDebugDefault;
+        this.sync = new SyncPlan(gpu, owned, syncDebug, problems);
+    }
+
+    // ============================================================================================= B-3B barriers
+
+    /**
+     * B-3B debug mode ({@code -Diroh.pack.syncDebug=true}; the offline harnesses turn it on): the old dynamic tracker
+     * runs beside the compiled schedule without emitting, every declared access is checked against the barriers
+     * emitted ({@link SyncPlan} class comment). Off in game: then {@link #access} only declares while a site registers.
+     */
+    public static boolean syncDebugDefault = Boolean.getBoolean("iroh.pack.syncDebug");
+    final boolean syncDebug;
+    private final SyncPlan sync;
+
+    /** the compiled barrier schedule of this executor (stats, debug violations, {@link SyncPlan#describe}) */
+    public SyncPlan sync() {
+        return sync;
+    }
+
+    // plan positions of command sites: pass i at position i + 1; minor: mips 16+k, the pass's command 32, the upscale
+    // cut 64.. (motion 64, display copies 65+n, upscaler 1000); frame end at posEnd (end copies 16+k, depth back 1000,
+    // raster-over blit 1001 / draw 1002, present 1003). Regions: the frame begin (any order), and the world pass's gaps
+    // between executor segments (substituted attachment sets, blitIn/blitOut/clearExternal).
+    static final int R_BEGIN = 1, R_GAP_A = 2, R_GAP_B = 3, R_GAP_C = 4, R_GAP_END = 5;
+    private int posB, posC, posEnd, curPos, heldIdx, curGap = R_GAP_END;
+    private static final int HELD = -1;
+
+    private void positions() {
+        int n = frame.passes.size();
+        posB = posC = n + 1;
+        for (int i = n - 1; i >= 0; i--) {
+            int st = STAGES.indexOf(frame.passes.get(i).stage);
+            if (st >= STAGES.indexOf("deferred"))
+                posB = i + 1;
+            if (st >= STAGES.indexOf("composite"))
+                posC = i + 1;
+        }
+        posEnd = n + 2;
+    }
+
+    private static long order(int pos, int minor) {
+        return ((long) pos << 12) | minor;
+    }
+
+    private long regionOrder(int region) {
+        return switch (region) {
+            case R_BEGIN -> 0;
+            case R_GAP_A -> 1;
+            case R_GAP_B -> order(posB, 0);
+            case R_GAP_C -> order(posC, 0);
+            default -> order(posEnd, 0);
+        };
+    }
+
+    private void atRegion(int region, int op, int disc, int pipe, Object label) {
+        // the frame begin's commands run at most once a frame each (their barriers are hoisted into one); the world
+        // pass's gaps repeat attachment sets
+        sync.at((1L << 60) | ((long) region << 48) | ((long) op << 32) | (disc & 0xffffffffL), regionOrder(region), region,
+                region == R_BEGIN ? SyncPlan.ONCE : 0, pipe, label);
+    }
+
+    private void atOrdered(int pos, int minor, int flags, int pipe, Object label) {
+        long o = order(pos, minor);
+        sync.at(o, o, 0, flags, pipe, label);
+    }
+
+    /** a one-off command (inner upload of a lazily made image): always isolated */
+    private void atOneOff() {
+        sync.at(0, 0, 0, 0, Sync.PIPE_XFER, null);
+    }
+
+    private static int mustFor(PassGraph.Pass p) {
+        return p.stage.equals("shadow") || p.stage.equals("shadowcomp") ? 0 : SyncPlan.MUST;
+    }
+
+    /** storage buffers bound in set 1 (read-modify-write); declared for the compiled schedule only (the old tracker never had buffers) */
+    private void accessBuffers(Map<Integer, GpuBackend.Bind> set1) {
+        if (!sync.declaring() || set1 == null || set1.isEmpty())
+            return;
+        for (GpuBackend.Bind b : set1.values())
+            if (b.buffer() >= 0)
+                sync.decl(Sync.BUF | b.buffer(), "STORAGE_WRITE");
+    }
+
+    /**
+     * P3-11 world pass: before {@code gpu.beginAttachments} of a substituted attachment set: its compiled barrier (the
+     * attachments are written, its bound pack images sampled / stored). {@link #externalEnded} after endAttachments.
+     */
+    public void external(SubstPass sp) {
+        atRegion(curGap, 9, sp.ordinal, Sync.PIPE_DRAW, sp.passId);
+        accessBinds(sp.set0, "STORAGE_WRITE");
+        accessBuffers(sp.set1);
+        for (int h : sp.colour)
+            access(h, "ATTACHMENT_WRITE");
+        if (sp.depth >= 0)
+            access(sp.depth, "ATTACHMENT_WRITE");
+    }
+
+    /** P3-11 world pass: after {@code gpu.endAttachments} of the set {@link #external} opened */
+    public void externalEnded() {
+        recorded();
     }
 
     public PassGraph.Frame frame() {
@@ -266,6 +369,7 @@ public final class FrameExecutor {
                 problems.add(p.id + ": pipeline not created: " + e);
             }
         }
+        positions();
         prepared = true;
     }
 
@@ -439,6 +543,10 @@ public final class FrameExecutor {
         if (!keepTrace)
             trace.clear();
         gpu.beginFrame(); // V-6/V-7: lastAccess holds images created since the last frame (TRANSFER_WRITE) and the last frame's tail
+        // B-3B: compiles the schedule when sites were registered last frame; fences after creation / a recompile
+        sync.noCarryForTest = forgetAtFrameEndForTest;
+        sync.untrackedCreateForTest = untrackedCreateForTest;
+        sync.frameBegin();
         postCut = false;
         if (tracing) trace.add("frame start=" + in.startStage() + " size=" + width + "x" + height);
         int start = STAGES.indexOf(in.startStage());
@@ -487,6 +595,7 @@ public final class FrameExecutor {
                 }
             }
             int h = (Integer) cp[0];
+            atRegion(R_BEGIN, 1, h, Sync.PIPE_XFER, "clear");
             access(h, "TRANSFER_WRITE");
             gpu.clear(h, cc);
             recorded();
@@ -509,6 +618,7 @@ public final class FrameExecutor {
                 problems.add("supplied " + name + " is " + ex[0] + "x" + ex[1] + "x" + ex[2] + ", plan image " + d.width() + "x" + d.height() + "x" + d.depth());
                 continue;
             }
+            atRegion(R_BEGIN, 2, h, Sync.PIPE_XFER, "upload");
             access(h, "TRANSFER_WRITE");
             gpu.upload(h, in.image(name));
             recorded();
@@ -527,6 +637,7 @@ public final class FrameExecutor {
             }
             if (h == null)
                 continue;
+            atRegion(R_BEGIN, 3, h, Sync.PIPE_XFER, "blit input");
             access(e.getValue(), "TRANSFER_READ");
             access(h, "TRANSFER_WRITE");
             gpu.blit(e.getValue(), h);
@@ -550,6 +661,7 @@ public final class FrameExecutor {
                 clearValueKeys.put(e.getKey(), hs);
             }
             for (int h : hs) {
+                atRegion(R_BEGIN, 4, h, Sync.PIPE_XFER, "clear (input value)");
                 access(h, "TRANSFER_WRITE");
                 gpu.clear(h, e.getValue());
                 recorded();
@@ -561,6 +673,7 @@ public final class FrameExecutor {
                 Integer h = images.get(dk);
                 if (h == null)
                     continue;
+                atRegion(R_BEGIN, 5, h, Sync.PIPE_XFER, "clear depth");
                 access(h, "TRANSFER_WRITE");
                 gpu.clear(h, FAR_DEPTH);
                 recorded();
@@ -568,6 +681,7 @@ public final class FrameExecutor {
             }
         if (afterInputs != null)
             afterInputs.run();
+        curGap = R_GAP_A;
         segStart = start;
         segLastStage = null;
         heldCaptures.clear();
@@ -616,6 +730,7 @@ public final class FrameExecutor {
                 if (tracing) trace.add("skip " + p.id + " (replaced by the upscaler)");
                 continue;
             }
+            curPos = pi + 1;
             switch (p.kind) {
                 case "fullscreen" -> {
                     gpu.timeBegin(p.id);
@@ -643,12 +758,16 @@ public final class FrameExecutor {
             if (upscale != null && p.id.equals(upscale.after()))
                 runCut(in);
         }
+        curGap = toExclusive == null ? R_GAP_END : toExclusive.equals("deferred") ? R_GAP_B : toExclusive.equals("composite") ? R_GAP_C : R_GAP_END;
     }
 
     /** P3-11: the depth captures {@link #runStages} held, now (after the world pass's opaque draws) */
     public void runHeldCaptures(PackFrameInputs in) {
-        for (int i = 0; i < heldCaptures.size(); i++)
+        for (int i = 0; i < heldCaptures.size(); i++) {
+            curPos = HELD;
+            heldIdx = i;
             capture(heldCaptures.get(i), in);
+        }
         heldCaptures.clear();
     }
 
@@ -667,7 +786,9 @@ public final class FrameExecutor {
             }
             endCopies = l.toArray(new int[0][]);
         }
-        for (int[] am : endCopies) {
+        for (int k = 0; k < endCopies.length; k++) {
+            int[] am = endCopies[k];
+            atOrdered(posEnd, 16 + k, SyncPlan.MUST, Sync.PIPE_XFER, "end copy alt -> main");
             access(am[0], "TRANSFER_READ");
             access(am[1], "TRANSFER_WRITE");
             gpu.copy(am[0], am[1]);
@@ -676,6 +797,7 @@ public final class FrameExecutor {
         }
         if (in.depthTo() >= 0 && images.containsKey("depthtex0")) {
             Integer d0 = images.get("depthtex0");
+            atOrdered(posEnd, 1000, 0, Sync.PIPE_XFER, "depth back");
             access(d0, "TRANSFER_READ");
             access(in.depthTo(), "TRANSFER_WRITE");
             gpu.blit(d0, in.depthTo());
@@ -686,6 +808,7 @@ public final class FrameExecutor {
             rasterOverComposite();
         if (presentTo >= 0) {
             Integer out = images.get("output");
+            atOrdered(posEnd, 1003, 0, Sync.PIPE_XFER, "present");
             access(out, "TRANSFER_READ");
             access(presentTo, "TRANSFER_WRITE");
             gpu.blit(out, presentTo);
@@ -693,7 +816,9 @@ public final class FrameExecutor {
             if (tracing) trace.add("present output");
         }
         gpu.endFrame();
-        carryTail();
+        sync.frameEnd();
+        if (syncDebug)
+            carryTail();
         if (tracing) trace.add("frame end");
     }
 
@@ -788,6 +913,8 @@ public final class FrameExecutor {
     private String[] abKind = new String[64];
 
     private void accessBinds(Map<Integer, GpuBackend.Bind> set0, String storageKind) {
+        if (!syncDebug && !sync.declaring())
+            return; // B-3B: a compiled site needs no declarations
         GpuBackend.Bind[] arr = bindArrays.get(set0);
         if (arr == null) {
             arr = set0.values().toArray(new GpuBackend.Bind[0]);
@@ -833,7 +960,8 @@ public final class FrameExecutor {
     private int newImage(GpuBackend.ImageDesc d) {
         int h = gpu.createImage(d);
         owned.set(h);
-        if (!untrackedCreateForTest) {
+        sync.created(); // B-3B: the zeroing clear is not in the schedule: the next site runs isolated (or the frame begin fences)
+        if (syncDebug && !untrackedCreateForTest) {
             lastAccess.put(h, "TRANSFER_WRITE");
             noteSinceBarrier(h);
         }
@@ -886,8 +1014,9 @@ public final class FrameExecutor {
         since[nSince++] = image;
     }
 
-    /** the command whose accesses were just declared is recorded (V-7) */
+    /** the command whose accesses were just declared is recorded (V-7; B-3B: the end of a site) */
     private void recorded() {
+        sync.after();
         cmdStart = nSince;
     }
 
@@ -956,11 +1085,23 @@ public final class FrameExecutor {
         return carried.cardinality();
     }
 
+    /**
+     * B-3B: one access of the command about to be recorded. Declared to the compiled schedule while its site registers
+     * (and in debug mode always); in debug mode also run through the old dynamic tracker below, which no longer emits.
+     */
     private void access(int image, String kind) {
+        if (sync.declaring())
+            sync.decl(image, kind);
+        if (syncDebug)
+            oldAccess(image, kind);
+    }
+
+    /** the V-6/V-7 dynamic tracker (debug only): decides where it would have put its full barrier */
+    private void oldAccess(int image, String kind) {
         String last = lastAccess.get(image);
         boolean write = kind.endsWith("WRITE");
         if (last != null && (last.endsWith("WRITE") || write)) {
-            gpu.barrier(image, last, kind);
+            sync.oldWould(image);
             barrierEmitted();
         }
         lastAccess.put(image, kind);
@@ -1096,6 +1237,7 @@ public final class FrameExecutor {
     private void runCut(PackFrameInputs in) {
         Integer depth = images.get("depthtex0"), mv = images.get("engine:motion");
         if (motionPipe >= 0 && depth != null && mv != null) {
+            atOrdered(curPos, 64, 0, Sync.PIPE_DRAW, "engine:motion");
             access(depth, "SAMPLED_READ");
             access(mv, "ATTACHMENT_WRITE");
             Map<String, double[]> u = in.uniforms();
@@ -1125,7 +1267,9 @@ public final class FrameExecutor {
             }
             cutCopies = l.toArray(new int[0][]);
         }
-        for (int[] sd : cutCopies) {
+        for (int k = 0; k < cutCopies.length; k++) {
+            int[] sd = cutCopies[k];
+            atOrdered(curPos, 65 + k, 0, Sync.PIPE_XFER, "display copy");
             access(sd[0], "TRANSFER_READ");
             access(sd[1], "TRANSFER_WRITE");
             gpu.blit(sd[0], sd[1]);
@@ -1138,6 +1282,7 @@ public final class FrameExecutor {
         }
         Integer inImg = cutIn, outImg = cutOut;
         if (inImg != null && outImg != null) {
+            atOrdered(curPos, 1000, SyncPlan.OPAQUE, Sync.PIPE_ANY, "upscale"); // the upscaler's own commands: isolated
             access(inImg, "TRANSFER_READ");
             if (mv != null)
                 access(mv, "SAMPLED_READ");
@@ -1157,14 +1302,19 @@ public final class FrameExecutor {
         }
         PackData.Unit u = data.units.get(p.unit);
         PassCache c = passCache.get(p);
+        int must = mustFor(p);
         if (c != null && c.draw != null && afterPass == null) {
             // P3-8 steady state: no allocation
-            for (int h : c.mips) {
+            for (int k = 0; k < c.mips.length; k++) {
+                int h = c.mips[k];
+                atOrdered(curPos, 16 + k, must, Sync.PIPE_MIPS, p.id);
                 access(h, "TRANSFER_WRITE");
                 gpu.generateMips(h);
                 recorded();
             }
+            atOrdered(curPos, 32, must, Sync.PIPE_DRAW, p.id);
             accessBinds(c.draw.set0(), "STORAGE_WRITE");
+            accessBuffers(c.draw.set1());
             for (int h : c.draw.colour())
                 access(h, "ATTACHMENT_WRITE");
             fillUniforms(u, c.ubo, in.uniforms(), true, viewW(), viewH());
@@ -1183,6 +1333,7 @@ public final class FrameExecutor {
             mipped.add(tp[0]);
             Integer h = imageFor(tp[0], tp[1]);
             if (h != null) {
+                atOrdered(curPos, 16 + nMips, must, Sync.PIPE_MIPS, p.id);
                 mipHandles[nMips++] = h;
                 access(h, "TRANSFER_WRITE");
                 gpu.generateMips(h);
@@ -1192,7 +1343,9 @@ public final class FrameExecutor {
         }
         Map<Integer, GpuBackend.Bind> set0 = binds(p, u, 0);
         Map<Integer, GpuBackend.Bind> set1 = binds(p, u, 1);
+        atOrdered(curPos, 32, must, Sync.PIPE_DRAW, p.id);
         accessBinds(set0, "STORAGE_WRITE"); // a fullscreen program may imageStore too
+        accessBuffers(set1);
         int[] colour = new int[p.writes.size()];
         List<String> keys = new ArrayList<>();
         int aw = Integer.MAX_VALUE, ah = Integer.MAX_VALUE;
@@ -1201,6 +1354,7 @@ public final class FrameExecutor {
             Integer h = imageFor((String) w.get("target"), (String) w.get("half"));
             if (h == null) {
                 problems.add(p.id + ": no image for " + w.get("target") + "/" + w.get("half"));
+                sync.cancel();
                 return;
             }
             colour[i] = h;
@@ -1229,6 +1383,7 @@ public final class FrameExecutor {
             afterPass.accept(p.id, keys);
             gpu.beginFrame();
             forgetAccesses(); // offline debug dumps only: the frame was submitted and waited around afterPass
+            sync.full();
         }
     }
 
@@ -1255,6 +1410,7 @@ public final class FrameExecutor {
                 default -> new float[]{1, 1, 1, 1};
             };
         h = newImage(new GpuBackend.ImageDesc("pack:" + key, "R8G8B8A8_UNORM", w, hh, 1, 1, Set.of("SAMPLED", "TRANSFER_DST")));
+        atOneOff();
         access(h, "TRANSFER_WRITE");
         gpu.upload(h, px);
         recorded();
@@ -1342,11 +1498,6 @@ public final class FrameExecutor {
             c.viewport = new int[]{0, 0, dd.width(), dd.height()};
             passCache.put(p, c);
         }
-        // storage images in a geometry program are written (shadow voxelisation: imageStore from the shadow pass)
-        accessBinds(c.set0, "STORAGE_WRITE");
-        for (int h : c.colour)
-            access(h, "ATTACHMENT_WRITE");
-        access(c.depth, "ATTACHMENT_WRITE");
         Map<String, double[]> base = in.uniforms();
         double[] view = shadow ? base.get("shadowModelView") : base.get("gbufferModelView");
         double[] proj = shadow ? base.get("shadowProjection") : base.get("gbufferProjection");
@@ -1458,12 +1609,14 @@ public final class FrameExecutor {
             }
         }
         for (int di = 0; di < c.geoDraws.size(); di++) {
-            if (di > 0) { // the next render pass instance writes the same attachments (and storage images)
-                accessBinds(c.set0, "STORAGE_WRITE");
-                for (int h : c.colour)
-                    access(h, "ATTACHMENT_WRITE");
-                access(c.depth, "ATTACHMENT_WRITE");
-            }
+            // one render pass instance per vertex layout, each writing the same attachments (B-3B: a REPEAT site)
+            atOrdered(curPos, 32, SyncPlan.REPEAT, Sync.PIPE_DRAW, p.id);
+            // storage images in a geometry program are written (shadow voxelisation: imageStore from the shadow pass)
+            accessBinds(c.set0, "STORAGE_WRITE");
+            accessBuffers(c.set1);
+            for (int h : c.colour)
+                access(h, "ATTACHMENT_WRITE");
+            access(c.depth, "ATTACHMENT_WRITE");
             gpu.drawGeometry(c.geoDraws.get(di));
             recorded();
         }
@@ -1571,6 +1724,10 @@ public final class FrameExecutor {
             if (tracing) trace.add("skip " + p.id + " (no image)");
             return;
         }
+        if (curPos == HELD) // P3-11: held depth captures run after the world pass's opaque draws (gap B)
+            atOrdered(posB, 1 + heldIdx, 0, Sync.PIPE_XFER, p.id);
+        else
+            atOrdered(curPos, 32, 0, Sync.PIPE_XFER, p.id);
         access(a, "TRANSFER_READ");
         access(b, "TRANSFER_WRITE");
         gpu.copy(a, b);
@@ -1593,7 +1750,9 @@ public final class FrameExecutor {
             c.dispatch = new GpuBackend.Dispatch(p.id, pipe, groups(p, u), binds(p, u, 0), binds(p, u, 1), c.ubo.array());
             passCache.put(p, c);
         }
+        atOrdered(curPos, 32, mustFor(p), Sync.PIPE_DISPATCH, p.id);
         accessBinds(c.dispatch.set0(), "STORAGE_WRITE");
+        accessBuffers(c.dispatch.set1());
         int[] groups = c.dispatch.groups();
         fillUniforms(u, c.ubo, in.uniforms(), false, viewW(), viewH());
         gpu.dispatch(c.dispatch);
@@ -1747,6 +1906,7 @@ public final class FrameExecutor {
                                 Set.of("SAMPLED", "TRANSFER_DST", "TRANSFER_SRC"));
                         if (gate.allow(d.name(), d.bytes())) {
                             h = newImage(d);
+                            atOneOff();
                             access(h, "TRANSFER_WRITE");
                             gpu.upload(h, px);
                             recorded();
@@ -1783,6 +1943,7 @@ public final class FrameExecutor {
         Set<String> usage = storage ? Set.of("STORAGE", "SAMPLED", "TRANSFER_DST") : Set.of("SAMPLED", "TRANSFER_DST");
         h = newImage(new GpuBackend.ImageDesc("pack:" + key, vk, 1, 1, 1, 1, usage));
         if (depth) {
+            atOneOff();
             access(h, "TRANSFER_WRITE");
             gpu.upload(h, new float[]{1, 0, 0, 0}); // far plane: compare passes (lit)
             recorded();
@@ -2008,6 +2169,7 @@ public final class FrameExecutor {
             gpu.freeBuffer(vb);
         vertexBuffers.clear();
         forgetAccesses();
+        sync.reset();
         passCache.clear();
         hasBatchesCache.clear();
         passLayouts.clear();
@@ -2085,10 +2247,12 @@ public final class FrameExecutor {
             overDraw = new GpuBackend.Draw("engine:over", overPipe, new int[]{out}, new int[]{0, 0, od.width(), od.height()}, set0, Map.of(), new byte[16]);
         }
         int img = images.get("engine:raster");
+        atOrdered(posEnd, 1001, 0, Sync.PIPE_XFER, "raster-over blit");
         access(rasterOver, "TRANSFER_READ");
         access(img, "TRANSFER_WRITE");
         gpu.blit(rasterOver, img);
         recorded();
+        atOrdered(posEnd, 1002, 0, Sync.PIPE_DRAW, "raster-over draw");
         access(img, "SAMPLED_READ");
         access(out, "ATTACHMENT_WRITE");
         gpu.draw(overDraw);
@@ -2103,6 +2267,7 @@ public final class FrameExecutor {
             h = imageFor(key, "main");
         if (h == null)
             return;
+        atRegion(curGap, 6, h, Sync.PIPE_XFER, "blit out");
         access(h, "TRANSFER_READ");
         access(dst, "TRANSFER_WRITE");
         gpu.blit(h, dst);
@@ -2115,6 +2280,7 @@ public final class FrameExecutor {
         Integer h = imageFor(target, "main");
         if (h == null)
             return;
+        atRegion(curGap, 7, h, Sync.PIPE_XFER, "blit in");
         access(src, "TRANSFER_READ");
         access(h, "TRANSFER_WRITE");
         gpu.blit(src, h);
@@ -2124,6 +2290,7 @@ public final class FrameExecutor {
 
     /** P3-11: clears a backend image the executor does not own (the scene colour to transparent for the raster remainder) */
     public void clearExternal(int image, float[] rgba) {
+        atRegion(curGap, 8, image, Sync.PIPE_XFER, "clear external");
         access(image, "TRANSFER_WRITE");
         gpu.clear(image, rgba);
         recorded();
@@ -2142,6 +2309,8 @@ public final class FrameExecutor {
         final PackData.Unit unit;
         final PassGraph.Pass pass;
         final ByteBuffer ubo;
+        /** B-3B: site discriminator of this attachment set */
+        int ordinal;
 
         SubstPass(PassGraph.Pass p, PackData.Unit u, int[] colour, int depth, int[] viewport, Map<Integer, GpuBackend.Bind> set0,
                   Map<Integer, GpuBackend.Bind> set1, int[] texBindings, ByteBuffer ubo) {
@@ -2226,6 +2395,7 @@ public final class FrameExecutor {
         for (int i = 0; i < tb.length; i++)
             tb[i] = tex.get(i);
         sp = new SubstPass(p, u, colour, depth, new int[]{0, 0, dd.width(), dd.height()}, set0, set1, tb, newBlock(u));
+        sp.ordinal = substPasses.size();
         substPasses.put(passId, sp);
         return sp;
     }

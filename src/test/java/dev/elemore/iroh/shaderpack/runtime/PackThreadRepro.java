@@ -146,9 +146,12 @@ public final class PackThreadRepro {
         boolean wiringOk = old || wiring();
         int bugs = rs.stream().mapToInt(Result::bugs).sum();
         int hazards = hz + inter.hazards();
-        String verdict = old ? (bugs > 0 ? "BUG" : "no-bug") : (bugs == 0 && hazards == 0 && wiringOk ? "CLEAN" : "NOT-CLEAN");
+        int dbg = SyncPlan.DEBUG_VIOLATIONS_ALL.get(); // B-3B: the compiled schedule vs the old tracker + SyncCheck (debug mode)
+        SyncPlan.DEBUG_SAMPLE.stream().limit(3).forEach(x -> System.out.println("  sync debug: " + x));
+        String verdict = old ? (bugs > 0 ? "BUG" : "no-bug") : (bugs == 0 && hazards == 0 && wiringOk && dbg == 0 ? "CLEAN" : "NOT-CLEAN");
         return verdict + " " + mode + ": interleaved uaf " + inter.uaf() + " exc " + inter.otherExceptions() + " val " + inter.validation()
                 + "; random uaf " + uaf + " exc " + exc + " val " + val + " (framebuffer destroy errors " + dd + "); sync hazards " + hazards
+                + "; sync debug violations " + dbg
                 + (old ? "" : "; wiring " + (wiringOk ? "ok" : "BROKEN"));
     }
 
