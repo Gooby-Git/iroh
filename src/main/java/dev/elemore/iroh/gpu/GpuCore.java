@@ -495,6 +495,7 @@ public final class GpuCore {
             case ROUTE_PASS_BREAK -> device.runOutsideMainPass(() -> {
                 outside++;
                 try {
+                    device.flushQueuedInFrame(); // same break records the queued image copies (VulkanImage.flushInFrame)
                     inStream(b, offset, d);
                 } finally {
                     outside--;
