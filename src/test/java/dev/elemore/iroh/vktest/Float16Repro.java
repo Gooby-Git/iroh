@@ -126,7 +126,9 @@ public final class Float16Repro {
                 .ppEnabledExtensionNames(s.pointers(s.UTF8("VK_EXT_debug_utils")));
         PointerBuffer pp = s.mallocPointer(1);
         ck(vkCreateInstance(ici, null, pp));
-        instance = new VkInstance(pp.get(0), ici);
+        final long ih = pp.get(0);
+        final VkInstanceCreateInfo fici = ici;
+        instance = net.vulkanmod.vulkan.util.WideStack.call(() -> new VkInstance(ih, fici)); // H1A: LWJGL's per-device extension enumeration (228 on the Blackwell profile) must not eat this harness' own 64 KB stack
         VkDebugUtilsMessengerCallbackEXT cb = VkDebugUtilsMessengerCallbackEXT.create((sev, type, data, user) -> {
             if ((sev & EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) ERRORS.add(VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString());
             return VK_FALSE;

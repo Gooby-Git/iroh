@@ -125,12 +125,9 @@ public final class RtDeviceFeatures {
     }
 
     static boolean hasExtensions(MemoryStack s, VkPhysicalDevice pd) {
-        IntBuffer n = s.mallocInt(1);
-        vkEnumerateDeviceExtensionProperties(pd, (String) null, n, null);
-        VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(n.get(0), s);
-        vkEnumerateDeviceExtensionProperties(pd, (String) null, n, props);
-        Set<String> have = new java.util.HashSet<>();
-        for (VkExtensionProperties p : props) have.add(p.extensionNameString());
+        // H1A (hwCapsRepro, Blackwell profile): the old VkExtensionProperties.malloc(n, s) put 260 B x 228 = 59 KB on the 64 KB MemoryStack
+        // of createLogicalDevice; VkEnum enumerates on the heap
+        java.util.Set<String> have = net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(pd);
         for (String e : EXTENSIONS) if (!have.contains(e)) return false;
         return true;
     }
