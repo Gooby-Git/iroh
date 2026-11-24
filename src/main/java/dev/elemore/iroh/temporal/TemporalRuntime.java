@@ -112,6 +112,7 @@ public final class TemporalRuntime {
             TemporalFrame.invalidateHistory();
         }
         boolean changed = TemporalFrame.beginFrame(sc.getWidth(), sc.getHeight(), a.temporal(), a.wantsVelocity());
+        noteContext(); // H1C: F5, screens, dimension
         if (TemporalFrame.velocityOn && !DeviceCaps.velocityCapable()) {
             if (!warnedNoVelocity) {
                 Initializer.LOGGER.warn("Iroh upscale: velocity pass / debug view unavailable ({}); launch with -Diroh.upscale.mode=<mode> so the device features are enabled",
@@ -123,7 +124,7 @@ public final class TemporalRuntime {
         }
         long now = System.nanoTime();
         if (lastFrameNanos != 0)
-            frameTimeMs = (now - lastFrameNanos) / 1.0e6f;
+            frameTimeMs = TemporalFrame.clampFrameTime((now - lastFrameNanos) / 1.0e6f); // H1C: raw wall clock after a hitch is not a frame time
         lastFrameNanos = now;
 
         if (changed) {
@@ -135,6 +136,19 @@ public final class TemporalRuntime {
         if (!TemporalFrame.ACTIVE && wasActive)
             deactivate();
         wasActive = TemporalFrame.ACTIVE;
+    }
+
+    /** H1C (RQ-APP1-d): camera type / screen / dimension changes drop the upscaler history (pure rule in {@link TemporalFrame#noteContext}). */
+    private static void noteContext() {
+        if (!TemporalFrame.ACTIVE)
+            return;
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            boolean screen = mc.screen != null && !(mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen); // chat is a thin overlay, not a new picture
+            TemporalFrame.noteContext(mc.options.getCameraType(), screen, mc.level != null ? mc.level.dimension() : null);
+        } catch (RuntimeException e) {
+            // never let a context probe break the frame
+        }
     }
 
     /** GameRenderer.render TAIL */

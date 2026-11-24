@@ -195,6 +195,34 @@ public final class TemporalFrame {
         haveHandCur = true;
     }
 
+    /** H1C (RQ-APP1-d): frameTimeDelta bounds in ms. SDK docs: values below 1.0 trigger FSR_API_DEBUG_WARNING (VERIFIED, super-resolution-upscaler.md); the 100 ms cap is ours (UNVERIFIED), so a hitch cannot make FSR believe the motion is huge. */
+    public static final float FRAME_TIME_MIN_MS = 1f, FRAME_TIME_MAX_MS = 100f;
+
+    public static float clampFrameTime(float ms) {
+        return Float.isNaN(ms) ? 16.7f : Math.max(FRAME_TIME_MIN_MS, Math.min(FRAME_TIME_MAX_MS, ms));
+    }
+
+    private static Object lastCameraType, lastDimension;
+    private static boolean lastScreen, haveContext;
+
+    /**
+     * H1C (RQ-APP1-d): the upscaler must forget its history when the picture changes under it without the camera matrices saying so:
+     * the camera type (F5 first/third person), a screen opening or closing, or another dimension. Level identity and teleports are
+     * handled by the callers ({@code TemporalRuntime.onWorldStart}, {@link #endWorld}). Compared with equals, so tests can pass plain objects.
+     * @return true when the history was dropped
+     */
+    public static boolean noteContext(Object cameraType, boolean screenOpen, Object dimension) {
+        boolean changed = haveContext && (!java.util.Objects.equals(cameraType, lastCameraType) || screenOpen != lastScreen
+                || !java.util.Objects.equals(dimension, lastDimension));
+        lastCameraType = cameraType;
+        lastScreen = screenOpen;
+        lastDimension = dimension;
+        haveContext = true;
+        if (changed)
+            invalidateHistory();
+        return changed;
+    }
+
     /** Drops the history (dimension change, respawn, world change). */
     public static void invalidateHistory() {
         havePrev = false;
@@ -274,6 +302,8 @@ public final class TemporalFrame {
         haveHandCur = haveHandPrev = handValid = false;
         reset = true;
         lastRenderW = lastRenderH = 0;
+        lastCameraType = lastDimension = null;
+        lastScreen = haveContext = false;
         reproject.identity();
     }
 }

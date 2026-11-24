@@ -225,6 +225,27 @@ public final class TemporalMathTest {
         check("mode off: change reported, everything off", TemporalFrame.beginFrame(2560, 1440, true, true) && !TemporalFrame.ACTIVE && !TemporalFrame.JITTER_ON);
         System.clearProperty(UpscaleSwitches.MODE);
 
+        // H1C (RQ-APP1-d): history resets and the frame-time clamp
+        TemporalFrame.resetForTest();
+        Object FIRST = "FIRST_PERSON", THIRD = "THIRD_PERSON_BACK", OVER = "minecraft:overworld", NETHER = "minecraft:the_nether";
+        check("ctx: first call only records", !TemporalFrame.noteContext(FIRST, false, OVER));
+        TemporalFrame.frameDone();
+        check("ctx: steady state keeps history", !TemporalFrame.noteContext(FIRST, false, OVER) && !TemporalFrame.reset);
+        check("ctx: F5 camera type change resets", TemporalFrame.noteContext(THIRD, false, OVER) && TemporalFrame.reset);
+        TemporalFrame.frameDone();
+        check("ctx: screen opens resets", TemporalFrame.noteContext(THIRD, true, OVER) && TemporalFrame.reset);
+        TemporalFrame.frameDone();
+        check("ctx: screen closes resets", TemporalFrame.noteContext(THIRD, false, OVER) && TemporalFrame.reset);
+        TemporalFrame.frameDone();
+        check("ctx: dimension change (portal) resets", TemporalFrame.noteContext(THIRD, false, NETHER) && TemporalFrame.reset);
+        TemporalFrame.frameDone();
+        check("ctx: null dimension (no level) is a change from a dimension", TemporalFrame.noteContext(THIRD, false, null));
+        check("frame time: 0.3 ms -> 1", TemporalFrame.clampFrameTime(0.3f) == 1f);
+        check("frame time: 16.7 untouched", TemporalFrame.clampFrameTime(16.7f) == 16.7f);
+        check("frame time: 2 s hitch -> 100", TemporalFrame.clampFrameTime(2000f) == 100f);
+        check("frame time: NaN -> 16.7", TemporalFrame.clampFrameTime(Float.NaN) == 16.7f);
+        TemporalFrame.resetForTest();
+
         System.out.println("# temporalmath " + (pass == total ? "PASS" : "FAIL") + " " + pass + "/" + total);
         System.exit(pass == total ? 0 : 1);
     }
