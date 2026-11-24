@@ -25,6 +25,9 @@ public final class RecordingBackend implements GpuBackend {
     private final List<String> pipelineIds = new ArrayList<>();
     private final Map<Integer, String> dirty = new HashMap<>(); // image -> "W" (written) or "R" (read) since last barrier
     private boolean inFrame;
+    /** V-6: images created outside a frame; their creation clear (VkPackBackend zeroes every new image) is a write the
+     *  next frame must barrier: in game the setup is recorded into the SAME command buffer as that frame */
+    private final Set<Integer> createdOutside = new HashSet<>();
     public final java.util.Set<Integer> freed = new HashSet<>();
     public final java.util.Set<Integer> imported = new HashSet<>();
     /** frame counter and the frame each image was last used in (epoch rule: never freed while a frame using it is in flight) */
@@ -47,7 +50,12 @@ public final class RecordingBackend implements GpuBackend {
             violations.add("image " + d.name() + " format " + d.vkFormat() + " unknown");
         imageDescs.add(d);
         calls.add("createImage " + d.name() + " " + d.vkFormat() + " " + d.width() + "x" + d.height() + "x" + d.depth() + " mips " + d.mips());
-        return imageDescs.size() - 1;
+        int h = imageDescs.size() - 1;
+        if (inFrame)
+            dirty.put(h, "W"); // V-6: the creation clear is a transfer write
+        else
+            createdOutside.add(h);
+        return h;
     }
 
     @Override
@@ -104,6 +112,8 @@ public final class RecordingBackend implements GpuBackend {
     public int importImage(Object external, String name) {
         int h = createImage(new ImageDesc(name, "R8G8B8A8_UNORM", 8, 8, 1, 1, java.util.Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
         imported.add(h);
+        dirty.remove(h); // an imported image is not cleared by this backend
+        createdOutside.remove(h);
         return h;
     }
 
@@ -166,6 +176,9 @@ public final class RecordingBackend implements GpuBackend {
         frameNo++;
         inFrame = true;
         dirty.clear();
+        for (int h : createdOutside)
+            dirty.put(h, "W");
+        createdOutside.clear();
         calls.add("beginFrame");
     }
 
