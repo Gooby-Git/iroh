@@ -305,7 +305,7 @@ public final class PackThreadRepro {
 
     /** deterministic: C's switch arrives while R is inside a frame (entering "composite"); R carries on once C's teardown runs */
     static Result interleaved(boolean old) throws Exception {
-        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true);
+        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true, Integer.getInteger("iroh.replay.inflight", 2));
         Render r = new Render(gpu, scene());
         install(r);
         List<String> cErrors = Collections.synchronizedList(new ArrayList<>());
@@ -341,7 +341,7 @@ public final class PackThreadRepro {
 
     /** one trial: C fires at a random moment of a frame (after 2 warm frames) */
     static Result randomTrial(boolean old, Random rnd) throws Exception {
-        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true);
+        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true, Integer.getInteger("iroh.replay.inflight", 2));
         Render r = new Render(gpu, scene());
         install(r);
         List<String> cErrors = Collections.synchronizedList(new ArrayList<>());
@@ -359,7 +359,7 @@ public final class PackThreadRepro {
 
     /** the production entry points: PackRuntime.setEnabled(false) / reload() from C must run ON R */
     static boolean wiring() throws Exception {
-        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true);
+        HeadlessVkBackend gpu = new HeadlessVkBackend(false, 1L << 30, true, Integer.getInteger("iroh.replay.inflight", 2));
         Render r = new Render(gpu, scene());
         r.lc.disable(); // nothing to render: R only drains tasks
         int[] onR = {0};

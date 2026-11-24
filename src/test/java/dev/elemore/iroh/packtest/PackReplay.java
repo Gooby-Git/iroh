@@ -90,7 +90,7 @@ public final class PackReplay {
         long t0 = System.nanoTime();
         boolean ok = true;
         StringBuilder report = new StringBuilder();
-        try (HeadlessVkBackend gpu = new HeadlessVkBackend(Boolean.getBoolean("iroh.replay.allowGpu"), 1L << 30)) {
+        try (HeadlessVkBackend gpu = new HeadlessVkBackend(Boolean.getBoolean("iroh.replay.allowGpu"), 1L << 30, false, Integer.getInteger("iroh.replay.inflight", 2))) {
             System.out.println("# device " + gpu.deviceName + " (" + gpu.name() + ")");
             FrameExecutor ex = new FrameExecutor(data, plan, folder, gpu, FrameExecutor.cap(1L << 30));
             ex.keepTrace = true;
