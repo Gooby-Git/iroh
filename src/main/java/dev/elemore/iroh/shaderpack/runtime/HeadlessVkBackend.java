@@ -632,6 +632,11 @@ public final class HeadlessVkBackend extends VkPackBackend {
         for (Runnable r : later)
             r.run();
         later.clear();
+        // PACK-FULL: submitWait returns early when nothing is recording, so host buffers freed "after the frame" since
+        // the last submit (staging, SSBOs) were never released: packBarrierBench leaked 18 objects at vkDestroyDevice
+        for (HostBuf b : frameBufs)
+            freeHostBuffer(b);
+        frameBufs.clear();
         vkDeviceWaitIdle(device);
         if (inFlight > 1)
             for (int i = 0; i < inFlight; i++) {
