@@ -2,6 +2,7 @@ package dev.elemore.iroh.vktest;
 
 import dev.elemore.iroh.temporal.DeviceCaps;
 import dev.elemore.iroh.upscale.fsr.FsrUpscaler;
+import net.vulkanmod.vulkan.device.IndirectDrawCaps;
 import net.vulkanmod.vulkan.util.VkEnum;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -19,7 +20,8 @@ import static org.lwjgl.vulkan.VK12.*;
  * (1) creates the rc14 device (upscale features off) and checks nothing is enabled; (2) creates the upscale device with the real chain and checks
  * every enabled bit is offered, and that DeviceCaps' fsr / velocity / fp16 answers equal an independent derivation from raw Vulkan queries;
  * (3) builds the real FSR context when fsrCapable says so (must succeed); (4) validation errors must be 0. Reports tier, enabled features and
- * upscaler availability. Run: ./gradlew hwCapsRepro. Last line "# hwcaps PASS|FAIL ..." (key=value tier line follows as "# hwcaps-tier ...").
+ * upscaler availability. P2-3: also the terrain draw tier (indirect only with drawIndirectFirstInstance enabled, direct otherwise).
+ * Run: ./gradlew hwCapsRepro. Last line "# hwcaps PASS|FAIL ..." (key=value tier line follows as "# hwcaps-tier ...").
  */
 public final class HwCapsRepro {
     static final List<String> PROBLEMS = new ArrayList<>();
@@ -73,7 +75,7 @@ public final class HwCapsRepro {
             tier = upTier;
             extra = " fsr3=" + (natives && DeviceCaps.fsrCapable() ? "available" : natives ? "needs-device-features" : "needs-native-library")
                 + " fsrCtx=" + (fsrMade ? "created" : "n/a") + " dlss=" + (nvidia ? "notYet(nvidia)" : "needsNvidia")
-                + rtTier(s, phys, exts);
+                + rtTier(s, phys, exts) + terrainTier(s, phys);
             for (String e : Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size())) {
                 System.out.println("    ! " + e.substring(0, Math.min(170, e.length())).replace("\n", " "));
             }
@@ -121,6 +123,11 @@ public final class HwCapsRepro {
 
     /** The production device-creation sequence (DeviceManager order). Returns true when an FSR context was created on it (only attempted when fsrCapable). */
     static boolean create(MemoryStack outer, boolean tryFsr) {
+        return create(outer, tryFsr, false);
+    }
+
+    /** {@code maskFirstInstance}: the device reports no drawIndirectFirstInstance (P2-3 fallback case: a GPU without it). */
+    static boolean create(MemoryStack outer, boolean tryFsr, boolean maskFirstInstance) {
         VkPhysicalDevice phys = Float16Repro.phys;
         try (MemoryStack s = outer.push()) {
             VkPhysicalDeviceVulkan12Features e12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
@@ -131,6 +138,10 @@ public final class HwCapsRepro {
             VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a11.address());
             a11.pNext(a12.address());
             vkGetPhysicalDeviceFeatures2(phys, a2);
+            if (maskFirstInstance) a2.features().drawIndirectFirstInstance(false);
+            IndirectDrawCaps.apply(a2.features(), a11, e2.features(), e11); // P2-3: DeviceManager order (before DeviceCaps)
+            lastEnabledMdi = e2.features().multiDrawIndirect();
+            lastEnabledFirstInstance = e2.features().drawIndirectFirstInstance();
             DeviceCaps.apply(s, phys, a2.features(), e2.features(), a11, e11, e12);
             DeviceCaps.linkFeatureChain(e2, e11, e12);
             extendChain(s, phys, e12);
@@ -153,6 +164,46 @@ public final class HwCapsRepro {
             vkDestroyDevice(vdev, null);
             return made;
         }
+    }
+
+    static boolean lastEnabledMdi, lastEnabledFirstInstance;
+
+    /**
+     * P2-3 (RQ-P2D-a): terrain draw tier. Indirect terrain commands carry firstInstance (packed section offset), so the indirect tier
+     * must only be chosen with drawIndirectFirstInstance (and multiDrawIndirect) ENABLED on the created device; otherwise the direct
+     * fallback (T-C). Checked on the real device, on the same device with firstInstance masked (no profile lacks it), and on the
+     * pure decision table. Returns the tier-line fragment.
+     */
+    static String terrainTier(MemoryStack s, VkPhysicalDevice phys) {
+        boolean rawMdi, rawSdp, rawFi;
+        try (MemoryStack f = s.push()) {
+            VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(f).sType$Default();
+            VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(f).sType$Default().pNext(a11.address());
+            vkGetPhysicalDeviceFeatures2(phys, a2);
+            rawMdi = a2.features().multiDrawIndirect(); rawSdp = a11.shaderDrawParameters(); rawFi = a2.features().drawIndirectFirstInstance();
+        }
+        // the device as created by the last production create(..) call (the upscale device)
+        IndirectDrawCaps.TerrainTier t = IndirectDrawCaps.tier();
+        IndirectDrawCaps.TerrainTier expect = rawMdi && rawSdp && rawFi ? IndirectDrawCaps.TerrainTier.INDIRECT : IndirectDrawCaps.TerrainTier.DIRECT;
+        check(t == expect, "terrain tier " + t + " != raw " + expect + " (mdi=" + rawMdi + " sdp=" + rawSdp + " firstInstance=" + rawFi + ")");
+        check(t != IndirectDrawCaps.TerrainTier.INDIRECT || (lastEnabledFirstInstance && lastEnabledMdi),
+            "indirect terrain tier without drawIndirectFirstInstance/multiDrawIndirect ENABLED on the device");
+        check(!lastEnabledFirstInstance || rawFi, "drawIndirectFirstInstance enabled but not offered");
+        check(!lastEnabledMdi || (rawMdi && rawSdp), "multiDrawIndirect enabled but not offered");
+        String real = t == IndirectDrawCaps.TerrainTier.INDIRECT ? "indirect" : "direct";
+        // fallback: the same device without drawIndirectFirstInstance must choose direct draws and create cleanly
+        create(s, false, true);
+        check(IndirectDrawCaps.tier() == IndirectDrawCaps.TerrainTier.DIRECT, "masked firstInstance: tier " + IndirectDrawCaps.tier() + " (expected DIRECT)");
+        check(!lastEnabledFirstInstance, "masked firstInstance: still enabled");
+        // pure decision table
+        for (int i = 0; i < 4; i++) {
+            boolean m = (i & 1) != 0, fi = (i & 2) != 0;
+            check(IndirectDrawCaps.decide(m, fi) == (m && fi ? IndirectDrawCaps.TerrainTier.INDIRECT : IndirectDrawCaps.TerrainTier.DIRECT),
+                "decide(mdi=" + m + ", firstInstance=" + fi + ")");
+        }
+        create(s, false); // leave the real decision behind
+        check(IndirectDrawCaps.tier() == t, "terrain tier not restored");
+        return " terrainDraw=" + real + (t == IndirectDrawCaps.TerrainTier.INDIRECT ? "(firstInstance)" : "(T-C fallback)") + " terrainFallback=direct";
     }
 
     /** Branch hook: extra feature structs the branch's own device code chains behind the 1.2 struct (none on 2b). */

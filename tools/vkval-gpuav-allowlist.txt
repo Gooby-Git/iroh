@@ -1,0 +1,7 @@
+# P2-3: GPU-AV allowlist for tools/vkval-extra-gate.sh on int-2b / int-3b. One line per accepted id:
+# <VUID or message id> | task=<gradle task> or * | written reason (negative control, lavapipe quirk or vendor SDK, with evidence).
+# Iroh and harness bugs are fixed, not listed.
+VUID-VkDrawIndexedIndirectCommand-firstInstance-00554 | task=terrainIndirectRepro | intentional negative control: the OLD device (pre-P2-3 DeviceManager, no drawIndirectFirstInstance) must be flagged; the harness asserts it fired and that the IndirectDrawCaps and direct-fallback devices are clean
+SharedMemoryDataRace-RaceOnStore | task=fsrReplay | vendor (same entry as int-4c tools/vkval-allowlist.txt, H1C): AMD FidelityFX SDK FSR3 luma pyramid SPD (spdIntermediateA) store/load between local invocations of one lavapipe subgroup (size 8); SPD relies on hardware wave lockstep, which GPU-AV's shared-memory tracker cannot model; root cause UNVERIFIED; not Iroh's shader
+SharedMemoryDataRace-RaceOnStore | task=chainReplay | same as the fsrReplay entry (FSR3 luma pyramid SPD inside the chain replay)
+SharedMemoryDataRace-RaceOnStore | task=fsrAdapterReplay | same as the fsrReplay entry (FSR3 luma pyramid SPD through FsrAdapter)

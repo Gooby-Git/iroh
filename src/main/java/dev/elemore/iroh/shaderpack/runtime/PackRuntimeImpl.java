@@ -118,7 +118,7 @@ final class PackRuntimeImpl {
     /** P3-6: full mode can run this frame (startup format, loaded, healthy, terrain sub-switch on) */
     boolean fullReady() {
         return PackStartup.FULL && !failed && ensureLoaded() && DebugSwitches.on(PackSwitches.FULL_TERRAIN)
-                && net.vulkanmod.Initializer.CONFIG.indirectDraw;
+                && net.vulkanmod.vulkan.device.IndirectDrawCaps.useTerrainIndirect(); // P2-3: FULL writes firstInstance indirect commands
     }
 
     private boolean fullRanThisFrame;
