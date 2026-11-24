@@ -94,11 +94,22 @@ public final class PackRuntime {
             i.unload();
     }
 
-    /** IrohDebug / startup: switch the pack path on or off (off frees everything) */
     /** INT-4: the "Look is ray tracing" refusal is logged once per session */
     private static boolean lookRefusalLogged;
 
-    public static synchronized String setEnabled(boolean on) {
+    /** V-5: a switch from another thread (Proctor's proctor-conn, IrohDebug) waits this long for the render thread */
+    static final long SWITCH_WAIT_MS = 10_000;
+
+    /**
+     * IrohDebug / startup: switch the pack path on or off (off frees everything). V-5: always applied ON THE RENDER
+     * THREAD ({@link RenderThreadCall}): the pack path is render-thread only, and a disable from another thread freed
+     * images under a pack frame being recorded and tore the executor down twice (double vkDestroyFramebuffer).
+     */
+    public static String setEnabled(boolean on) {
+        return RenderThreadCall.call(() -> setEnabledNow(on), SWITCH_WAIT_MS);
+    }
+
+    private static synchronized String setEnabledNow(boolean on) {
         if (on) {
             // INT-4 MainPassArbiter rule 8: the configured Look wins; RAY_TRACED keeps the pack path off (one line)
             String look = dev.elemore.iroh.render.MainPassArbiter.packRefusal(dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced());
@@ -143,7 +154,12 @@ public final class PackRuntime {
         active = false;
     }
 
-    public static synchronized String reload() {
+    /** IrohDebug (pack path changed): disable + enable, on the render thread (V-5, see {@link #setEnabled}) */
+    public static String reload() {
+        return RenderThreadCall.call(PackRuntime::reloadNow, SWITCH_WAIT_MS);
+    }
+
+    private static synchronized String reloadNow() {
         if (impl == null)
             return "ok (not running)";
         impl.disable();
