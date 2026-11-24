@@ -58,7 +58,7 @@ public final class IntegrationInertTest {
         PINNED.put("UniformSlots.jittered", "TemporalFrame.JITTER_ON x1 per converted-shader ProjMat read (plain static)");
         PINNED.put("TaskBudgetM.*", "TaskBudget.enabled x7 = PerfSwitches.tasksBudgetOn (one volatile read each; was a switch-map lookup), runAllTasks wrapped (original called), SlowFrames.ON x3");
         PINNED.put("IrohRenderScaleGameM.*", "TemporalRuntime.onRenderHead (UpscaleSwitches.modeSet volatile) / onRenderTail / onRenderLevelHead / onBeforeHandClear / onHand / onBeforeGui / chainWidth / chainHeight: one plain static read each");
-        PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON");
+        PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON x2 (P2-6 GRAPH_FILTER_ONLY counter on the async path)");
         PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
         PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
@@ -156,7 +156,7 @@ public final class IntegrationInertTest {
         expect.put("Renderer.beginFrame0", "{GpuLifecycle.frameStart=1, SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");
         expect.put("Renderer.endFrame", "{FrameHooks.dispatch=1, SlowFrames.ON=5, SlowFrames.enter=3, SlowFrames.exit=3}");
         expect.put("TaskBudgetM.*", "{SlowFrames.ON=3, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, TaskBudget.enabled=7, TaskBudget.forGame=1, TaskBudget.targetNs=1}");
-        expect.put("SectionGraph.update", "{SectionGraph.cacheEnabled=1, SlowFrames.ON=1, SlowFrames.count=1}");
+        expect.put("SectionGraph.update", "{SectionGraph.cacheEnabled=1, SlowFrames.ON=2, SlowFrames.count=2}");
         expect.put("SectionGraph.scheduleRebuilds0", "{RenderRegionBuilder.beginBatch=1, SectionGraph.rebuildBudget=1, SlowFrames.ON=1, SlowFrames.count=1}");
         expect.put("TaskDispatcher.adaptBuilders", "{}");
         expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
