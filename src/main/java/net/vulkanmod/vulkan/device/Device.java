@@ -47,7 +47,9 @@ public class Device {
         this.vendorIdString = decodeVendor(properties.vendorID());
         this.deviceName = properties.deviceNameString();
         this.driverVersion = decodeDvrVersion(properties.driverVersion(), properties.vendorID());
-        this.vkVersion = decDefVersion(getVkVer());
+        getVkVer(); // keeps the instance-level "Vulkan 1.2 or newer" check
+        // Upstream VulkanMod 1e6db2d: report the device's Vulkan version (what it supports), not the loader's.
+        this.vkVersion = decDefVersion(properties.apiVersion());
 
         this.availableFeatures = VkPhysicalDeviceFeatures2.calloc();
         this.availableFeatures.sType$Default();
