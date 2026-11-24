@@ -121,6 +121,42 @@ public class UploadManager {
         TransferQueue.uploadBufferCmd(commandBuffer, src.getId(), srcOffset, dst.getId(), dstOffset, size);
     }
 
+    /**
+     * P2-4 (AreaBuffer grow with the arena on): one barrier on {@code src} and ONE vkCmdCopyBuffer with {@code n}
+     * regions, each at the same offset in both buffers.
+     */
+    public void copyRegions(Buffer src, Buffer dst, long[] offsets, long[] sizes, int n) {
+        if (n <= 0) return;
+        beginCommands();
+
+        VkCommandBuffer commandBuffer = this.commandBuffer.getHandle();
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkBufferMemoryBarrier.Buffer barrier = VkBufferMemoryBarrier.calloc(1, stack);
+            barrier.get(0).sType$Default()
+                    .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED) // CONCURRENT buffers (see copyBuffer)
+                    .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .buffer(src.getId())
+                    .srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT)
+                    .dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT)
+                    .size(VK_WHOLE_SIZE);
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                    null, barrier, null);
+
+            boolean heap = n > 256; // VkBufferCopy is 24 bytes: keep big lists off the 64 KiB MemoryStack
+            org.lwjgl.vulkan.VkBufferCopy.Buffer regions = heap ? org.lwjgl.vulkan.VkBufferCopy.malloc(n) : org.lwjgl.vulkan.VkBufferCopy.malloc(n, stack);
+            try {
+                for (int i = 0; i < n; i++)
+                    regions.get(i).srcOffset(offsets[i]).dstOffset(offsets[i]).size(sizes[i]);
+                vkCmdCopyBuffer(commandBuffer, src.getId(), dst.getId(), regions);
+            } finally {
+                if (heap) regions.free();
+            }
+        }
+
+        this.dstBuffers.add(dst.getId());
+    }
+
     public void syncUploads() {
         submitUploads();
 

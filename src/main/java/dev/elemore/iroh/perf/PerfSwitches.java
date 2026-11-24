@@ -18,6 +18,12 @@ public final class PerfSwitches {
     public static final String THREADS_TUNE = "iroh.threads.tune";
     public static final String THREADS_ADAPTIVE = "iroh.threads.adaptive";
     public static final String THREADS_PHYSICAL = "iroh.threads.physicalCount";
+    /** P2-4: pooled area buffers (AreaArena), used-range grow copies, deferred segment free on layer reset */
+    public static final String AREA_ARENA = "iroh.area.arena";
+    /** P2-4: section intake stops BEFORE a section whose predicted cost crosses the budget (IntakeBudget) */
+    public static final String INTAKE_BUDGET = "iroh.intake.budget";
+    /** P2-4: LevelRenderer.setSectionDirtyWithNeighbors as one 3x3x3 mark (9 region-cache drops, one graph flag) */
+    public static final String BULK_DIRTY = "iroh.chunk.bulkDirty";
 
     private static volatile boolean registered;
 
@@ -30,6 +36,9 @@ public final class PerfSwitches {
     public static volatile boolean graphCacheOn = prop(GRAPH_CACHE);
     public static volatile boolean cloneCacheOn = prop(CLONE_CACHE);
     public static volatile boolean rebuildBudgetOn = prop(REBUILD_BUDGET);
+    public static volatile boolean areaArenaOn = prop(AREA_ARENA);
+    public static volatile boolean intakeBudgetOn = prop(INTAKE_BUDGET);
+    public static volatile boolean bulkDirtyOn = prop(BULK_DIRTY);
 
     private static boolean prop(String key) {
         String v = System.getProperty(key, "false");
@@ -42,6 +51,9 @@ public final class PerfSwitches {
         graphCacheOn = DebugSwitches.on(GRAPH_CACHE);
         cloneCacheOn = DebugSwitches.on(CLONE_CACHE);
         rebuildBudgetOn = DebugSwitches.on(REBUILD_BUDGET);
+        areaArenaOn = DebugSwitches.on(AREA_ARENA);
+        intakeBudgetOn = DebugSwitches.on(INTAKE_BUDGET);
+        bulkDirtyOn = DebugSwitches.on(BULK_DIRTY);
         return "ok";
     }
 
@@ -55,7 +67,10 @@ public final class PerfSwitches {
             reg(GRAPH_CACHE, "visibility walk cached per camera section, frustum per frame (exact)", v -> refreshFlags());
             reg(CLONE_CACHE, "share region block copies within a rebuild batch", v -> refreshFlags());
             reg(REBUILD_BUDGET, "cap async rebuilds scheduled per update while builders are backed up", v -> refreshFlags());
-            reg(THREADS_TUNE, "renice builders +4 and keep them off the render core (cannot be undone at runtime)",
+            reg(AREA_ARENA, "pooled area buffers: no device buffer creation in section intake, grow copies used ranges only", v -> refreshFlags());
+            reg(INTAKE_BUDGET, "section intake stops before a section predicted to cross the 1 ms budget", v -> refreshFlags());
+            reg(BULK_DIRTY, "chunk/light loads mark the 3x3x3 dirty neighbourhood in one pass", v -> refreshFlags());
+            reg(THREADS_TUNE,"renice builders +4 and keep them off the render core (cannot be undone at runtime)",
                     v -> DebugSwitches.on(THREADS_TUNE) ? (ThreadPolicy.applyToRunningBuilders() ? "ok" : "restart") : "restart");
             reg(THREADS_ADAPTIVE, "extra builders while the backlog is large", v -> rebuildBuilders());
             reg(THREADS_PHYSICAL, "builder count from physical cores", v -> rebuildBuilders());

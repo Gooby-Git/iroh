@@ -62,6 +62,8 @@ public final class IntegrationInertTest {
         PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
         PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
+        PINNED.put("TaskDispatcher.updateSections0", "IntakeBudget.enabled x1 = PerfSwitches.intakeBudgetOn (one volatile read per intake), SlowFrames.ON");
+        PINNED.put("BulkDirtyM.*", "PerfSwitches.bulkDirtyOn x1 (one volatile read per setSectionDirtyWithNeighbors call)");
         PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
     }
 
@@ -103,7 +105,8 @@ public final class IntegrationInertTest {
         check("task budget off", !TaskBudget.enabled());
         boolean perfOff = true;
         for (String k : List.of(PerfSwitches.TASKS_BUDGET, PerfSwitches.GRAPH_CACHE, PerfSwitches.CLONE_CACHE, PerfSwitches.REBUILD_BUDGET,
-                PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL))
+                PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL,
+                PerfSwitches.AREA_ARENA, PerfSwitches.INTAKE_BUDGET, PerfSwitches.BULK_DIRTY))
             perfOff &= !PerfSwitches.on(k);
         check("every perf switch off", perfOff);
         check("api 4 not installed offline", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
@@ -120,7 +123,8 @@ public final class IntegrationInertTest {
         dev.elemore.iroh.gpu.game.GpuLifecycle.resetForTest();
         check("fog capture not armed (no FogState per frame) until a mod asks", !dev.elemore.iroh.apiimpl.Sections.fogWanted());
         check("per-frame guards are plain flags and all off", !PerfSwitches.tasksBudgetOn && !PerfSwitches.graphCacheOn
-                && !PerfSwitches.cloneCacheOn && !PerfSwitches.rebuildBudgetOn && !UpscaleSwitches.modeSet);
+                && !PerfSwitches.cloneCacheOn && !PerfSwitches.rebuildBudgetOn && !UpscaleSwitches.modeSet
+                && !PerfSwitches.areaArenaOn && !PerfSwitches.intakeBudgetOn && !PerfSwitches.bulkDirtyOn);
 
         // --- one registry ---
         check("IrohDebug.set refused without -Dproctor=1 / -Diroh.debug=true", IrohDebug.set(UpscaleSwitches.MODE, "quality").startsWith("refused"));
@@ -156,6 +160,8 @@ public final class IntegrationInertTest {
         expect.put("SectionGraph.scheduleRebuilds0", "{RenderRegionBuilder.beginBatch=1, SectionGraph.rebuildBudget=1, SlowFrames.ON=1, SlowFrames.count=1}");
         expect.put("TaskDispatcher.adaptBuilders", "{}");
         expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
+        expect.put("TaskDispatcher.updateSections0", "{IntakeBudget.enabled=1, SlowFrames.ON=2, SlowFrames.count=3}"); // P2-4
+        expect.put("BulkDirtyM.*", "{PerfSwitches.bulkDirtyOn=1}"); // P2-4
         expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
         // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
         expect.put("Renderer.bindGraphicsPipeline", "{}");

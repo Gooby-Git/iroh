@@ -191,6 +191,17 @@ tasks.register('hitchesTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// P2-4 (perf/streaming): AreaBuffer segments on a fake device, AreaArena classes/pool, layer-reset free (RQ-P24-a),
+// intake budget replay, streaming cost model, bulk dirty indices. ./gradlew streamingTest ; last line "# streaming PASS n/n".
+tasks.register('streamingTest', JavaExec) {
+	group = 'verification'
+	description = 'P2-4: AreaBuffer/AreaArena unit tests, intake budget and streaming replays (no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.buffer.StreamingTest'
+	jvmArgs '-ea', '-Xmx1g'
+}
+
 // perf/frame-attrib: -Diroh.slowFrames ring/record/summary on a fake clock. ./gradlew slowFramesTest
 tasks.register('slowFramesTest', JavaExec) {
 	group = 'verification'

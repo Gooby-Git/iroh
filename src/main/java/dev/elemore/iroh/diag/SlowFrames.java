@@ -68,7 +68,7 @@ public final class SlowFrames {
     public enum Counter {
         TICKS("ticks"), TASKS("tasks"), DIRTY_MARKS("dirtyMarks"), CHUNKS("chunkPackets"), DEFERRED_TASKS("deferredTasks"), SECTIONS("sections"), SECTION_KB("sectionKB"), SORTED("sorted"),
         GRAPH_UPDATES("graphUpd"), GRAPH_FILTER_ONLY("graphFilterOnly"), REBUILDS_QUEUED("dirtyVisible"), REBUILDS_SCHEDULED("rebuildsScheduled"), ENTITIES("entities"), BLOCK_ENTITIES("blockEnt"), LAYERS("layers"),
-        HOOKS("hooks"), EMU_DRAWS("emuDraws"), AREA_REALLOCS("areaGrow"), AREA_GROW_KB("areaGrowKB"), STAGING_WAITS("stagingWaits"), BUILDERS_BUSY("buildersBusy"), PENDING_BUILDS("pendingBuilds"), PENDING_UPLOADS("pendingUploads");
+        HOOKS("hooks"), EMU_DRAWS("emuDraws"), AREA_REALLOCS("areaGrow"), AREA_GROW_KB("areaGrowKB"), AREA_ALLOCS("areaAlloc"), INTAKE_DEFERRED("intakeDeferred"), STAGING_WAITS("stagingWaits"), BUILDERS_BUSY("buildersBusy"), PENDING_BUILDS("pendingBuilds"), PENDING_UPLOADS("pendingUploads");
 
         public final String label;
 

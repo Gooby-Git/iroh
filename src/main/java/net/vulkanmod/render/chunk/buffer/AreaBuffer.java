@@ -15,8 +15,37 @@ public class AreaBuffer {
     private static final boolean DEBUG = false;
     private static final Logger LOGGER = Initializer.LOGGER;
 
-    private static final MemoryType MEMORY_TYPE = MemoryTypes.GPU_MEM;
+    /**
+     * P2-4 (perf/streaming): the device side of an area buffer, so the segment logic runs offline with a fake
+     * (StreamingTest). {@link #GAME} is the game's: VMA buffers or the AreaArena pool, UploadManager copies, deferred
+     * segment frees.
+     */
+    public interface Ops {
+        /** iroh.area.arena, read per operation (a runtime switch: new buffers and grows follow it at once) */
+        boolean arena();
 
+        /** the pooled size for at least {@code minBytes} */
+        long arenaSize(long minBytes);
+
+        Buffer allocate(int usage, long bytes, boolean arena);
+
+        /** {@code b} is no longer referenced by new work; frames in flight may still read it */
+        void retire(Buffer b);
+
+        void recordUpload(Buffer dst, long dstOffset, long size, ByteBuffer src);
+
+        void copyAll(Buffer src, Buffer dst);
+
+        /** one transfer with {@code n} regions, each at the same offset in src and dst */
+        void copyRegions(Buffer src, Buffer dst, long[] offsets, long[] sizes, int n);
+
+        /** free the segment at {@code elementOffset} once the frames in flight are done with it */
+        void deferSegmentFree(AreaBuffer a, int elementOffset);
+    }
+
+    public static final Ops GAME = new GameOps();
+
+    private final Ops ops;
     private final int usage;
     private final int elementSize;
 
@@ -28,8 +57,17 @@ public class AreaBuffer {
 
     int size, used = 0;
     int segments = 0;
+    /** P2-4 stats: bytes the grows copied (tests, memStats) */
+    long grows, grownCopyBytes;
+    /** P2-4: grows of every area buffer (render thread; the intake budget skips learning from a section that grew one) */
+    public static long totalGrows;
 
     public AreaBuffer(Usage usage, int elementCount, int elementSize) {
+        this(usage, elementCount, elementSize, GAME);
+    }
+
+    AreaBuffer(Usage usage, int elementCount, int elementSize, Ops ops) {
+        this.ops = ops;
         this.usage = usage.usage;
         this.elementSize = elementSize;
 
@@ -43,13 +81,19 @@ public class AreaBuffer {
     }
 
     private Buffer allocateBuffer() {
-        Buffer buffer;
-        if (this.usage == Usage.VERTEX.usage) {
-            buffer = new VertexBuffer(this.size, MEMORY_TYPE);
-        } else {
-            buffer = new IndexBuffer(this.size, MEMORY_TYPE);
-        }
-        return buffer;
+        boolean arena = this.ops.arena();
+        if (!arena)
+            return this.ops.allocate(this.usage, this.size, false);
+        // P2-4: a pooled class; the buffer may be larger than asked, the usable size is whole elements of it
+        long bytes = this.ops.arenaSize(this.size);
+        Buffer b = this.ops.allocate(this.usage, bytes, true);
+        this.size = usable(bytes);
+        return b;
+    }
+
+    private int usable(long bytes) {
+        long whole = bytes / this.elementSize * this.elementSize;
+        return (int) Math.min(whole, Integer.MAX_VALUE / this.elementSize * this.elementSize);
     }
 
     public Segment upload(ByteBuffer byteBuffer, int oldOffset, long paramsPtr) {
@@ -57,7 +101,7 @@ public class AreaBuffer {
         if (oldOffset != -1) {
             // Need to delay segment freeing since it might be still used by prev frames in flight
 //            this.setSegmentFree(oldOffset);
-            MemoryManager.getInstance().addToFreeSegment(this, oldOffset);
+            this.ops.deferSegmentFree(this, oldOffset);
         }
 
         int size = byteBuffer.remaining();
@@ -87,7 +131,7 @@ public class AreaBuffer {
         segment.paramsPtr = paramsPtr;
 
         Buffer dst = this.buffer;
-        UploadManager.INSTANCE.recordUpload(dst, segment.offset, size, byteBuffer);
+        this.ops.recordUpload(dst, segment.offset, size, byteBuffer);
 
         this.used += size;
 
@@ -125,30 +169,50 @@ public class AreaBuffer {
 
     private Segment reallocate0(int uploadSize) {
         int oldSize = this.size;
+        boolean arena = this.ops.arena();
 
-        int minIncrement = this.size >> 3;
-        minIncrement = (int) Util.align(minIncrement, this.elementSize);
+        int increment;
+        long allocBytes;
+        int newSize;
+        if (arena) {
+            // P2-4: grow by half (fewer grows than the 1/8 rule) into a pooled class; the usable size is whole elements
+            long want = (long) oldSize + Math.max(oldSize >> 1, (long) uploadSize << 1);
+            allocBytes = this.ops.arenaSize(want);
+            newSize = usable(allocBytes);
+            increment = newSize - oldSize;
+        } else {
+            int minIncrement = this.size >> 3;
+            minIncrement = (int) Util.align(minIncrement, this.elementSize);
 
-        int increment = Math.max(minIncrement, uploadSize << 1);
+            increment = Math.max(minIncrement, uploadSize << 1);
+            newSize = oldSize + increment;
+            allocBytes = newSize;
+        }
 
         if (increment < uploadSize)
             throw new RuntimeException(String.format("Size increment %d < %d (Upload size)", increment, uploadSize));
 
-        int newSize = oldSize + increment;
         if (dev.elemore.iroh.diag.SlowFrames.ON) {
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.AREA_REALLOCS, 1);
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.AREA_GROW_KB, newSize >> 10);
         }
 
         this.size = newSize;
-        Buffer dst = this.allocateBuffer();
+        Buffer dst = this.ops.allocate(this.usage, allocBytes, arena);
 
-        UploadManager.INSTANCE.copyBuffer(this.buffer, dst);
+        if (arena)
+            copyUsedRanges(this.buffer, dst); // P2-4: same offsets, free gaps skipped (no compaction: see moveUsedSegments)
+        else {
+            this.ops.copyAll(this.buffer, dst);
+            this.grownCopyBytes += Math.min(this.buffer.getBufferSize(), dst.getBufferSize());
+        }
+        this.grows++;
+        totalGrows++;
 
         // TODO: moving only used segments causes corruption
 //        moveUsedSegments(dst);
 
-        this.buffer.scheduleFree();
+        this.ops.retire(this.buffer);
         this.buffer = dst;
 
         if (last.isFree()) {
@@ -168,6 +232,45 @@ public class AreaBuffer {
             checkSegments();
 
         return last;
+    }
+
+    /** Gaps shorter than this are copied along (one region instead of two). */
+    static final int MERGE_GAP = 64 << 10;
+    private long[] regionOffsets = new long[16], regionSizes = new long[16];
+
+    /**
+     * P2-4: copy every byte a segment in use may hold, at the SAME offset (draw parameters stay valid), skipping free
+     * gaps of at least {@link #MERGE_GAP}. Segments waiting for a deferred free are still marked used, so they are
+     * copied too. One transfer with all regions.
+     */
+    void copyUsedRanges(Buffer src, Buffer dst) {
+        int n = 0;
+        long start = -1, end = -1;
+        for (Segment s = this.first; s != null; s = s.next) {
+            if (s.isFree() || s.size == 0) continue;
+            if (start >= 0 && s.offset - end < MERGE_GAP) {
+                end = s.offset + s.size;
+                continue;
+            }
+            if (start >= 0) n = addRegion(n, start, end);
+            start = s.offset;
+            end = s.offset + s.size;
+        }
+        if (start >= 0) n = addRegion(n, start, end);
+        long bytes = 0;
+        for (int i = 0; i < n; i++) bytes += this.regionSizes[i];
+        this.grownCopyBytes += bytes;
+        if (n > 0) this.ops.copyRegions(src, dst, this.regionOffsets, this.regionSizes, n);
+    }
+
+    private int addRegion(int n, long start, long end) {
+        if (n == this.regionOffsets.length) {
+            this.regionOffsets = java.util.Arrays.copyOf(this.regionOffsets, n * 2);
+            this.regionSizes = java.util.Arrays.copyOf(this.regionSizes, n * 2);
+        }
+        this.regionOffsets[n] = start;
+        this.regionSizes[n] = end - start;
+        return n + 1;
     }
 
     void moveUsedSegments(Buffer dst) {
@@ -283,7 +386,16 @@ public class AreaBuffer {
     }
 
     public void freeBuffer() {
-        this.buffer.scheduleFree();
+        this.ops.retire(this.buffer);
+    }
+
+    /** P2-4: free the segment at {@code elementOffset} (element units, as the draw parameters hold) after the frames in flight. */
+    public void freeSegmentDeferred(int elementOffset) {
+        this.ops.deferSegmentFree(this, elementOffset);
+    }
+
+    public Buffer getBuffer() {
+        return this.buffer;
     }
 
     public int fragmentation() {
@@ -291,30 +403,40 @@ public class AreaBuffer {
     }
 
     public void checkSegments() {
+        for (String e : segmentErrors()) LOGGER.error(e);
+    }
+
+    /** P2-4: the segment-list invariants, as messages (empty = consistent). */
+    public java.util.List<String> segmentErrors() {
+        java.util.List<String> errors = new java.util.ArrayList<>();
         Segment segment = first;
         Segment prev = null;
         int i = 0;
         int usedSegments = 0;
+        long usedBytes = 0;
 
         if (segment.offset != 0)
-            LOGGER.error(String.format("expected first offset 0 but got %d", segment.offset));
+            errors.add(String.format("expected first offset 0 but got %d", segment.offset));
 
         while (segment != null) {
             if (i >= this.segments) {
-                LOGGER.error("Count is greater than segments");
+                errors.add("Count is greater than segments");
                 break;
             }
 
             if (segment.prev != prev) {
-                LOGGER.error(String.format("expected previous segment not matching (segment %d)", i));
+                errors.add(String.format("expected previous segment not matching (segment %d)", i));
             }
 
             if (!segment.isFree()) {
                 usedSegments++;
+                usedBytes += segment.size;
             }
+            else if (next(segment) != null && next(segment).isFree())
+                errors.add(String.format("two free segments in a row (segment %d)", i));
 
             if (segment.offset % elementSize != 0) {
-                LOGGER.error(String.format("offset %d misaligned (segment %d)", segment.offset, i));
+                errors.add(String.format("offset %d misaligned (segment %d)", segment.offset, i));
             }
 
             Segment next = segment.next;
@@ -322,22 +444,18 @@ public class AreaBuffer {
             if (next != null) {
                 int offset = segment.offset + segment.size;
                 if (offset != next.offset)
-                    LOGGER.error(String.format("expected offset %d but got %d (segment %d)", offset, next.offset, i));
+                    errors.add(String.format("expected offset %d but got %d (segment %d)", offset, next.offset, i));
 
                 if (next.prev != segment)
-                    LOGGER.error(String.format("segment pointer not correct (segment %d)", i));
+                    errors.add(String.format("segment pointer not correct (segment %d)", i));
 
             } else {
                 if (segment != this.last)
-                    LOGGER.error(String.format("segment has no next pointer and it's not last (segment %d)", i));
+                    errors.add(String.format("segment has no next pointer and it's not last (segment %d)", i));
                 else {
                     int segmentEnd = segment.offset + segment.size;
                     if (segment.offset + segment.size != this.size)
-                        LOGGER.error(String.format("last segment end (%d) does not match buffer size (%d)", segmentEnd, this.size));
-
-                    // Check segmentation
-                    if (segment.offset != this.used)
-                        LOGGER.error(String.format("last segment offset (%d) does not match buffer used size (%d)", segmentEnd, this.size));
+                        errors.add(String.format("last segment end (%d) does not match buffer size (%d)", segmentEnd, this.size));
                 }
 
             }
@@ -348,10 +466,17 @@ public class AreaBuffer {
         }
 
         if (i != this.segments)
-            LOGGER.error("Count do not match segments");
+            errors.add("Count do not match segments");
 
         if (usedSegments != this.usedSegments.size())
-            LOGGER.error("Counted used segment do not match used segments map size");
+            errors.add("Counted used segment do not match used segments map size");
+        if (usedBytes != this.used)
+            errors.add(String.format("used bytes %d but the used segments hold %d", this.used, usedBytes));
+        return errors;
+    }
+
+    private static Segment next(Segment s) {
+        return s.next;
     }
 
     public int getSize() {

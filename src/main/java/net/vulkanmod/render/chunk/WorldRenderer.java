@@ -734,6 +734,18 @@ public class WorldRenderer {
         this.renderRegionCache.remove(x, z);
     }
 
+    /**
+     * P2-4 (iroh.chunk.bulkDirty): LevelRenderer.setSectionDirtyWithNeighbors as one call: the same 27 sections marked
+     * and the same 9 region-cache columns dropped as 27 {@link #setSectionDirty} calls (each dropped once, not 3 times).
+     */
+    public void setSectionDirtyWithNeighbors(int x, int y, int z) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.DIRTY_MARKS, 27);
+        this.sectionGrid.setDirtyNeighbours(x, y, z);
+        for (int dz = -1; dz <= 1; dz++)
+            for (int dx = -1; dx <= 1; dx++)
+                this.renderRegionCache.remove(x + dx, z + dz);
+    }
+
     public SectionGrid getSectionGrid() {
         return this.sectionGrid;
     }

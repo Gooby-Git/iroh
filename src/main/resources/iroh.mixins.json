@@ -16,6 +16,7 @@
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",
+    "chunk.BulkDirtyM",
     "chunk.ClientChunkCacheM",
     "chunk.DirectionMixin",
     "chunk.FrustumMixin",

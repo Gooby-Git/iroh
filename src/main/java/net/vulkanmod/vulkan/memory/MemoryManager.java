@@ -224,6 +224,19 @@ public class MemoryManager {
         }
     }
 
+    /**
+     * P2-4 (AreaArena): registers a buffer created through VMA on another thread (the arena prefetch thread only calls
+     * VMA), with the same bookkeeping as {@link #createBuffer(Buffer, long, int, int)}. Render thread.
+     */
+    public synchronized void adoptBuffer(Buffer buffer, long id, long allocation, long size, boolean deviceLocal) {
+        buffer.setId(id);
+        buffer.setAllocation(allocation);
+        buffer.setBufferSize(size);
+        if (deviceLocal) deviceMemory += size;
+        else nativeMemory += size;
+        buffers.putIfAbsent(id, buffer);
+    }
+
     /** The first stack frame outside Iroh's memory classes (who asked for the buffer). Validation runs only. */
     private static String creator() {
         return StackWalker.getInstance().walk(s -> s
