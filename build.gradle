@@ -1101,6 +1101,8 @@ tasks.register('packFullVkRepro', JavaExec) {
 		systemProperty 'pfv.mode', project.findProperty('mode') ?: 'new'
 		if (project.hasProperty('stacks')) systemProperty 'iroh.vkval.stacks', 'true'
 		if (project.hasProperty('neg')) systemProperty 'pfv.neg', project.property('neg')
+		if (project.hasProperty('noDraw')) systemProperty 'pfv.noDraw', 'true'
+		if (project.hasProperty('features')) systemProperty 'pfv.features', project.property('features')
 		useLavapipe(it)
 	}
 }
