@@ -144,9 +144,12 @@ public final class FirstLaunchSafetyTest {
         // ---- INT-3: pack world pass (P3-11): forced create failure -> terrain-only full mode, ONE feature-failure line
         String pri = Files.readString(Path.of("src/main/java/dev/elemore/iroh/shaderpack/runtime/PackRuntimeImpl.java"));
         String wb = HotPathAudit.bodies(pri, "worldBegin").get(0), fw = HotPathAudit.bodies(pri, "failWorld").get(0);
-        int wSeam = wb.indexOf("FeatureFailures.inject(\"worldPass\")"), wNew = wb.indexOf("new WorldPass("), wCatch = wb.indexOf("failWorld(e.getClass()");
+        // PACK-FULL: the create runs inside worldBegin's endPassRunResume; the catch records the reason (why[0]) and the
+        // caller fails the world pass after the pass is resumed
+        int wSeam = wb.indexOf("FeatureFailures.inject(\"worldPass\")"), wNew = wb.indexOf("new WorldPass("), wCatch = wb.indexOf("why[0] = e.getClass()"),
+                wFail = wb.indexOf("failWorld(why[0])");
         check("worldPass: seam, create and catch in order; a failure returns raster for the frame",
-                wSeam >= 0 && wSeam < wNew && wNew < wCatch && wb.indexOf("return false", wCatch) > wCatch);
+                wSeam >= 0 && wSeam < wNew && wNew < wCatch && wCatch < wFail && wb.indexOf("return false", wFail) > wFail);
         check("worldPass: every world-pass failure is ONE FeatureFailures line, once per session (worldFailed guard)",
                 fw.contains("FeatureFailures.record(\"worldPass\"") && fw.contains("worldFailed != null") && !fw.contains("log("));
         FeatureFailures.resetForTest("worldPass");

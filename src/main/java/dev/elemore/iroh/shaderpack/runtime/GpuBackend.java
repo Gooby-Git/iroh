@@ -183,6 +183,31 @@ public interface GpuBackend extends AutoCloseable {
         throw new UnsupportedOperationException(name() + " cannot import " + name);
     }
 
+    /**
+     * PACK-FULL: an imported image (a renderer texture: draw texture, block atlas) can be named in a pack descriptor
+     * now: its owner keeps it in a sampling layout (SHADER_READ_ONLY, GENERAL or depth read-only). False = it is still in
+     * a transfer layout (uploaded this frame) and {@link #prepareSample} must run first.
+     */
+    default boolean sampleReady(int image) {
+        return true;
+    }
+
+    /**
+     * PACK-FULL: moves an imported image to its sampling layout the way its owner does (game: VulkanImage.readOnlyLayout:
+     * the upload buffer when the pending change is there, else the frame buffer). Records a barrier: the caller must be
+     * OUTSIDE every render pass (Iroh's and the world pass's attachments).
+     */
+    default void prepareSample(int image) {
+    }
+
+    /** PACK-FULL (review #3): an imported image that needed no preparation is sampled by this frame (owner bookkeeping only) */
+    default void noteSampled(int image) {
+    }
+
+    /** PACK-FULL: frees a {@link #createBuffer} storage buffer (deferred like images); executor rebuilds leaked them */
+    default void freeStorageBuffer(int buffer) {
+    }
+
     ImageDesc desc(int image);
 
     @Override
