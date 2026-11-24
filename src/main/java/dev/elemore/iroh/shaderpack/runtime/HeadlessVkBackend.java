@@ -41,15 +41,40 @@ public final class HeadlessVkBackend extends VkPackBackend {
 
     private record Mem(long memory, long size) {}
 
+    /** V-5: validation-layer ERROR messages of this device (only with {@code validation = true}); thread-safe */
+    public final List<String> validationErrors = java.util.Collections.synchronizedList(new ArrayList<>());
+    private long messenger;
+    private VkDebugUtilsMessengerCallbackEXT messengerCb;
+
     public HeadlessVkBackend(boolean allowGpu, long capBytes) {
+        this(allowGpu, capBytes, false);
+    }
+
+    /** {@code validation}: enable VK_LAYER_KHRONOS_validation on this instance and collect its errors in {@link #validationErrors} */
+    public HeadlessVkBackend(boolean allowGpu, long capBytes, boolean validation) {
         this.cap = capBytes;
         try (MemoryStack s = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(s).sType$Default().pApplicationName(s.UTF8("iroh-pack-replay"))
                     .apiVersion(VK_API_VERSION_1_3);
             VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(s).sType$Default().pApplicationInfo(app);
+            if (validation)
+                ici.ppEnabledLayerNames(s.pointers(s.UTF8("VK_LAYER_KHRONOS_validation")))
+                        .ppEnabledExtensionNames(s.pointers(s.UTF8(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)));
             PointerBuffer pp = s.mallocPointer(1);
-            check(vkCreateInstance(ici, null, pp), "vkCreateInstance");
+            check(vkCreateInstance(ici, null, pp), validation ? "vkCreateInstance (validation layer missing?)" : "vkCreateInstance");
             instance = new VkInstance(pp.get(0), ici);
+            if (validation) {
+                messengerCb = VkDebugUtilsMessengerCallbackEXT.create((sev, type, data, user) -> {
+                    validationErrors.add(VkDebugUtilsMessengerCallbackDataEXT.create(data).pMessageString());
+                    return VK_FALSE;
+                });
+                LongBuffer ml = s.mallocLong(1);
+                check(EXTDebugUtils.vkCreateDebugUtilsMessengerEXT(instance, VkDebugUtilsMessengerCreateInfoEXT.calloc(s).sType$Default()
+                        .messageSeverity(EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+                        .messageType(EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT)
+                        .pfnUserCallback(messengerCb), null, ml), "messenger");
+                messenger = ml.get(0);
+            }
             IntBuffer n = s.mallocInt(1);
             vkEnumeratePhysicalDevices(instance, n, null);
             PointerBuffer devs = s.mallocPointer(n.get(0));
@@ -402,7 +427,11 @@ public final class HeadlessVkBackend extends VkPackBackend {
         vkDestroyFence(device, fence, null);
         vkDestroyCommandPool(device, cmdPool, null);
         vkDestroyDevice(device, null);
+        if (messenger != 0)
+            EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
         vkDestroyInstance(instance, null);
+        if (messengerCb != null)
+            messengerCb.free();
         memProps.free();
     }
 }
