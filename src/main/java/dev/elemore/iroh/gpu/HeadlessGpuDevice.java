@@ -83,12 +83,16 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
                     break;
                 }
             VkPhysicalDeviceVulkan12Features have12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
-            VkPhysicalDeviceFeatures2 have = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(have12.address());
+            VkPhysicalDeviceVulkan11Features have11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(have12.address());
+            VkPhysicalDeviceFeatures2 have = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(have11.address());
             vkGetPhysicalDeviceFeatures2(phys, have);
             drawIndirectCount = have12.drawIndirectCount() && !forceNoIndirectCount;
             VkPhysicalDeviceVulkan12Features want12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default().drawIndirectCount(drawIndirectCount);
-            VkPhysicalDeviceFeatures2 want = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(want12.address());
-            want.features().multiDrawIndirect(have.features().multiDrawIndirect());
+            // P2-3 review (b97ae0e #1.3): the game device's multiDrawIndirect + shaderDrawParameters rule (IndirectDrawCaps), not its static tier
+            boolean mdi = net.vulkanmod.vulkan.device.IndirectDrawCaps.multiDrawSupported(have.features(), have11);
+            VkPhysicalDeviceVulkan11Features want11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(want12.address()).shaderDrawParameters(mdi);
+            VkPhysicalDeviceFeatures2 want = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(want11.address());
+            want.features().multiDrawIndirect(mdi);
             want.features().drawIndirectFirstInstance(have.features().drawIndirectFirstInstance()); // as the game device (P2-3 / int-4c H1C, gpuav VUID firstInstance-00554)
             VkDeviceQueueCreateInfo.Buffer qci = VkDeviceQueueCreateInfo.calloc(1, s).sType$Default().queueFamilyIndex(family)
                     .pQueuePriorities(s.floats(1f));

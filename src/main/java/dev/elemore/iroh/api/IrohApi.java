@@ -73,7 +73,8 @@ public final class IrohApi {
         s.add(Capability.GPU_BUFFERS);
         s.add(Capability.COMPUTE);
         s.add(Capability.RENDER_TARGETS);
-        s.add(Capability.MULTI_DRAW_INDIRECT_COUNT);
+        if (net.vulkanmod.vulkan.device.IndirectDrawCaps.api4IndirectAllowed()) // P2-3 review: firstInstance + multiDrawIndirect enabled
+            s.add(Capability.MULTI_DRAW_INDIRECT_COUNT);
         return Collections.unmodifiableSet(s);
     }
 
