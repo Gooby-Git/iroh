@@ -43,12 +43,14 @@ public final class GraphAsyncTest {
             for (String path : new String[]{"stand-spin", "glide-0.3", "glide-1.5", "glide-4", "cave", "hop"}) {
                 for (int latency : new int[]{0, 1, 3}) {
                     Stats st = simulate(seed, 16, path, latency, false, false, false);
-                    check(String.format("%s seed %d latency %d: 0 missing on %d served frames (fallback %d, extra %.1f%%, relaxed %d, openings %d)",
-                            path, seed, latency, st.served, st.fallback, st.extraPct(), st.relaxed, st.openings), st.missing == 0 && st.served > 0);
+                    check(String.format("%s seed %d latency %d: 0 missing (visible %d, reached %d) on %d served frames (fallback %d, extra %.1f%%, relaxed %d, openings %d)",
+                            path, seed, latency, st.missing, st.missingReached, st.served, st.fallback, st.extraPct(), st.relaxed, st.openings),
+                            st.missing == 0 && st.missingReached == 0 && st.served > 0);
                 }
                 Stats race = simulate(seed, 16, path, 1, true, false, false);
-                check(String.format("%s seed %d racing uploads mid-walk: 0 missing on %d served frames (fallback %d, extra %.1f%%)",
-                        path, seed, race.served, race.fallback, race.extraPct()), race.missing == 0 && race.served > 0);
+                check(String.format("%s seed %d racing uploads mid-walk: 0 missing (visible %d, reached %d) on %d served frames (fallback %d, extra %.1f%%)",
+                        path, seed, race.missing, race.missingReached, race.served, race.fallback, race.extraPct()),
+                        race.missing == 0 && race.missingReached == 0 && race.served > 0);
             }
         }
         threaded();
@@ -250,6 +252,8 @@ public final class GraphAsyncTest {
         short frame;
         final int[] queue;
         final boolean prune;
+        /** RQ-P26-b measurement: leave through faces seen from ANY entry face (vanilla), still frustum pruned. */
+        boolean union;
 
         LegacyWalk(World w, boolean prune) {
             this.w = w;
@@ -288,7 +292,8 @@ public final class GraphAsyncTest {
                     count++;
                 }
                 // getVisibilityDirs: row of the face opposite mainDir; the start node's row 6 is all faces (initVisibility)
-                int row = this.mainDir[i] == 7 ? 0x3F : (int) (this.w.vis[i] >> (VisibilityWalk.opposite(this.mainDir[i]) << 3)) & 0xFF;
+                int row = this.mainDir[i] == 7 ? 0x3F : this.union ? VisibilityWalk.exitsFor(this.w.vis[i], this.sourceDirs[i])
+                        : (int) (this.w.vis[i] >> (VisibilityWalk.opposite(this.mainDir[i]) << 3)) & 0xFF;
                 byte dirs = (byte) (row & this.directions[i]);
                 dirs &= this.w.adjDirs(i);
                 for (int d : new int[]{GraphDirections.DOWN, GraphDirections.UP, GraphDirections.NORTH, GraphDirections.SOUTH,
@@ -381,7 +386,7 @@ public final class GraphAsyncTest {
     }
 
     static final class Stats {
-        long served, fallback, missing, legacyTotal, extra, relaxed, openings;
+        long served, fallback, missing, legacyTotal, extra, relaxed, openings, missingReached;
 
         double extraPct() {
             return this.legacyTotal == 0 ? 0 : 100.0 * this.extra / this.legacyTotal;
@@ -527,6 +532,11 @@ public final class GraphAsyncTest {
                 if (served) {
                     Arrays.fill(got, false);
                     VisibilityWalk.Result fr = av.front();
+                    // entity/particle culling stamp (setLastFrame): every section the sync walk reached must be reached
+                    boolean[] reachedA = new boolean[w.size()];
+                    for (int k = 0; k < fr.reachedCount; k++) reachedA[fr.reachedList[k]] = true;
+                    for (int i = 0; i < w.size(); i++)
+                        if (legacy.lastFrame[i] == legacy.frame && !reachedA[i]) st.missingReached++;
                     for (int k = 0; k < fr.count; k++) {
                         int i = fr.order[k];
                         if (f.containsKeyed(w, i, fr.cull[i])) got[i] = true;
@@ -605,7 +615,7 @@ public final class GraphAsyncTest {
         av.runPendingWalk();
         boolean served = av.prepare(start, 1, 1, 1);
         VisibilityWalk.Result sync = new VisibilityWalk.Result(w.size());
-        VisibilityWalk.walk(w, start, 1, sync, VisibilityWalk.newQueue(w.size()));
+        VisibilityWalk.walk(w, start, 1, sync);
         VisibilityWalk.Result fr = av.front();
         check("worker result == synchronous walk, same order (" + sync.count + " sections)", served && fr.count == sync.count
                 && Arrays.equals(Arrays.copyOf(fr.order, fr.count), Arrays.copyOf(sync.order, sync.count)));
@@ -626,12 +636,32 @@ public final class GraphAsyncTest {
                 }
             }
         check(String.format("one result, 168 view directions: 0 missing vs sync walk (extra %.1f%%)", 100.0 * extra / total), missing == 0);
+        // RQ-P26-b: how much of that extra is the exit rule alone (both frustum pruned)
+        for (int[] spot : new int[][]{{12, 8, 12}, {12, 4, 12}, {6, 5, 18}}) {
+            int st = w.index(spot[0], spot[1], spot[2]);
+            LegacyWalk uni = new LegacyWalk(w, true);
+            uni.union = true;
+            boolean[] wantU = new boolean[w.size()];
+            long base = 0, more = 0, fewer = 0;
+            for (int yaw = 0; yaw < 360; yaw += 15)
+                for (int pitch = -90; pitch <= 90; pitch += 30) {
+                    f.set(w, spot[0] * 16 + 8, spot[1] * 16 + 8, spot[2] * 16 + 8, yaw, pitch, 25 * 16);
+                    base += legacy.run(st, 1, f, want);
+                    uni.run(st, 1, f, wantU);
+                    for (int i = 0; i < want.length; i++) {
+                        if (wantU[i] && !want[i]) more++;
+                        if (want[i] && !wantU[i]) fewer++;
+                    }
+                }
+            System.out.printf("info RQ-P26-b section (%d,%d,%d) %s: union exit rule (pruned) draws +%.2f%% sections vs first-arrival rule, %d fewer%n",
+                    spot[0], spot[1], spot[2], w.empty[st] ? "air" : "terrain", 100.0 * more / Math.max(1, base), fewer);
+        }
 
         // 3. relax after openings == fresh walk (as sets, and per-section state); closings leave a superset
         SplittableRandom r = new SplittableRandom(99);
         VisibilityWalk.Result rel = new VisibilityWalk.Result(w.size());
-        int[] q = VisibilityWalk.newQueue(w.size()), work = new int[w.size()], inWork = new int[w.size()];
-        VisibilityWalk.walk(w, start, 1, rel, q);
+        int[] work = new int[w.size()], inWork = new int[w.size()];
+        VisibilityWalk.walk(w, start, 1, rel);
         int ws = 1;
         boolean exact = true, sorted = true;
         for (int round = 0; round < 40; round++) {
@@ -644,7 +674,7 @@ public final class GraphAsyncTest {
             }
             VisibilityWalk.mergeAdded(rel);
             VisibilityWalk.Result fresh = new VisibilityWalk.Result(w.size());
-            VisibilityWalk.walk(w, start, 1, fresh, q);
+            VisibilityWalk.walk(w, start, 1, fresh);
             for (int i = 0; i < w.size(); i++) {
                 if (rel.isProcessed(i) != fresh.isProcessed(i)) exact = false;
                 else if (fresh.isProcessed(i) && (rel.src[i] != fresh.src[i] || rel.dc[i] != fresh.dc[i])) exact = false;
@@ -661,7 +691,7 @@ public final class GraphAsyncTest {
             w.empty[i] = false;
         }
         VisibilityWalk.Result fresh = new VisibilityWalk.Result(w.size());
-        VisibilityWalk.walk(w, start, 1, fresh, q);
+        VisibilityWalk.walk(w, start, 1, fresh);
         boolean superset = true;
         for (int i = 0; i < w.size(); i++) if (fresh.isProcessed(i) && !rel.isProcessed(i)) superset = false;
         check("after 400 closings the old result is a superset of a fresh walk", superset);
@@ -738,7 +768,6 @@ public final class GraphAsyncTest {
             Frustum f = new Frustum();
             boolean[] want = new boolean[w.size()];
             VisibilityWalk.Result res = new VisibilityWalk.Result(w.size());
-            int[] q = VisibilityWalk.newQueue(w.size());
             double cx = c * 16 + 8, cy = (start / w.W % w.H) * 16 + 8, cz = c * 16 + 8;
             long[] tl = new long[200], tf = new long[200], tw = new long[50];
             int vis = 0, filt = 0;
@@ -747,7 +776,7 @@ public final class GraphAsyncTest {
                 long t0 = System.nanoTime();
                 vis = legacy.run(start, 1, f, want);
                 long t1 = System.nanoTime();
-                if (it % 8 == 0) VisibilityWalk.walk(w, start, 1, res, q);
+                if (it % 8 == 0) VisibilityWalk.walk(w, start, 1, res);
                 long t2 = System.nanoTime();
                 filt = 0;
                 for (int k = 0; k < res.count; k++) {

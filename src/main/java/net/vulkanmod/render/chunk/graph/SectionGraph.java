@@ -59,6 +59,7 @@ public class SectionGraph {
         this.chunkAreaQueue = new AreaSetQueue(sectionGrid.getChunkAreaManager().size);
         this.minecraft = Minecraft.getInstance();
         this.renderRegionCache = WorldRenderer.getInstance().renderRegionCache;
+        AsyncVisibility.retire(); // P2-6: the previous grid's async graph (if any) stops; this one starts on first use
     }
 
     /**
@@ -215,6 +216,10 @@ public class SectionGraph {
             System.arraycopy(areas.getChunkArea(a).getFrustumBuffer(), 0, fr, a << 6, 64);
 
         RenderSection[] sections = this.sectionGrid.sections;
+        // graph-reached stamp, as the walk's addNode sets it: entity and particle culling compare it with getLastFrame
+        int[] reached = r.reachedList;
+        for (int k = 0, m = r.reachedCount; k < m; k++)
+            sections[reached[k]].setLastFrame(this.lastFrame);
         int[] order = r.order, cull = r.cull;
         int n = r.count;
         this.sectionQueue.ensureCapacity(n);
@@ -337,6 +342,7 @@ public class SectionGraph {
         int n = this.sectionQueue.size();
         for (int i = 0; i < n; i++) {
             RenderSection renderSection = this.sectionQueue.get(i);
+            renderSection.setLastFrame(this.lastFrame); // P2-6 review: entity/particle culling read this stamp
             if (smartCull && renderSection.directionChanges > maxDirectionsChanges)
                 continue; // not traversed by the walk either
             if (notInFrustum(renderSection))

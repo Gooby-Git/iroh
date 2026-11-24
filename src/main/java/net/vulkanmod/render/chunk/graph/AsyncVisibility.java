@@ -86,6 +86,18 @@ public final class AsyncVisibility {
         active = this;
     }
 
+    /** A new section grid replaces the old one: the old instance stops taking hooks and its worker exits. */
+    public static void retire() {
+        AsyncVisibility a = active;
+        if (a != null) {
+            active = null;
+            synchronized (a.lock) {
+                a.pending = null;
+                a.lock.notifyAll();
+            }
+        }
+    }
+
     public boolean isOn() {
         return this.on;
     }
@@ -101,6 +113,7 @@ public final class AsyncVisibility {
         synchronized (this.lock) {
             this.pending = null;
             this.ready = null;
+            this.lock.notifyAll(); // off: the worker sees active != this and exits
         }
     }
 
@@ -253,14 +266,16 @@ public final class AsyncVisibility {
     }
 
     private void workerLoop() {
-        int[] queue = VisibilityWalk.newQueue(this.n);
         while (true) {
             Request q;
             synchronized (this.lock) {
+                long idleSince = System.nanoTime();
                 while (this.pending == null) {
-                    if (active != this) {
+                    // a newer grid took over, the switch is off, or nothing asked for 10 s (title screen): exit,
+                    // post() starts a new worker when needed
+                    if (active != this || System.nanoTime() - idleSince > 10_000_000_000L) {
                         this.worker = null;
-                        return; // a newer grid took over
+                        return;
                     }
                     try {
                         this.lock.wait(1000);
@@ -273,16 +288,12 @@ public final class AsyncVisibility {
                 this.pending = null;
                 this.inFlight = q;
             }
-            walkInto(q, queue);
+            walkInto(q);
         }
     }
 
     /** Test hook (non-threaded mode): runs the pending request now, as the worker would. Returns false if none. */
     boolean runPendingWalk() {
-        return runPendingWalk(VisibilityWalk.newQueue(this.n));
-    }
-
-    boolean runPendingWalk(int[] queue) {
         Request q;
         synchronized (this.lock) {
             q = this.pending;
@@ -290,25 +301,33 @@ public final class AsyncVisibility {
             this.pending = null;
             this.inFlight = q;
         }
-        walkInto(q, queue);
+        walkInto(q);
         return true;
     }
 
-    private void walkInto(Request q, int[] queue) {
-        VisibilityWalk.Result buf;
-        synchronized (this.lock) {
-            buf = this.spare;
-            this.spare = null;
-        }
-        if (buf == null) buf = new VisibilityWalk.Result(this.n);
+    private void walkInto(Request q) {
+        VisibilityWalk.Result buf = null;
         boolean ok = false;
         long t0 = System.nanoTime();
         try {
-            VisibilityWalk.walk(this.graph, q.start, q.maxDc, buf, queue);
+            synchronized (this.lock) {
+                buf = this.spare;
+                this.spare = null;
+            }
+            if (buf == null) buf = new VisibilityWalk.Result(this.n);
+            VisibilityWalk.walk(this.graph, q.start, q.maxDc, buf);
             ok = true;
-        } catch (RuntimeException e) {
-            // the grid was repositioned under the walk (neighbour cleared): the key no longer matches anyway
+        } catch (Throwable e) {
+            // RuntimeException: the grid was repositioned under the walk (key no longer matches anyway);
+            // an Error (OOM) must not leave inFlight set, or no request would ever be posted again
             this.walkErrors++;
+            if (buf == null) {
+                synchronized (this.lock) {
+                    this.inFlight = null;
+                }
+                if (e instanceof Error err) throw err;
+                return;
+            }
         }
         long ns = System.nanoTime() - t0;
         buf.key0 = q.key0;

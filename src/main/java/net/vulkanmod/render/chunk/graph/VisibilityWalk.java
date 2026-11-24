@@ -89,6 +89,12 @@ public final class VisibilityWalk {
         /** Processed sections in level order. */
         public final int[] order;
         public int count;
+        /**
+         * Every section the walk reached (queued), processed or not, BFS order then relax additions. SectionGraph stamps
+         * them with setLastFrame: entity and particle culling (EntityRendererM, SingleQuadParticleM) read that stamp.
+         */
+        public final int[] reachedList;
+        public int reachedCount;
         /** Sections processed by {@link #relax} since the last {@link #mergeAdded}, unsorted. */
         final int[] added;
         int addedCount;
@@ -112,6 +118,7 @@ public final class VisibilityWalk {
             this.dc = new byte[n];
             this.cull = new int[n];
             this.order = new int[n];
+            this.reachedList = new int[n];
             this.added = new int[n];
         }
 
@@ -124,13 +131,9 @@ public final class VisibilityWalk {
         }
     }
 
-    /** Scratch for the BFS queue (all reached sections), one per walking thread. */
-    public static int[] newQueue(int n) {
-        return new int[n];
-    }
-
-    /** Full walk from {@code start}. {@code queue} must hold {@code g.size()} ints. */
-    public static void walk(Graph g, int start, int maxDc, Result r, int[] queue) {
+    /** Full walk from {@code start}; the BFS queue is {@link Result#reachedList}. */
+    public static void walk(Graph g, int start, int maxDc, Result r) {
+        int[] queue = r.reachedList;
         int stamp = ++r.stamp;
         if (stamp == 0) { // wrapped: clear once every 2^32 walks
             java.util.Arrays.fill(r.reached, 0);
@@ -177,6 +180,7 @@ public final class VisibilityWalk {
                 lowerDc(r, i, j, d, empty);
             }
         }
+        r.reachedCount = tail;
     }
 
     private static void reach(Result r, int i, int j, int d, int stamp) {
@@ -232,6 +236,7 @@ public final class VisibilityWalk {
                 boolean changed;
                 if (r.reached[j] != stamp) {
                     reach(r, i, j, d, stamp);
+                    r.reachedList[r.reachedCount++] = j;
                     changed = true;
                 } else {
                     changed = (r.src[j] & (1 << d)) == 0;
