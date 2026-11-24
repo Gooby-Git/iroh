@@ -233,11 +233,11 @@ public final class FrameExecutor {
                     problems.add("memory gate refused " + d.name() + " (" + (d.bytes() >> 10) + " KiB): the ladder's next rung applies");
                     continue;
                 }
-                images.put(key, gpu.createImage(d));
+                images.put(key, newImage(d));
             }
         }
         // output of final (display size)
-        images.put("output", gpu.createImage(new GpuBackend.ImageDesc("pack:output", "R8G8B8A8_UNORM", displayW, displayH, 1, 1,
+        images.put("output", newImage(new GpuBackend.ImageDesc("pack:output", "R8G8B8A8_UNORM", displayW, displayH, 1, 1,
                 Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST"))));
         if (upscale != null)
             prepareUpscale();
@@ -438,8 +438,7 @@ public final class FrameExecutor {
         // P3-7: the trace holds the LAST frame only (it grew without bound in game: one list entry per pass per frame)
         if (!keepTrace)
             trace.clear();
-        gpu.beginFrame();
-        lastAccess.clear();
+        gpu.beginFrame(); // lastAccess is cleared at the END of a frame (V-6): images created since then are TRANSFER_WRITE
         postCut = false;
         if (tracing) trace.add("frame start=" + in.startStage() + " size=" + width + "x" + height);
         int start = STAGES.indexOf(in.startStage());
@@ -686,6 +685,7 @@ public final class FrameExecutor {
             if (tracing) trace.add("present output");
         }
         gpu.endFrame();
+        lastAccess.clear();
         if (tracing) trace.add("frame end");
     }
 
@@ -815,6 +815,23 @@ public final class FrameExecutor {
     private void unusedAccessBinds() {
     }
 
+    /**
+     * V-6 (RQ-V5-a): every new image is zeroed by the backend (VkPackBackend.createImage records UNDEFINED -> GENERAL and
+     * a clear into the current command buffer), so it starts as a TRANSFER_WRITE: the first upload/clear/draw on it then
+     * gets its WRITE -> WRITE barrier. Images made by prepare() before the frame stay tracked into it (lastAccess is
+     * cleared at the end of a frame, not the start): in game prepare records into the same command buffer as the frame.
+     * Only the frame an image is created in pays the barrier.
+     */
+    private int newImage(GpuBackend.ImageDesc d) {
+        int h = gpu.createImage(d);
+        if (!untrackedCreateForTest)
+            lastAccess.put(h, "TRANSFER_WRITE");
+        return h;
+    }
+
+    /** negative control for the V-6 repro (packThreadRepro -PoldCreate): the pre-V-6 untracked creation clear */
+    static boolean untrackedCreateForTest;
+
     private void access(int image, String kind) {
         String last = lastAccess.get(image);
         boolean write = kind.endsWith("WRITE");
@@ -894,9 +911,9 @@ public final class FrameExecutor {
             usage.add("TRANSFER_DST");
             String dk = "D:" + (images.containsKey(k) ? k : k.replaceAll("#.*", ""));
             if (!images.containsKey(dk))
-                images.put(dk, gpu.createImage(new GpuBackend.ImageDesc("pack:" + dk, d.vkFormat(), displayW, displayH, 1, d.mips(), usage)));
+                images.put(dk, newImage(new GpuBackend.ImageDesc("pack:" + dk, d.vkFormat(), displayW, displayH, 1, d.mips(), usage)));
         }
-        images.put("engine:motion", gpu.createImage(new GpuBackend.ImageDesc("pack:engine:motion", "R16G16_SFLOAT", width, height, 1, 1,
+        images.put("engine:motion", newImage(new GpuBackend.ImageDesc("pack:engine:motion", "R16G16_SFLOAT", width, height, 1, 1,
                 Set.of("COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST"))));
         var vs = dev.elemore.iroh.shaderpack.PackCompiler.compile(dev.elemore.iroh.shaderpack.PackGlsl.Stage.VERTEX, MOTION_VS, "iroh-motion.vsh");
         var fs = dev.elemore.iroh.shaderpack.PackCompiler.compile(dev.elemore.iroh.shaderpack.PackGlsl.Stage.FRAGMENT, MOTION_FS, "iroh-motion.fsh");
@@ -1103,7 +1120,7 @@ public final class FrameExecutor {
                 case "specular" -> new float[]{0, 0, 0, 0};
                 default -> new float[]{1, 1, 1, 1};
             };
-        h = gpu.createImage(new GpuBackend.ImageDesc("pack:" + key, "R8G8B8A8_UNORM", w, hh, 1, 1, Set.of("SAMPLED", "TRANSFER_DST")));
+        h = newImage(new GpuBackend.ImageDesc("pack:" + key, "R8G8B8A8_UNORM", w, hh, 1, 1, Set.of("SAMPLED", "TRANSFER_DST")));
         access(h, "TRANSFER_WRITE");
         gpu.upload(h, px);
         images.put(key, h);
@@ -1591,7 +1608,7 @@ public final class FrameExecutor {
                         GpuBackend.ImageDesc d = new GpuBackend.ImageDesc("pack:" + key, "R8G8B8A8_UNORM", bi.getWidth(), bi.getHeight(), 1, 1,
                                 Set.of("SAMPLED", "TRANSFER_DST", "TRANSFER_SRC"));
                         if (gate.allow(d.name(), d.bytes())) {
-                            h = gpu.createImage(d);
+                            h = newImage(d);
                             access(h, "TRANSFER_WRITE");
                             gpu.upload(h, px);
                         }
@@ -1625,7 +1642,7 @@ public final class FrameExecutor {
         if (h != null)
             return h;
         Set<String> usage = storage ? Set.of("STORAGE", "SAMPLED", "TRANSFER_DST") : Set.of("SAMPLED", "TRANSFER_DST");
-        h = gpu.createImage(new GpuBackend.ImageDesc("pack:" + key, vk, 1, 1, 1, 1, usage));
+        h = newImage(new GpuBackend.ImageDesc("pack:" + key, vk, 1, 1, 1, 1, usage));
         if (depth) {
             access(h, "TRANSFER_WRITE");
             gpu.upload(h, new float[]{1, 0, 0, 0}); // far plane: compare passes (lit)
@@ -1903,7 +1920,7 @@ public final class FrameExecutor {
                 overFailed = true;
                 return;
             }
-            int img = gpu.createImage(new GpuBackend.ImageDesc("pack:engine:raster", "R8G8B8A8_UNORM", od.width(), od.height(), 1, 1,
+            int img = newImage(new GpuBackend.ImageDesc("pack:engine:raster", "R8G8B8A8_UNORM", od.width(), od.height(), 1, 1,
                     Set.of("SAMPLED", "TRANSFER_SRC", "TRANSFER_DST")));
             images.put("engine:raster", img);
             try {

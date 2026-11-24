@@ -1232,7 +1232,8 @@ tasks.register('rtDeviceChainRepro', JavaExec) {
 // V-5 (ladder run 10): pack path teardown from a non-render thread (Proctor's proctor-conn switching iroh.pack.enabled off)
 // vs the render thread recording a pack frame: use after free + double vkDestroyFramebuffer. Lavapipe + validation (sync on),
 // Navidson from the Vulkan instance (read only). ./gradlew packThreadRepro [-Pmode=old|new|both] [-Ptrials=N];
-// last line "# packthread PASS|FAIL" (PASS = old shows the bug, new is clean).
+// last line "# packthread PASS|FAIL" (PASS = old shows the bug, new is clean incl. 0 sync hazards).
+// -PoldCreate (V-6 negative control): pre-V-6 untracked creation clear, last line "# packthread-oldcreate HAZARD n", n >= 1 = PASS.
 tasks.register('packThreadRepro', JavaExec) {
 	group = 'verification'
 	description = 'Pack path switched off from another thread during a pack frame on lavapipe + validation (old flagged, V-5 clean)'
@@ -1244,6 +1245,7 @@ tasks.register('packThreadRepro', JavaExec) {
 	doFirst {
 		systemProperty 'pt.mode', project.findProperty('mode') ?: 'both'
 		systemProperty 'pt.trials', project.findProperty('trials') ?: '40'
+		if (project.hasProperty('oldCreate')) systemProperty 'pt.oldCreate', 'true'
 		useLavapipe(it)
 	}
 }
