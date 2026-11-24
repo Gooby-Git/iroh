@@ -151,6 +151,27 @@ public final class SlowFramesTest {
         SlowFrames.quit();
         check("summary at quit", last().startsWith("[iroh-slow] summary (quit)"));
 
+        // 6b. P2-11: a normal pipeline creation on the render thread inside a frame shows on that frame's line; a pre-warmed one (or one from
+        //     another thread) does not
+        dev.elemore.iroh.perf.PipelineStats.reset();
+        SlowFrames.frameStart();
+        dev.elemore.iroh.perf.PipelineStats.created(dev.elemore.iroh.perf.PipelineStats.Kind.GRAPHICS, 14_000_000L);
+        dev.elemore.iroh.perf.PipelineStats.createdPrewarm(30_000_000L);
+        Thread pipeThread = new Thread(() -> dev.elemore.iroh.perf.PipelineStats.created(dev.elemore.iroh.perf.PipelineStats.Kind.GRAPHICS, 5_000_000L));
+        pipeThread.start();
+        pipeThread.join();
+        SlowFrames.enter(Phase.RENDER); ms(20); SlowFrames.exit(Phase.RENDER);
+        SlowFrames.frameEnd();
+        System.out.println("     " + last());
+        check("slow frame names the in-frame pipeline creation (pipelines=1 pipelineUs=14000), not the pre-warmed or other-thread one",
+                last().contains(" pipelines=1 ") && last().contains("pipelineUs=14000"));
+        SlowFrames.frameStart();
+        dev.elemore.iroh.perf.PipelineStats.createdPrewarm(30_000_000L);
+        SlowFrames.enter(Phase.RENDER); ms(20); SlowFrames.exit(Phase.RENDER);
+        SlowFrames.frameEnd();
+        check("a frame with only a pre-warmed creation has no pipelines counter", !last().contains("pipelines="));
+        dev.elemore.iroh.perf.PipelineStats.reset();
+
         // 7. hitches3: the stack sampler. A "render" thread is blocked 60 ms on a monitor owned by another thread; the
         //    sampler is stepped by hand with a fake clock.
         Object lock = new Object();

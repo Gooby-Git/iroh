@@ -59,6 +59,7 @@ public class Renderer {
 
     public static void initRenderer() {
         INSTANCE = new Renderer();
+        dev.elemore.iroh.perf.PipelineStats.RECORDING = Renderer::isRecordingSafe; // P2-11: "in frame" for the pipeline-creation counter
         INSTANCE.init();
         // api 4 (card V-M1): mod GPU buffers / compute / targets on Iroh's device. INT-2: only records the sizes; the
         // device objects are created on a mod's first api-4 call (GpuCore.get)

@@ -222,6 +222,16 @@ tasks.register('frameLimiterTest', JavaExec) {
 	jvmArgs '-ea'
 }
 
+// P2-11: L8 pipeline-in-frame counter + pre-warm list codec + GPL capability scaffold, offline. ./gradlew pipelinePrewarmTest ; last line "# pipelinePrewarm PASS n/n"
+tasks.register('pipelinePrewarmTest', JavaExec) {
+	group = 'verification'
+	description = 'Pipeline creation counter (in-frame vs pre-warmed) and the pre-warm list: round trip, rejection on mismatch'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.perf.PipelinePrewarmTest'
+	jvmArgs '-ea'
+}
+
 // perf/frame-attrib: -Diroh.slowFrames ring/record/summary on a fake clock. ./gradlew slowFramesTest
 tasks.register('slowFramesTest', JavaExec) {
 	group = 'verification'
@@ -1035,6 +1045,19 @@ tasks.register('terrainIndirectRepro', JavaExec) {
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.vktest.TerrainIndirectRepro'
+	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	ext.syncval = true
+	doFirst { useLavapipe(it) }
+}
+
+// P2-11 (L8): the pre-warm worker's compatible render pass vs a renderer-style pass, lavapipe + validation (control: other depth format flagged)
+// ./gradlew pipelinePrewarmRepro ; last line "# pipelineprewarm PASS|FAIL"
+tasks.register('pipelinePrewarmRepro', JavaExec) {
+	group = 'verification'
+	description = 'Pre-warm worker render pass compatibility with the renderer passes on lavapipe + validation'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.PipelinePrewarmRepro'
 	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
 	ext.syncval = true
 	doFirst { useLavapipe(it) }

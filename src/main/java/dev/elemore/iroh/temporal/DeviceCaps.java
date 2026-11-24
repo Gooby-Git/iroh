@@ -146,6 +146,25 @@ public final class DeviceCaps {
         }
     }
 
+    // ---- P2-11 (L8): VK_EXT_graphics_pipeline_library, capability check + switch only ----
+    /** both VK_EXT_graphics_pipeline_library and its dependency VK_KHR_pipeline_library are in the device's extension list (the feature bit graphicsPipelineLibrary is NOT yet queried) */
+    public static volatile boolean gplOffered;
+    /** the GPL pipeline path does not exist yet; flipping this needs the work listed in perf.md (P2-11) */
+    public static final boolean GPL_IMPLEMENTED = false;
+
+    public static void probeGpl(java.util.Set<String> deviceExtensions) {
+        gplOffered = deviceExtensions.contains("VK_EXT_graphics_pipeline_library") && deviceExtensions.contains("VK_KHR_pipeline_library");
+    }
+
+    /** the GPL path would be used: implemented, offered by the device, and the switch {@code iroh.pipeline.gpl} (default off) is on */
+    public static boolean gplUsable() {
+        return GPL_IMPLEMENTED && gplOffered && DebugSwitches.on(dev.elemore.iroh.perf.PerfSwitches.PIPELINE_GPL);
+    }
+
+    public static String gplReport() {
+        return "graphicsPipelineLibrary offered=" + gplOffered + " implemented=" + GPL_IMPLEMENTED + " switch=" + DebugSwitches.on(dev.elemore.iroh.perf.PerfSwitches.PIPELINE_GPL) + " -> used " + gplUsable();
+    }
+
     /** the camera velocity compute pass can run */
     public static boolean velocityCapable() {
         return requested && storageExtendedFormats && rg16fStorage;

@@ -27,6 +27,11 @@ public final class PerfSwitches {
     /** P2-4: LevelRenderer.setSectionDirtyWithNeighbors as one 3x3x3 mark (9 region-cache drops, one graph flag) */
     public static final String BULK_DIRTY = "iroh.chunk.bulkDirty";
 
+    /** P2-11 (L8): record the pipeline states first seen in play; at load, create them on a worker before first use (default off) */
+    public static final String PIPELINE_PREWARM = "iroh.pipeline.prewarm";
+    /** P2-11: VK_EXT_graphics_pipeline_library path. SCAFFOLD ONLY: the path is not implemented, the switch only reports (DeviceCaps.gplReport) */
+    public static final String PIPELINE_GPL = "iroh.pipeline.gpl";
+
     private static volatile boolean registered;
 
     /**
@@ -42,6 +47,7 @@ public final class PerfSwitches {
     public static volatile boolean areaArenaOn = prop(AREA_ARENA);
     public static volatile boolean intakeBudgetOn = prop(INTAKE_BUDGET);
     public static volatile boolean bulkDirtyOn = prop(BULK_DIRTY);
+    public static volatile boolean pipelinePrewarmOn = prop(PIPELINE_PREWARM);
 
     private static boolean prop(String key) {
         String v = System.getProperty(key, "false");
@@ -58,6 +64,7 @@ public final class PerfSwitches {
         areaArenaOn = DebugSwitches.on(AREA_ARENA);
         intakeBudgetOn = DebugSwitches.on(INTAKE_BUDGET);
         bulkDirtyOn = DebugSwitches.on(BULK_DIRTY);
+        pipelinePrewarmOn = DebugSwitches.on(PIPELINE_PREWARM);
         return "ok";
     }
 
@@ -75,6 +82,8 @@ public final class PerfSwitches {
             reg(AREA_ARENA, "pooled area buffers: no device buffer creation in section intake, grow copies used ranges only", v -> refreshFlags());
             reg(INTAKE_BUDGET, "section intake stops before a section predicted to cross the 1 ms budget", v -> refreshFlags());
             reg(BULK_DIRTY, "chunk/light loads mark the 3x3x3 dirty neighbourhood in one pass", v -> refreshFlags());
+            reg(PIPELINE_PREWARM, "record pipeline states first seen in play (config/iroh/cache/prewarm.txt) and create them on a worker after the resource reload", v -> refreshFlags());
+            reg(PIPELINE_GPL, "VK_EXT_graphics_pipeline_library (SCAFFOLD: capability report only, no GPL path yet)", v -> "ok");
             reg(THREADS_TUNE,"renice builders +4 and keep them off the render core (cannot be undone at runtime)",
                     v -> DebugSwitches.on(THREADS_TUNE) ? (ThreadPolicy.applyToRunningBuilders() ? "ok" : "restart") : "restart");
             reg(THREADS_ADAPTIVE, "extra builders while the backlog is large", v -> rebuildBuilders());
