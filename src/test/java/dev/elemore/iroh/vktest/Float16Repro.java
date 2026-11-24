@@ -42,6 +42,12 @@ public final class Float16Repro {
         int[] r = new int[8];
         try (MemoryStack s = MemoryStack.stackPush()) {
             init(s);
+            VkPhysicalDeviceVulkan12Features have12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
+            vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(have12.address()));
+            if (!have12.shaderFloat16()) { // H1B (RQ-H1-b): the harness forces enableFloat16; a device without the feature cannot run it
+                System.out.println("# float16 SKIP device lacks shaderFloat16 (production decision covered by hwCapsRepro)");
+                System.exit(0);
+            }
             ByteBuffer spv = compile();
             boolean natives = dev.elemore.iroh.upscale.fsr.NativeLoader.load();
             System.out.println("natives=" + natives);

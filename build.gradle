@@ -1229,6 +1229,21 @@ tasks.register('rtDeviceChainRepro', JavaExec) {
 	doFirst { useLavapipe(it) }
 }
 
+// H1B (RQ-H1-c): the production capability decision (DeviceCaps / RtDeviceFeatures) per device; run per profile by tools/hw-matrix.sh.
+// ./gradlew hwCapsRepro ; last line "# hwcaps PASS|FAIL", tier line "# hwcaps-tier ..."
+tasks.register('hwCapsRepro', JavaExec) {
+	group = 'verification'
+	description = 'Production DeviceCaps tier decision on lavapipe (or a profiled GPU): tier, enabled features, upscaler availability, consistency, validation clean'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.HwCapsRepro'
+	jvmArgs '-Xmx2g'
+	doFirst {
+		if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
 // V-5 (ladder run 10): pack path teardown from a non-render thread (Proctor's proctor-conn switching iroh.pack.enabled off)
 // vs the render thread recording a pack frame: use after free + double vkDestroyFramebuffer. Lavapipe + validation (sync on),
 // Navidson from the Vulkan instance (read only). ./gradlew packThreadRepro [-Pmode=old|new|both] [-Ptrials=N];

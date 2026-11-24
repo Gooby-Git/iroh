@@ -7,12 +7,12 @@
 set -uo pipefail
 WT=$(readlink -f "${1:?worktree}"); LABEL=${2:-$(basename "$WT")}; GLOB=${3:-*}; TFILTER=${4:-.}
 HERE=$(cd "$(dirname "$0")" && pwd); PROF=$HERE/hw-profiles
-OUT=$HERE/../build-hw/$LABEL; mkdir -p "$OUT"
+OUT=$HERE/../build-hw/$LABEL; mkdir -p "$OUT"; : > "$OUT/tiers.txt"
 export JAVA_HOME=${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}; export PATH=$JAVA_HOME/bin:$PATH
 LAYER_DIR=${VK_PROFILES_LAYER_DIR:-$HOME/.local/share/vulkan/explicit_layer.d}
 [ -f "$LAYER_DIR/VkLayer_khronos_profiles.json" ] || { echo "profiles layer missing in $LAYER_DIR"; exit 2; }
 # task list: "gradle args" ; tasks absent from the worktree are skipped
-TASKS=("float16Repro" "attachLayoutRepro" "freshTexRepro" "vkStackRepro -PstackKb=48" "packThreadRepro" "packReplay" "rtDeviceChainRepro" "rtReplay")
+TASKS=("float16Repro" "attachLayoutRepro" "freshTexRepro" "vkStackRepro -PstackKb=48" "packThreadRepro" "packReplay" "rtDeviceChainRepro" "rtReplay" "hwCapsRepro")
 have() { grep -q "register('$1'" "$WT/build.gradle"; }
 
 run_cell() { # profile(or BASE) task-args -> prints "VERDICT|harness|valerr|note"
@@ -31,7 +31,7 @@ run_cell() { # profile(or BASE) task-args -> prints "VERDICT|harness|valerr|note
     timeout 900 ./gradlew $targs --offline --console=plain -q >"$log" 2>&1
   ); rc=$?
   local harness valerr note=""
-  harness=$(grep -aoE '^# [a-z0-9]+ (PASS|FAIL)[^ ]*' "$log" | tail -1 | awk '{print $3}')
+  harness=$(grep -aoE '^# [a-z0-9]+ (PASS|FAIL|SKIP)[^ ]*' "$log" | tail -1 | awk '{print $3}')
   [ -z "$harness" ] && harness=NOLINE
   # validation errors: V-0 digest line (int-4c) else the harness' own "validation:" lines (int-2b)
   if grep -aq '^# vkval ' "$log"; then valerr=$(grep -aoE '^# vkval .* errors=[0-9]+' "$log" | grep -oE 'errors=[0-9]+' | cut -d= -f2 | paste -sd+ | bc)
@@ -52,10 +52,12 @@ for pf in "$PROF"/$GLOB.json; do
   for t in "${tasks[@]}"; do
     r=$(run_cell "$p" "$t"); h=${r%%|*}; rest=${r#*|}; v=${rest%%|*}; n=${rest#*|}
     # PASS: same harness verdict as BASE, no crash, validation errors not above BASE
-    if [[ "$n" == *CRASH* ]]; then c="FAIL(crash)"; elif [ "$h" != "${BH[$t]}" ]; then c="FAIL($h)"; elif [ "${v:-0}" -gt "${BV[$t]:-0}" ]; then c="FAIL(val+$((v-${BV[$t]:-0})))"; else c="PASS(v$v)"; fi
+    if [[ "$n" == *CRASH* ]]; then c="FAIL(crash)"; elif [ "$h" = SKIP ]; then c="SKIP"; elif [ "$h" != "${BH[$t]}" ]; then c="FAIL($h)"; elif [ "${v:-0}" -gt "${BV[$t]:-0}" ]; then c="FAIL(val+$((v-${BV[$t]:-0})))"; else c="PASS(v$v)"; fi
     [[ "$n" == *layer-error* ]] && c="$c*"
     line+=$(printf ' %-16s' "$c")
+    # H1B: the production tier line of hwCapsRepro goes to tiers.txt (one row per profile)
+    [ "${t%% *}" = hwCapsRepro ] && grep -ah '^# hwcaps-tier' "$OUT/$p/hwCapsRepro.log" | tail -1 | sed "s|^# hwcaps-tier|$p|" >> "$OUT/tiers.txt"
   done
   echo "$line" | tee -a "$OUT/matrix.txt"
 done
-echo "logs: $OUT/<profile>/<task>.log ; BASE = no profile layer ; * = profiles layer reported an error" | tee -a "$OUT/matrix.txt"
+echo "logs: $OUT/<profile>/<task>.log ; BASE = no profile layer ; * = profiles layer reported an error ; SKIP = harness precondition absent on that profile (not a failure) ; tiers: $OUT/tiers.txt" | tee -a "$OUT/matrix.txt"
