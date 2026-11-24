@@ -143,6 +143,11 @@ public abstract class VkPackBackend implements GpuBackend {
         return createImage(d, fmt);
     }
 
+    /** offline harness backends read any image back: they add TRANSFER_SRC to every image; the game path costs nothing */
+    protected boolean readbackUsage() {
+        return false;
+    }
+
     protected int createImage(ImageDesc d, int fmt) {
         boolean depth = d.vkFormat().startsWith("D");
         int aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -169,6 +174,8 @@ public abstract class VkPackBackend implements GpuBackend {
                 default -> {
                 }
             }
+        if (readbackUsage())
+            usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // V6AB (RQ-V6-b): offline readback copies any image out (VUID-vkCmdCopyImageToBuffer-srcImage-00186)
         try (MemoryStack s = stackPush()) {
             VkFormatProperties fp = VkFormatProperties.calloc(s);
             vkGetPhysicalDeviceFormatProperties(phys(), fmt, fp);
@@ -615,6 +622,14 @@ public abstract class VkPackBackend implements GpuBackend {
                 r.dstSubresource().aspectMask(b.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
                 r.extent().width(a.d.width()).height(a.d.height()).depth(1);
                 vkCmdCopyImage(cmd(), a.image, sa, b.image, sb, r);
+            } else if (a.aspect == VK_IMAGE_ASPECT_COLOR_BIT && b.aspect == VK_IMAGE_ASPECT_COLOR_BIT
+                    && !(formatHas(a.format, VK_FORMAT_FEATURE_BLIT_SRC_BIT) && formatHas(b.format, VK_FORMAT_FEATURE_BLIT_DST_BIT))) {
+                // V6AB (RQ-V6-a): the device cannot blit this colour pair (VUID-vkCmdBlitImage-dstImage-02000, e.g. B10G11R11 on
+                // lavapipe): convert with a compute pass instead; leave the transfer layouts first, the pass samples and stores
+                leaveTransfer(a, la, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                leaveTransfer(b, lb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                computeBlit(a, b, src, dst);
+                return;
             } else if (a.aspect == VK_IMAGE_ASPECT_COLOR_BIT && b.aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
                 VkImageBlit.Buffer r = VkImageBlit.calloc(1, s);
                 r.srcSubresource().aspectMask(a.aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
@@ -638,6 +653,71 @@ public abstract class VkPackBackend implements GpuBackend {
         }
         leaveTransfer(a, la, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         leaveTransfer(b, lb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    }
+
+    private final Map<Long, Boolean> formatFeatureOk = new HashMap<>();
+
+    /** V6AB: does the format support the optimal-tiling feature bit (queried once per format and bit) */
+    private boolean formatHas(int format, int bit) {
+        return formatFeatureOk.computeIfAbsent(((long) format << 32) | bit, k -> {
+            try (MemoryStack s = stackPush()) {
+                VkFormatProperties fp = VkFormatProperties.calloc(s);
+                vkGetPhysicalDeviceFormatProperties(phys(), format, fp);
+                return (fp.optimalTilingFeatures() & bit) == bit;
+            }
+        });
+    }
+
+    private final Map<String, Integer> blitPipes = new HashMap<>();
+
+    private static final String BLIT_VS = "#version 450\nvoid main() { int i = gl_VertexIndex; "
+            + "gl_Position = vec4(float(i & 1) * 2.0 - 1.0, float((i >> 1) & 1) * 2.0 - 1.0, 0.0, 1.0); }\n";
+    private static final String BLIT_FS = "#version 450\nlayout(set = 0, binding = 0) uniform U { vec4 dstSize; };\n"
+            + "layout(set = 0, binding = 1) uniform sampler2D srcImg;\nlayout(location = 0) out vec4 col;\n"
+            + "void main() { col = textureLod(srcImg, gl_FragCoord.xy / dstSize.xy, 0.0); }\n";
+
+    /**
+     * V6AB: colour copy/convert/scale by a fullscreen draw (sample src, write dst as a colour attachment) for pairs the
+     * device cannot blit; fenced on both sides because the executor's access tracking only knows transfers here.
+     */
+    private void computeBlit(Img a, Img b, int src, int dst) {
+        boolean srcOk = a.imported != null || a.d.usage().contains("SAMPLED");
+        if (!srcOk || !b.d.usage().contains("COLOR_ATTACHMENT") || b.imported != null) {
+            String note = "blit " + a.d.name() + " -> " + b.d.name() + " skipped: " + b.d.vkFormat() + " has no blit support and no draw fallback here";
+            if (!log.contains(note))
+                log.add(note);
+            return;
+        }
+        String note = "blit " + a.d.name() + " -> " + b.d.name() + ": " + b.d.vkFormat() + " lacks BLIT_DST here, using a fullscreen draw";
+        if (!log.contains(note))
+            log.add(note);
+        int pipe = blitPipes.computeIfAbsent(b.d.vkFormat(), k -> {
+            byte[] vs = spirv(dev.elemore.iroh.gpu.Glsl.compile("engine:blit.vert", BLIT_VS, dev.elemore.iroh.gpu.Glsl.VERTEX));
+            byte[] fs = spirv(dev.elemore.iroh.gpu.Glsl.compile("engine:blit.frag", BLIT_FS, dev.elemore.iroh.gpu.Glsl.FRAGMENT));
+            return createPipeline(new PipelineDesc("engine:blit-" + k, vs, fs, null, List.of(), List.of(k), List.of(),
+                    List.of(new Slot(0, 0, "UNIFORM_BUFFER", "U", "U"), new Slot(0, 1, "SAMPLER", "sampler2D", "srcImg"))));
+        });
+        java.nio.ByteBuffer u = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.nativeOrder());
+        u.putFloat(0, b.d.width()).putFloat(4, b.d.height());
+        fence();
+        draw(new Draw("engine:blit", pipe, new int[]{dst}, new int[]{0, 0, b.d.width(), b.d.height()},
+                Map.of(1, Bind.image(src, "LINEAR_NOMIP")), Map.of(), u.array()));
+        fence();
+    }
+
+    private static byte[] spirv(java.nio.ByteBuffer sp) {
+        byte[] bytes = new byte[sp.remaining()];
+        sp.duplicate().get(bytes);
+        return bytes;
+    }
+
+    /** full memory barrier around the compute blit (the executor's access tracking only knows transfers here) */
+    private void fence() {
+        try (MemoryStack s = stackPush()) {
+            vkCmdPipelineBarrier(cmd(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                    VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT)
+                            .dstAccessMask(VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT), null, null);
+        }
     }
 
     private final Map<Integer, Boolean> depthBlitOk = new HashMap<>();
