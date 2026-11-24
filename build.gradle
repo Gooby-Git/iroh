@@ -1212,3 +1212,14 @@ tasks.register('float16Repro', JavaExec) {
 		useLavapipe(it)
 	}
 }
+
+// F-2: RT feature structs reach vkCreateDevice (old typed-pNext chain flagged, DeviceCaps.linkFeatureChain + RtDeviceFeatures.chain clean). ./gradlew rtDeviceChainRepro ; last line "# rtdevchain PASS|FAIL"
+tasks.register('rtDeviceChainRepro', JavaExec) {
+	group = 'verification'
+	description = 'RT device feature chain on lavapipe with the validation layer (F-2)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.RtDeviceChainRepro'
+	jvmArgs '-Diroh.rt=true', '-Diroh.rt.look=RAY_TRACED', '-Xmx2g'
+	doFirst { useLavapipe(it) }
+}
