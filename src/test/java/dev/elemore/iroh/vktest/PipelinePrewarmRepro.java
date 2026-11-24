@@ -64,9 +64,10 @@ public final class PipelinePrewarmRepro {
             vkDestroyPipelineLayout(dev, plLayout, null);
         }
         for (String e : Float16Repro.ERRORS.subList(0, Math.min(Float16Repro.ERRORS.size(), 3))) System.out.println("  validation (controls, and a sync-validation hazard of the present-style pass): " + e.substring(0, Math.min(e.length(), 160)).replace("\n", " "));
-        boolean ok = errors[0] == 0 && errors[1] == 0 && errors[2] == 0 && errors[3] > 0 && errors[4] > 0;
+        boolean gpuav = "gpuav".equals(System.getProperty("ti.vkval")); // GPU-AV mode (vkval-extra-gate) has core draw-time checks off: the controls cannot fire there
+        boolean ok = errors[0] == 0 && errors[1] == 0 && errors[2] == 0 && (gpuav || (errors[3] > 0 && errors[4] > 0));
         System.out.println("  colour+depth shader-read: " + errors[0] + ", colour+depth present: " + errors[1] + ", colour only: " + errors[2] + " (want 0 each); controls: other depth format " + errors[3]
-                + ", wrong dependency kind " + errors[4] + " (want > 0 each)");
+                + ", wrong dependency kind " + errors[4] + " (want > 0 each in core mode" + (gpuav ? "; gpuav: not required" : "") + ")");
         System.out.println((ok ? "# pipelineprewarm PASS" : "# pipelineprewarm FAIL") + " compatible=" + errors[0] + "/" + errors[1] + "/" + errors[2] + " controls=" + errors[3] + "/" + errors[4]);
         System.exit(ok ? 0 : 1);
     }

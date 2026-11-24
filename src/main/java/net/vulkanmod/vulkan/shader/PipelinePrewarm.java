@@ -42,6 +42,8 @@ public final class PipelinePrewarm {
     private static volatile long lastSave;
     private static volatile Thread worker;
     private static volatile boolean stop;
+    /** the on-disk list has been read (kick ran): until then nothing is saved, or the list written by earlier sessions would be replaced by the few loading-screen states */
+    private static volatile boolean listLoaded;
     private static volatile PrewarmList.Header lastHeader;
 
     private PipelinePrewarm() {}
@@ -106,7 +108,7 @@ public final class PipelinePrewarm {
     /** Writes the list (at most MAX_ENTRIES). Never throws. */
     public static void save() {
         lastSave = System.nanoTime();
-        if (!dirty) return;
+        if (!dirty || !listLoaded) return;
         try {
             PrewarmList.Header h = lastHeader != null ? lastHeader : header();
             lastHeader = h;
@@ -131,11 +133,13 @@ public final class PipelinePrewarm {
             PrewarmList.Loaded loaded = PrewarmList.decode(DiskCache.read(FILE), h);
             if (!loaded.accepted()) {
                 Initializer.LOGGER.info("Iroh: pipeline pre-warm list not used: {}", loaded.reason());
-                known.clear();
-                dirty = true; // rewrite under the current header at the first save
+                listLoaded = true; // what this session recorded replaces the stale list at the first save
+                dirty = true;
                 return;
             }
             known.addAll(loaded.entries());
+            listLoaded = true;
+            dirty = true;
             List<GraphicsPipeline> pipelines = GraphicsPipeline.snapshot();
             if (loaded.entries().isEmpty() || pipelines.isEmpty()) return;
             stop = false;
@@ -144,6 +148,7 @@ public final class PipelinePrewarm {
             worker = t;
             t.start();
         } catch (Throwable t) {
+            worker = null;
             Initializer.LOGGER.warn("Iroh: pipeline pre-warm not started: {}", t.toString());
         }
     }
@@ -222,7 +227,8 @@ public final class PipelinePrewarm {
         Thread t = worker;
         if (t != null) {
             try {
-                t.join(3000);
+                t.join(20_000);
+                if (t.isAlive()) Initializer.LOGGER.error("Iroh: pipeline pre-warm worker still running at shutdown after 20 s");
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
