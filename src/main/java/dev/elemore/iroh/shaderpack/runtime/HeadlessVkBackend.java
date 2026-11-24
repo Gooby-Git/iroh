@@ -389,6 +389,11 @@ public final class HeadlessVkBackend extends VkPackBackend {
     }
 
     @Override
+    protected boolean readbackUsage() {
+        return true;
+    }
+
+    @Override
     public float[] readback(int image) {
         submitWait();
         Img im = img(image);
