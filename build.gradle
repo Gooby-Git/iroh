@@ -70,6 +70,9 @@ dependencies {
 	includeNatives("org.lwjgl:lwjgl-vma")
 	includeNatives("org.lwjgl:lwjgl-shaderc")
 
+	// B2-GATE: asm 9.7.1 (from loader) rejects class file major 69 (bridgeLinkTest reads the built Java 25 jar); 9.10.1 reads it.
+	testImplementation 'org.ow2.asm:asm:9.10.1'
+
 	//MoltenVK
 	include(runtimeOnly("org.lwjgl:lwjgl-vulkan:$lwjglVersion:$macosNatives"))
 	include(runtimeOnly("org.lwjgl:lwjgl-vulkan:$lwjglVersion:$macosArmNatives"))
