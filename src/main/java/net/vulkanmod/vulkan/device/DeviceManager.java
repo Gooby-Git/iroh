@@ -169,7 +169,6 @@ public abstract class DeviceManager {
 
             VkPhysicalDeviceVulkan11Features deviceVulkan11Features = VkPhysicalDeviceVulkan11Features.calloc(stack);
             deviceVulkan11Features.sType$Default();
-            deviceVulkan11Features.shaderDrawParameters(device.isDrawIndirectSupported());
 
             // api 4 (card V-M1): drawIndirectCount when the device has it (Vulkan 1.2 core; Iroh's instance is 1.2)
             VkPhysicalDeviceVulkan12Features deviceVulkan12Features = VkPhysicalDeviceVulkan12Features.calloc(stack);
@@ -185,8 +184,12 @@ public abstract class DeviceManager {
             dev.elemore.iroh.temporal.DeviceCaps.linkFeatureChain(deviceFeatures, deviceVulkan11Features, deviceVulkan12Features);
             deviceFeatures.features().samplerAnisotropy(device.availableFeatures.features().samplerAnisotropy());
             deviceFeatures.features().logicOp(device.availableFeatures.features().logicOp());
-            // TODO: Disable indirect draw option if unsupported.
-            deviceFeatures.features().multiDrawIndirect(device.isDrawIndirectSupported());
+            // P2-3 (RQ-P2D-a): multiDrawIndirect + shaderDrawParameters as before, plus drawIndirectFirstInstance where offered: terrain
+            // indirect commands carry firstInstance = packed section offset (VUID-VkDrawIndexedIndirectCommand-firstInstance-00554),
+            // and so may api 4 multiDrawIndirectCount commands (gl_InstanceIndex per-draw id; int-4c H1C). Without either bit
+            // terrain is drawn directly (IndirectDrawCaps.useTerrainIndirect), whatever the indirectDraw option says.
+            IndirectDrawCaps.apply(device.availableFeatures.features(), device.availableFeatures11, deviceFeatures.features(), deviceVulkan11Features);
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", IndirectDrawCaps.report());
 
             // Must not set line width to anything other than 1.0 if this is not supported
             if (device.availableFeatures.features().wideLines()) {
@@ -205,6 +208,7 @@ public abstract class DeviceManager {
             enabledFeatures = "samplerAnisotropy=" + deviceFeatures.features().samplerAnisotropy()
                     + " logicOp=" + deviceFeatures.features().logicOp()
                     + " multiDrawIndirect=" + deviceFeatures.features().multiDrawIndirect()
+                    + " drawIndirectFirstInstance=" + deviceFeatures.features().drawIndirectFirstInstance()
                     + " wideLines=" + deviceFeatures.features().wideLines()
                     + " shaderDrawParameters=" + deviceVulkan11Features.shaderDrawParameters()
                     + " drawIndirectCount=" + deviceVulkan12Features.drawIndirectCount()

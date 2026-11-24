@@ -69,8 +69,7 @@ public class Device {
 
         vkGetPhysicalDeviceFeatures2(this.physicalDevice, this.availableFeatures);
 
-        if (this.availableFeatures.features().multiDrawIndirect() && this.availableFeatures11.shaderDrawParameters())
-            this.drawIndirectSupported = true;
+        this.drawIndirectSupported = IndirectDrawCaps.multiDrawSupported(this.availableFeatures.features(), this.availableFeatures11);
 
     }
 

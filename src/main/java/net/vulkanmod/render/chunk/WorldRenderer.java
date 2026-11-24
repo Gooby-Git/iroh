@@ -567,7 +567,7 @@ public class WorldRenderer {
         this.minecraft.getProfiler().popPush(() -> "render_" + renderType);
 
         final boolean isTranslucent = terrainRenderType == TerrainRenderType.TRANSLUCENT;
-        final boolean indirectDraw = Initializer.CONFIG.indirectDraw;
+        final boolean indirectDraw = net.vulkanmod.vulkan.device.IndirectDrawCaps.useTerrainIndirect(); // P2-3: option AND device tier (firstInstance)
 
         VRenderSystem.applyMVP(modelView, projection);
         VRenderSystem.setPrimitiveTopologyGL(GL11.GL_TRIANGLES);
