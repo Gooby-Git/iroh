@@ -893,3 +893,19 @@ tasks.register('freshTexRepro', JavaExec) {
 	mainClass = 'dev.elemore.iroh.vktest.FreshTextureLayoutRepro'
 	doFirst { useLavapipe(it) }
 }
+
+// V-4 (td-0fa7b8): SPIR-V Float16 modules vs the device's enabled shaderFloat16. Lavapipe + validation layer, real FSR pipelines
+// (needs iroh-native/natives): old chain / old shim decision flagged, new chain / DeviceCaps.fp16ShadersAllowed clean.
+// ./gradlew float16Repro ; last line "# float16 PASS|FAIL"
+tasks.register('float16Repro', JavaExec) {
+	group = 'verification'
+	description = 'Float16 capability vs enabled shaderFloat16 on lavapipe with the validation layer (old flagged, V-4 clean)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.Float16Repro'
+	jvmArgs '-Diroh.upscale.features=on', '-Xmx3g'
+	doFirst {
+		if (fsrLib.exists()) systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}

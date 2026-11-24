@@ -219,7 +219,7 @@ public class SPIRVUtils {
             var requesting = memASCII(requesting_source);
             var requested = memASCII(requested_source);
 
-            try (MemoryStack stack = MemoryStack.stackPush()) {
+            try {
                 Path path;
 
                 for (String includePath : includePaths) {
@@ -228,9 +228,14 @@ public class SPIRVUtils {
                     if (Files.exists(path)) {
                         byte[] bytes = Files.readAllBytes(path);
 
-                        return ShadercIncludeResult.malloc(stack)
-                                                   .source_name(stack.ASCII(requested))
-                                                   .content(stack.bytes(bytes))
+                        // V-4 (RQ-V3c-b): shaderc reads the result AFTER this callback returns, so it must outlive it: heap, freed by
+                        // ShaderReleaser (a MemoryStack frame is popped on return and was overwritten by nested includes).
+                        ByteBuffer name = memASCII(requested, true);
+                        ByteBuffer content = MemoryUtil.memAlloc(bytes.length);
+                        content.put(bytes).flip();
+                        return ShadercIncludeResult.malloc()
+                                                   .source_name(name)
+                                                   .content(content)
                                                    .user_data(user_data).address();
                     }
                 }
@@ -242,12 +247,17 @@ public class SPIRVUtils {
         }
     }
 
-    //TODO: Don't actually need the Releaser at all, (MemoryStack frees this for us)
-    //But ShaderC won't let us create the Includer without a corresponding Releaser, (so we need it anyway)
+    /** V-4 (RQ-V3c-b): frees what {@link ShaderIncluder} allocated on the heap (name, content, the result struct). */
     private static class ShaderReleaser implements ShadercIncludeResultReleaseI {
 
         @Override
         public void invoke(long user_data, long include_result) {
+            if (include_result == 0L)
+                return;
+            ShadercIncludeResult r = ShadercIncludeResult.create(include_result);
+            MemoryUtil.memFree(r.source_name());
+            MemoryUtil.memFree(r.content());
+            MemoryUtil.nmemFree(include_result);
             //TODO:Maybe dump Shader Compiled Binaries here to a .Misc Diretcory to allow easy caching.recompilation...
         }
     }
