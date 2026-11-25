@@ -798,7 +798,7 @@ tasks.register('fsrMetrics', JavaExec) {
 	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
 	workingDir = projectDir
 	def a = []
-	['dump', 'sweep', 'rcas'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	['dump', 'sweep', 'rcas', 'combo', 'ratio'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
 	if (project.hasProperty('force16')) a << '--force16'
 	args a
 	doFirst {

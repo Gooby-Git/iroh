@@ -53,4 +53,39 @@ public final class FsrTuning {
         for (Key k : Key.values()) if (v[k.id] != k.def) return false;
         return true;
     }
+
+    /** Property prefix for overrides: {@code -Diroh.upscale.fsr.velocityFactor=0.5} (camelCase key name; wins over the mode default). */
+    public static final String PROPERTY_PREFIX = "iroh.upscale.fsr.";
+
+    public static String propertyName(Key k) {
+        StringBuilder b = new StringBuilder(PROPERTY_PREFIX);
+        boolean up = false;
+        for (char c : k.name().toLowerCase(java.util.Locale.ROOT).toCharArray()) {
+            if (c == '_') up = true;
+            else { b.append(up ? Character.toUpperCase(c) : c); up = false; }
+        }
+        return b.toString();
+    }
+
+    /** Measured per-mode defaults (FSR-Q3, knowledge/fsr.md G.7) for a display/render ratio; SDK defaults where no win was measured. */
+    public static FsrTuning modeDefaults(float ratio) {
+        FsrTuning t = new FsrTuning();
+        // Q3 sweep (fsr.md G.7): only SHADING_CHANGE_SCALE showed a win (flat-depth age-1 ghost 0.122 -> 0.068, trail 7 -> 5 px,
+        // static edge / fence / sharpness untouched at every mode). ACCUMULATION_ADDED_PER_FRAME trades RMSE for speed
+        // everywhere (no clean win), VELOCITY_FACTOR / REACTIVENESS_SCALE / MIN_DISOCCLUSION_ACCUMULATION: no measurable
+        // effect on these scenes, so they stay at the SDK defaults. Same value for every ratio (the sweep showed no mode split).
+        t.set(Key.SHADING_CHANGE_SCALE, 4.0f);
+        return t;
+    }
+
+    /** Mode defaults for the ratio, then any -D override (clamped). This is what the adapter applies. */
+    public static FsrTuning forRatio(float ratio) {
+        FsrTuning t = modeDefaults(ratio);
+        for (Key k : Key.values()) {
+            String v = System.getProperty(propertyName(k));
+            if (v == null || v.isBlank()) continue;
+            try { t.set(k, Float.parseFloat(v.trim())); } catch (NumberFormatException ignored) { /* keep the default */ }
+        }
+        return t;
+    }
 }

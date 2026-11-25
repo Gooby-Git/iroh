@@ -22,8 +22,7 @@ import static dev.elemore.iroh.upscaletest.FsrReplay.*;
  * 4 stability     static scene: frame-to-frame flicker (whole image, and 1 px fence lines)
  * 5 sharpness     gradient energy and peak gradient of the edge band vs the reference; overshoot (ringing) %
  * </pre>
- * Options: {@code --force16}, {@code --dump=dir}, {@code --sweep=KEY:v1,v2,..} (prints ghost / fence flicker / edge RMSE per
- * constant value, the Q3 sweep), {@code --rcas=0.2}. Last line {@code # fsrmetrics PASS|FAIL}.
+ * Options: {@code --force16}, {@code --dump=dir}, {@code --sweep=KEY:v1,v2;KEY2:..}, {@code --combo=KEY=v,KEY=v|..}, {@code --ratio=1,2} (the Q3 sweep per mode), {@code --rcas=0.2}. Last line {@code # fsrmetrics PASS|FAIL}.
  * Gate thresholds are regression bars set from the baseline table in knowledge/fsr.md, not quality targets.
  */
 public final class FsrMetrics {
@@ -241,11 +240,17 @@ public final class FsrMetrics {
     static String f(double v) { return String.format(Locale.ROOT, "%.4f", v); }
 
     public static void main(String[] args) throws Exception {
-        String dump = "build/fsrmetrics", sweep = null;
+        String dump = "build/fsrmetrics", sweep = null, combo = null;
         for (String a : args) {
             if (a.equals("--force16")) force16 = true;
             else if (a.startsWith("--dump=")) dump = a.substring(7);
             else if (a.startsWith("--sweep=")) sweep = a.substring(8);
+            else if (a.startsWith("--combo=")) combo = a.substring(8);
+            else if (a.startsWith("--ratio=")) {
+                String[] rs = a.substring(8).split(",");
+                sweepRatios = new float[rs.length]; sweepNames = new String[rs.length];
+                for (int q = 0; q < rs.length; q++) { sweepRatios[q] = Float.parseFloat(rs[q]); sweepNames[q] = "ratio " + rs[q]; }
+            }
             else if (a.startsWith("--rcas=")) rcasArg = Float.parseFloat(a.substring(7));
         }
         StringBuilder rep = new StringBuilder();
@@ -260,7 +265,7 @@ public final class FsrMetrics {
         FsrReplay.rcas = rcasArg;
         System.out.println("device: " + deviceName + "  native: " + FsrNative.version() + (rcasArg > 0 ? "  RCAS " + rcasArg : ""));
         try {
-            if (sweep != null) { runSweep(sweep); System.out.println("# fsrmetrics PASS (sweep)"); System.exit(0); }
+            if (sweep != null || combo != null) { runSweep(sweep, combo); System.out.println("# fsrmetrics PASS (sweep)"); System.exit(0); }
             run(dump);
         } catch (Throwable t) {
             t.printStackTrace(System.out);
@@ -365,18 +370,43 @@ public final class FsrMetrics {
         return b.toString();
     }
 
-    /** --sweep=KEY:v1,v2,..: Q3 sweep. Per value: Native AA edge RMSE + convergence, ghost excess with MVs, fence flicker at 2x. */
-    static void runSweep(String spec) {
-        String[] kv = spec.split(":");
-        FsrTuning.Key key = FsrTuning.Key.valueOf(kv[0]);
-        System.out.println("\n== sweep " + key + " (default " + key.def + ")");
-        System.out.println("value     edgeRMSE(1x)  conv  ghostExcess  trailPx  fenceFlicker(2x)  wholeFlicker(2x)");
-        for (String v : kv[1].split(",")) {
-            FsrTuning t = new FsrTuning().set(key, Float.parseFloat(v));
-            Edge e = staticEdge(1f, t);
-            Ghost g = ghost(true, false, t);
-            Stab s = stability(2f, t);
-            System.out.printf(Locale.ROOT, "%-8s  %s       %2d    %s      %3.0f      %s            %s%n", v, f(e.fin), e.conv, f(g.excess()), g.trailPx, f(s.line), f(s.whole));
+    static float[] sweepRatios = {1f, 1.5f, 1.7f, 2f};
+    static String[] sweepNames = {"Native AA", "Quality 1.5x", "Balanced 1.7x", "Performance 2x"};
+
+    /**
+     * --sweep=KEY:v1,v2,..[;KEY2:w1,..] (each key swept alone) and --combo=KEY=v,KEY=v|KEY=v (one row per '|' item): Q3 sweep.
+     * Per mode (--ratio=1,1.5 narrows) and row: static edge (RMSE final, convergence frames, sharpness, edge flicker),
+     * fence-line + whole-image flicker, and the 2x ghost excess at age 1/2/4 with MVs, flat-depth age 1/2, trail px.
+     */
+    static void runSweep(String sweepSpec, String comboSpec) {
+        java.util.LinkedHashMap<String, FsrTuning> rows = new java.util.LinkedHashMap<>();
+        rows.put("default", new FsrTuning());
+        if (sweepSpec != null) for (String seg : sweepSpec.split(";")) {
+            String[] kv = seg.split(":");
+            FsrTuning.Key key = FsrTuning.Key.valueOf(kv[0]);
+            for (String v : kv[1].split(","))
+                rows.put(key + "=" + v, new FsrTuning().set(key, Float.parseFloat(v)));
+        }
+        if (comboSpec != null) for (String c : comboSpec.split("\\|")) {
+            FsrTuning t = new FsrTuning();
+            for (String a : c.split(",")) { String[] kv = a.split("="); t.set(FsrTuning.Key.valueOf(kv[0]), Float.parseFloat(kv[1])); }
+            rows.put(c.replace("VELOCITY_FACTOR", "VF").replace("REACTIVENESS_SCALE", "RS").replace("SHADING_CHANGE_SCALE", "SC")
+                    .replace("ACCUMULATION_ADDED_PER_FRAME", "AA").replace("MIN_DISOCCLUSION_ACCUMULATION", "MD"), t);
+        }
+        for (int m = 0; m < sweepRatios.length; m++) {
+            System.out.println("\n== sweep, " + sweepNames[m] + " (ratio " + sweepRatios[m] + "): edge/fence at this ratio");
+            System.out.println("row                                         edgeRMSE  conv  sharp  edgeFlick  fenceLine  fenceWhole");
+            for (var e : rows.entrySet()) {
+                Edge ed = staticEdge(sweepRatios[m], e.getValue());
+                Stab s = stability(sweepRatios[m], e.getValue());
+                System.out.printf(Locale.ROOT, "%-42s  %s    %2d   %.3f   %s     %s     %s%n", e.getKey(), f(ed.fin), ed.conv, ed.sharp, f(ed.flick), f(s.line), f(s.whole));
+            }
+        }
+        System.out.println("\n== sweep, ghost (moving square, 2x, fixed scene size): excess err at age 1 / 2 / 4 with MVs, flat depth age 1 / 2, trail px");
+        System.out.println("row                                         age1     age2     age4     flatAge1 flatAge2 trail  flatTrail");
+        for (var e : rows.entrySet()) {
+            Ghost g = ghost(true, false, e.getValue()), gf = ghost(true, true, e.getValue());
+            System.out.printf(Locale.ROOT, "%-42s  %s  %s  %s  %s  %s  %3.0f   %3.0f%n", e.getKey(), f(g.excessAt(0)), f(g.excessAt(1)), f(g.excessAt(2)), f(gf.excessAt(0)), f(gf.excessAt(1)), g.trailPx, gf.trailPx);
         }
     }
 }

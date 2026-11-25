@@ -94,6 +94,8 @@ public final class FsrAdapter implements UpscalerAdapter {
         session.clearFailure();
     }
 
+    private float tunedRatio = -1f;
+
     @Override
     public void dispatch(VkCommandBuffer cmd, MemoryStack stack, Inputs in) {
         int flags = fsrFlags();
@@ -102,6 +104,11 @@ public final class FsrAdapter implements UpscalerAdapter {
         if (up == null) {
             Bilinear.INSTANCE.dispatch(cmd, stack, in);
             return;
+        }
+        float ratio = in.renderW() > 0 ? (float) in.displayW() / in.renderW() : 1f;
+        if (ratio != tunedRatio) {   // Q3: per-mode constant defaults (+ -D overrides), re-applied when the mode / scale changes
+            tunedRatio = ratio;
+            session.setTuning(dev.elemore.iroh.upscale.fsr.FsrTuning.forRatio(ratio));
         }
         // inputs -> SHADER_READ_ONLY for compute; output -> GENERAL (explicit: the helper knows no GENERAL)
         toRead(stack, cmd, in.colour());

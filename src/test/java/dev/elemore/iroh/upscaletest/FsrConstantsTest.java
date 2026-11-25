@@ -38,6 +38,19 @@ public final class FsrConstantsTest {
         }
         System.out.println("native: " + FsrNative.version());
         ck(FsrNative.version().contains("3.1.6"), "version string reports 3.1.6");
+        // Q3: per-mode defaults and -D override (pure Java)
+        for (float r : new float[]{1f, 1.5f, 1.7f, 2f}) {
+            var t = dev.elemore.iroh.upscale.fsr.FsrTuning.forRatio(r);
+            ck(t.get(FsrTuning.Key.SHADING_CHANGE_SCALE) == 4.0f, "mode default shadingChangeScale 4 at ratio " + r);
+            ck(t.get(FsrTuning.Key.VELOCITY_FACTOR) == 1.0f && t.get(FsrTuning.Key.MIN_DISOCCLUSION_ACCUMULATION) == FsrTuning.Key.MIN_DISOCCLUSION_ACCUMULATION.def, "other keys stay SDK default at ratio " + r);
+        }
+        ck(FsrTuning.propertyName(FsrTuning.Key.MIN_DISOCCLUSION_ACCUMULATION).equals("iroh.upscale.fsr.minDisocclusionAccumulation"), "property name camelCase");
+        System.setProperty("iroh.upscale.fsr.velocityFactor", "0.25");
+        System.setProperty("iroh.upscale.fsr.accumulationAddedPerFrame", "9");
+        var ov = dev.elemore.iroh.upscale.fsr.FsrTuning.forRatio(2f);
+        ck(ov.get(FsrTuning.Key.VELOCITY_FACTOR) == 0.25f && ov.get(FsrTuning.Key.ACCUMULATION_ADDED_PER_FRAME) == 1.0f, "-D override applies and clamps");
+        System.clearProperty("iroh.upscale.fsr.velocityFactor");
+        System.clearProperty("iroh.upscale.fsr.accumulationAddedPerFrame");
         for (boolean fp16 : new boolean[]{false, true}) {
             try {
                 run(fp16);
