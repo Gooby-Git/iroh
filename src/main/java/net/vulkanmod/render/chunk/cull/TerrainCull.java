@@ -380,6 +380,7 @@ public final class TerrainCull {
             if (this.compact) { // kept-command statistics, read after this slot's fence
                 VkBufferCopy.Buffer c = VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(base + PARAMS + oRead).size((long) segs * 4);
                 vkCmdCopyBuffer(cmd, this.out.buffer, h.buffer, c);
+                barrier(s, cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
                 this.readbackOff[slot] = base + PARAMS + oRead;
                 this.readbackSegs[slot] = segs;
             }

@@ -474,7 +474,7 @@ public class WorldRenderer {
      */
     private boolean drawWorldLayerCulled(net.vulkanmod.render.chunk.buffer.WorldArena wa, TerrainRenderType t, GraphicsPipeline pipeline,
                                          double camX, double camY, double camZ, int tech) {
-        var tc = terrainCull();
+        var tc = this.terrainCullFailed ? null : terrainCull();
         if (tc == null)
             return false;
         int ox = Mth.floor(camX) >> 4, oz = Mth.floor(camZ) >> 4;
@@ -517,7 +517,14 @@ public class WorldRenderer {
             boolean[] ok = {false};
             var data = this.cullData;
             if (techFrame != 0)
-                net.vulkanmod.vulkan.texture.VulkanImage.endPassRunResume(() -> ok[0] = tc.record(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, f, data, this.cullWriters));
+                net.vulkanmod.vulkan.texture.VulkanImage.endPassRunResume(() -> {
+                    try {
+                        ok[0] = tc.record(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, f, data, this.cullWriters);
+                    } catch (RuntimeException e) { // e.g. device memory for the cull buffers: never worse than the CPU path
+                        this.terrainCullFailed = true;
+                        Initializer.LOGGER.warn("Iroh: GPU terrain cull failed, CPU path draws from now on: {}", e.toString());
+                    }
+                });
             this.cullPrepared = ok[0];
             this.cullPreparedSerial = serial;
             this.cullKeyX = camX; this.cullKeyY = camY; this.cullKeyZ = camZ;
@@ -601,7 +608,7 @@ public class WorldRenderer {
         String s = w == null ? null : w.stats() + ", last layer draws " + this.worldDrawsLast + ", commands " + this.worldCommandsLast
                 + (this.worldWriter.outOfRange + this.worldWriter.orphans > 0 ? ", skipped " + this.worldWriter.outOfRange + "/" + this.worldWriter.orphans : "");
         var tc = this.terrainCull;
-        if (s != null && tc != null && this.cullPrepared) // P2-7b: GPU cull of the last frame (kept = read back two frames later, COUNT tier)
+        if (s != null && tc != null && this.cullPrepared && cullTechniques() != 0) // P2-7b: GPU cull of the last frame (kept = read back two frames later, COUNT tier)
             s += ", gpu cull tech " + this.cullKeyTech + " " + (tc.compact() ? "count" : "fixed") + ": " + tc.segments() + " segments, " + this.cullDrawsLast
                     + " indirect calls (last layer), candidates " + tc.commands()
                     + (tc.keptLast >= 0 ? ", kept " + tc.keptLast + "/" + tc.candidatesLast : "");

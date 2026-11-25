@@ -54,7 +54,9 @@ public class UploadBuffer {
         int bounds = 0;
         if (!this.indexOnly) {
             this.vertexBuffers = new ByteBuffer[QuadFacing.COUNT];
-            boolean scan = net.vulkanmod.render.chunk.cull.SectionCullData.current() != null;
+            // only the compressed 16-byte terrain vertex is scanned (CullBounds decodes int16 / 2048 + 4)
+            boolean scan = net.vulkanmod.render.chunk.cull.SectionCullData.current() != null 
+                    && net.vulkanmod.render.vertex.CustomVertexFormat.compressedLayout(net.vulkanmod.render.PipelineManager.terrainVertexFormat);
 
             for (int i = 0; i < QuadFacing.COUNT; i++) {
                 var bufferBuilder = terrainBuilder.getBufferBuilder(i);

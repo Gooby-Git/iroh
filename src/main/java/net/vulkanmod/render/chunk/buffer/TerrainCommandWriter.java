@@ -91,6 +91,7 @@ public final class TerrainCommandWriter {
     public void beginCull(int originX, int originY, int originZ, int maxDrawCount) {
         begin(false, originX, originY, originZ, maxDrawCount);
         this.cull = true;
+        if (this.words == 0 && this.cap > 0) growWords(this.cap);
     }
 
     /** firstInstance for the section at section coordinates (x, y, z), or -1 when it does not fit */
@@ -264,9 +265,15 @@ public final class TerrainCommandWriter {
     private void grow(int need) {
         int c = Math.max(need, Math.max(4096, this.cap * 2));
         this.cmd = this.cmd == 0 ? MemoryUtil.nmemAlloc((long) c * STRIDE) : MemoryUtil.nmemRealloc(this.cmd, (long) c * STRIDE);
-        this.words = this.words == 0 ? MemoryUtil.nmemAlloc((long) c * 4) : MemoryUtil.nmemRealloc(this.words, (long) c * 4);
-        if (this.cmd == 0 || this.words == 0) throw new OutOfMemoryError("terrain command scratch " + c);
+        if (this.cmd == 0) throw new OutOfMemoryError("terrain command scratch " + c);
+        if (this.cull || this.words != 0) growWords(c); // P2-7b: only writers that ever carried cull words
         this.cap = c;
+    }
+
+    private void growWords(int c) {
+        long w = this.words == 0 ? MemoryUtil.nmemAlloc((long) c * 4) : MemoryUtil.nmemRealloc(this.words, (long) c * 4);
+        if (w == 0) throw new OutOfMemoryError("terrain cull word scratch " + c);
+        this.words = w;
     }
 
     private int runEnd(int r) {
