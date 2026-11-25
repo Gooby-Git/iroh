@@ -73,7 +73,7 @@ public class BuildTask extends ChunkTask {
     }
 
     private CompileResult compile(float camX, float camY, float camZ, BuilderResources builderResources) {
-        CompileResult compileResult = new CompileResult(this.section, true);
+        CompileResult compileResult = new CompileResult(this.section, true, this.originX, this.originY, this.originZ);
 
         BlockPos startBlockPos = new BlockPos(section.xOffset(), section.yOffset(), section.zOffset()).immutable();
         VisGraph visGraph = new VisGraph();

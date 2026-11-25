@@ -35,6 +35,8 @@ for f in "$H"/*.json; do
   python3 -I "$PWD/hw-feature-sanitize.py" "$f"
   # (5) gpuinfo format captures omit extension-only format bits: a profile with VK_KHR_acceleration_structure gets the AS-vertex-buffer bit on the six formats the spec requires it for
   jq 'if (.capabilities.device.extensions|has("VK_KHR_acceleration_structure")) then reduce ("VK_FORMAT_R32G32_SFLOAT","VK_FORMAT_R32G32B32_SFLOAT","VK_FORMAT_R16G16_SFLOAT","VK_FORMAT_R16G16B16A16_SFLOAT","VK_FORMAT_R16G16_SNORM","VK_FORMAT_R16G16B16A16_SNORM") as $k (.; .capabilities.device.formats[$k].VkFormatProperties.bufferFeatures |= ((. // []) + ["VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR"] | unique)) else . end' "$f" > $T/a.json && mv $T/a.json "$f"
+  # (5b) RQ-P27c-a: gpuinfo captures omit the SAMPLED_IMAGE_FILTER_MINMAX bit; a profile with samplerFilterMinmax gets it on R32_SFLOAT (the Hi-Z pyramid format) so the matrix runs the MINMAX path (step 4 still intersects with lavapipe)
+  jq 'if ([.capabilities.device.features[]|select(type=="object" and has("samplerFilterMinmax"))|.samplerFilterMinmax]|any) then .capabilities.device.formats["VK_FORMAT_R32_SFLOAT"].VkFormatProperties.optimalTilingFeatures |= ((. // []) + ["VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT"] | unique) else . end' "$f" > $T/a.json && mv $T/a.json "$f"
   python3 -I "$PWD/hw-fmt-intersect.py" "$f" "$PROBE" >/dev/null   # (4) format features := profile ∩ lavapipe (the layer cannot simulate extra bits: lavapipe lacks BLIT_DST on B10G11R11 and the over-claim made validation flag vkCmdBlitImage)
 done
 rm -rf $T

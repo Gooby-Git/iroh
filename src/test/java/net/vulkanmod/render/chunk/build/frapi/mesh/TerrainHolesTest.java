@@ -84,7 +84,7 @@ public final class TerrainHolesTest {
         check("slope: bucket follows the written (tilted) geometry: " + bucket + " (geometry says " + truth + ")", bucket == truth && truth == QuadFacing.UNDEFINED);
 
         // the camera that loses the face: below the section floor (secY = 0), downhill, far enough to see the slope
-        double cx = 9.0, cy = -0.5, cz = 0.5;
+        double cx = 9.0, cy = -1.5, cz = 0.5; // below the section floor and the 1-block margin of the CPU mask (RQ-P27b-b)
         int mask = QuadFacing.facingMask(cx, cy, cz, 0, 0, 0);
         boolean visible = frontFacing(q, cx, cy, cz);
         boolean drawnFixed = (mask & 1 << bucket.ordinal()) != 0;
@@ -115,6 +115,30 @@ public final class TerrainHolesTest {
         side.pos(3, 1f, 1f, 1f);
         side.lightFace();
         check("untouched east face: bucket X_POS", side.getQuadFacing() == QuadFacing.X_POS);
+
+        // ---- 4. RQ-HOLES-b: a result built for a section's old position is not uploaded after the section was relocated
+        var sec = new net.vulkanmod.render.chunk.RenderSection(0, 0, 64, 0);
+        var res = net.vulkanmod.render.chunk.build.task.CompileResult.forOrigin(sec, true, 0, 64, 0);
+        check("HOLES-b: result of an unmoved section is current", !res.originStale());
+        sec.setOrigin(256, 64, 0); // SectionGrid.moveSection: the slot now stands at the far edge
+        check("HOLES-b: result built before the relocation is stale (dropped, not uploaded into the new slot)", res.originStale());
+        var res2 = net.vulkanmod.render.chunk.build.task.CompileResult.forOrigin(sec, true, 256, 64, 0);
+        check("HOLES-b: result built after the relocation is current", !res2.originStale());
+
+        // ---- 5. RQ-HOLES-c: area rows cover the top section for every dimension height
+        int[][] dims = {{24, -64}, {16, 0}, {24, 0}, {10, 0}, {18, 0}, {26, 0}, {10, 16}, {34, 0}, {8, 0}, {9, 0}, {48, -64}, {10, -32}};
+        boolean allCovered = true, oldFails = false;
+        for (int[] d : dims) {
+            int n = d[0], minY = d[1];
+            int need = ((n - 1) * 16 >> 7) + 1; // getChunkArea: row (y - minY) >> 7 of the top section
+            int rows = net.vulkanmod.render.chunk.ChunkAreaManager.areaRows(n, minY);
+            int relativeHeight = n - (minY >> 4);
+            int old = (relativeHeight & 0x5) == 0 ? relativeHeight >> 3 : (relativeHeight >> 3) + 1;
+            if (rows < need) { allCovered = false; System.out.println("   rows " + rows + " < " + need + " for " + n + " sections, minY " + minY); }
+            if (old < need) { oldFails = true; System.out.println("   (old formula: " + old + " rows < " + need + " for " + n + " sections, minY " + minY + ")"); }
+        }
+        check("HOLES-c: areaRows covers the top section row in every table entry", allCovered);
+        check("HOLES-c: the old formula under-allocated in at least one entry (repro)", oldFails);
 
         System.out.println("# terrainholes " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         if (fail != 0) System.exit(1);
