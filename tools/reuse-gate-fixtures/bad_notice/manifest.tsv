@@ -1,0 +1,2 @@
+source_repo	commit	path	licence	gate1	gate2	gate3	gate4	iroh_path	modification
+Caustica	330acd2	shaders/x.slang	LGPL-3.0-or-later	pass	pass	pass	pass	src/x.glsl	translated to GLSL

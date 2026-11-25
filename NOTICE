@@ -24,3 +24,7 @@ Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (ref
 NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
   this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
   distributed by this project.
+
+Reuse ledger: every third-party file copied or translated into this repository is listed in docs/reuse-manifest.tsv and checked by
+  tools/reuse_gate.py (upstream header, "Derived from" / "Modified by Iroh contributors" line, a line in this NOTICE). NVIDIA NRD is never
+  bundled in a public jar: build.gradle refuses -PbundleNv=true unless -PprivateBuild=true (private local jars only).

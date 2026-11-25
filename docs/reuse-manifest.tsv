@@ -1,0 +1,2 @@
+source_repo	commit	path	licence	gate1	gate2	gate3	gate4	iroh_path	modification
+# one row per copied or translated third-party file (RT-PLAN section 3); checked by tools/reuse_gate.py

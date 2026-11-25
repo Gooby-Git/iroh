@@ -1020,7 +1020,23 @@ tasks.register('nrdNative', Exec) {
 	commandLine a
 }
 def nrdLib = file(project.findProperty('nrdLib') ?: 'iroh-native/natives-nv/linux-x64/libiroh_nrd.so')
-if (project.findProperty('bundleNv') == 'true') jar { from(file('iroh-native/natives-nv')) { into 'natives'; exclude '*.txt' } }
+// RQ-RTPLAN-b / RT-0: NVIDIA NRD must never enter a public jar (RTX SDKs licence 4(e)(iii)). -PbundleNv=true is refused unless
+// the build is explicitly private (-PprivateBuild=true); a private jar carries META-INF/IROH-PRIVATE-NVIDIA and must not be uploaded.
+if (project.findProperty('bundleNv') == 'true') {
+	if (project.findProperty('privateBuild') != 'true') {
+		throw new GradleException('-PbundleNv=true refused: the NVIDIA NRD binary (RTX SDKs licence, clause 4(e)) may not be put into a jar that is, or could become, public. ' +
+			'For a PRIVATE local jar that is never uploaded, add -PprivateBuild=true. See docs/RT-PLAN.md 3.1.')
+	}
+	logger.warn('WARNING: PRIVATE build with the NVIDIA NRD binary bundled; this jar must never be published, released or pushed.')
+	jar {
+		from(file('iroh-native/natives-nv')) { into 'natives'; exclude '*.txt' }
+		from(layout.buildDirectory.dir('private-marker')) { into 'META-INF' }
+		doFirst {
+			def d = layout.buildDirectory.dir('private-marker').get().asFile; d.mkdirs()
+			new File(d, 'IROH-PRIVATE-NVIDIA').text = 'This jar bundles NVIDIA NRD (RTX SDKs licence). Private use only; never redistribute.\n'
+		}
+	}
+}
 
 // P6-0 pure denoiser parts (+ library cross-checks when libiroh_nrd is built): ./gradlew denoiseTest ; last line "# denoise PASS n/n"
 tasks.register('denoiseTest', JavaExec) {
