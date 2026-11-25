@@ -60,6 +60,16 @@ static_assert(offsetof(IrohFsrDispatch, jitterX) == 232 && offsetof(IrohFsrDispa
 static_assert(offsetof(IrohFsrDispatch, sharpness) == 264 && offsetof(IrohFsrDispatch, flags) == 292, "floats");
 static_assert(sizeof(IrohFsrDispatch) == 296, "IrohFsrDispatch");
 
+// FSR-Q6: ffxFsr3UpscalerContextGenerateReactiveMask (the SDK's own colour-difference pass) parameters
+struct IrohReactiveDispatch {   // 128 bytes
+    uint64_t cmdBuf;
+    ImageRef opaque, color, out;   // opaque-only colour, final colour (both read), reactive target (R32_SFLOAT storage, GENERAL)
+    uint32_t renderW, renderH;
+    float scale, cutoff, binaryValue;
+    uint32_t flags;                // FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_*: 1 tonemap, 2 inverse tonemap, 4 threshold, 8 components max
+};
+static_assert(sizeof(IrohReactiveDispatch) == 128, "IrohReactiveDispatch");
+
 namespace {
 
 std::mutex g_msgMutex;
@@ -289,6 +299,7 @@ J(jstring, version)(JNIEnv* env, jclass) {
     return env->NewStringUTF(b);
 }
 J(jint, structSize)(JNIEnv*, jclass) { return (jint)sizeof(IrohFsrDispatch); }
+J(jint, reactiveStructSize)(JNIEnv*, jclass) { return (jint)sizeof(IrohReactiveDispatch); }
 
 J(jint, phaseCount)(JNIEnv*, jclass, jint renderW, jint displayW) {
     return ffxFsr3UpscalerGetJitterPhaseCount(renderW, displayW);
@@ -443,6 +454,31 @@ J(void, dispatch)(JNIEnv* env, jclass, jlong h, jobject buf) {
     { std::lock_guard<std::mutex> l(g_msgMutex); g_messages.clear(); }
     FfxErrorCode e = ffxFsr3UpscalerContextDispatch(c->fsr, &d);
     if (e != FFX_OK) throwFfx(env, "ffxFsr3UpscalerContextDispatch", e);
+}
+
+// FSR-Q6: the SDK's auto-generated reactive mask (|final - opaque-only| scaled, optional threshold) into p.out, records into the same command buffer.
+J(void, generateReactive)(JNIEnv* env, jclass, jlong h, jobject buf) {
+    Ctx* c = (Ctx*)(uintptr_t)h;
+    if (!c) { throwFsr(env, "generateReactive", "null context"); return; }
+    if (env->GetDirectBufferCapacity(buf) < (jlong)sizeof(IrohReactiveDispatch)) { throwFsr(env, "generateReactive", "parameter buffer smaller than reactiveStructSize()"); return; }
+    IrohReactiveDispatch p;
+    memcpy(&p, env->GetDirectBufferAddress(buf), sizeof p);
+    if (!p.cmdBuf) { throwFsr(env, "generateReactive", "null command buffer"); return; }
+    bool ok; std::string err;
+    FfxFsr3UpscalerGenerateReactiveDescription d{};
+    d.commandList = ffxGetCommandListVK((VkCommandBuffer)p.cmdBuf);
+    struct { const ImageRef* r; FfxResource* out; const char* n; } m[] = {
+        {&p.opaque, &d.colorOpaqueOnly, "opaque"}, {&p.color, &d.colorPreUpscale, "color"}, {&p.out, &d.outReactive, "out"}};
+    for (auto& x : m) {
+        if (!x.r->image) { throwFsr(env, "generateReactive", std::string("missing input ") + x.n); return; }
+        *x.out = toFfx(*x.r, ok, err, x.n);
+        if (!ok) { throwFsr(env, "generateReactive", err); return; }
+    }
+    d.renderSize = {p.renderW, p.renderH};
+    d.scale = p.scale; d.cutoffThreshold = p.cutoff; d.binaryValue = p.binaryValue; d.flags = p.flags;
+    { std::lock_guard<std::mutex> l(g_msgMutex); g_messages.clear(); }
+    FfxErrorCode e = ffxFsr3UpscalerContextGenerateReactiveMask(c->fsr, &d);
+    if (e != FFX_OK) throwFfx(env, "ffxFsr3UpscalerContextGenerateReactiveMask", e);
 }
 
 // ---- FfxFsr3UpscalerConfigureUpscaleKey tuning constants (ffxFsr3UpscalerSetConstant). Keys 0..4:

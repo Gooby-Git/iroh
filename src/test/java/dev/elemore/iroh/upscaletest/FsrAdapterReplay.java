@@ -163,6 +163,76 @@ public final class FsrAdapterReplay {
         ck(eS > 0.002, "sharpening changes the picture");
         new File("build/p4-1b").mkdirs();
         FsrReplay.png(last, dw, dh, new File("build/p4-1b/fsr_adapter_rgba8.png"));
+        // FSR-Q6 / FSR-Q7: the three reactive mask modes through the session (the calls TemporalRuntime / FsrAdapter make):
+        // iroh = own mask image, sdk = FsrSession.generateReactive into an R32F image then dispatch with it, voxel = own mask (the
+        // classes are made by velocity.comp: golden-tested in velocityGoldenTest, the session sees only the R8 images)
+        {
+            FsrUpscaler cur = session.ensure(flags, shim, rw, rh, dw, dh);
+            ck(cur != null, "reactive modes: a live context");
+            int su = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            FsrReplay.Img opq = FsrReplay.image(VK_FORMAT_R8G8B8A8_UNORM, rw, rh, su, VK_IMAGE_ASPECT_COLOR_BIT);
+            FsrReplay.Img rI = FsrReplay.image(VK_FORMAT_R8_UNORM, rw, rh, su, VK_IMAGE_ASPECT_COLOR_BIT);
+            FsrReplay.Img gI = FsrReplay.image(VK_FORMAT_R32_SFLOAT, rw, rh, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            FsrReplay.Buf bo2 = FsrReplay.buffer((long) rw * rh * 4), br = FsrReplay.buffer((long) rw * rh);
+            ByteBuffer ob2 = MemoryUtil.memByteBuffer(bo2.ptr(), (int) bo2.size()).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer rb2 = MemoryUtil.memByteBuffer(br.ptr(), (int) br.size());
+            boolean gInit = false;
+            for (String mode : new String[]{"iroh", "sdk", "voxel"}) {
+                boolean fine = true;
+                float[] lastOut = null;
+                for (int t = 0; t < 6; t++) {
+                    float[] j = js.offset(t);
+                    FsrReplay.SYNTH.render(t, j[0], j[1], c, d, m);
+                    ByteBuffer cb = MemoryUtil.memByteBuffer(bc.ptr(), (int) bc.size()).order(ByteOrder.LITTLE_ENDIAN);
+                    ByteBuffer db = MemoryUtil.memByteBuffer(bd.ptr(), (int) bd.size()).order(ByteOrder.LITTLE_ENDIAN);
+                    ByteBuffer mb = MemoryUtil.memByteBuffer(bm.ptr(), (int) bm.size()).order(ByteOrder.LITTLE_ENDIAN);
+                    for (int i = 0; i < rw * rh; i++) {
+                        int px = 0, po = 0;
+                        for (int k = 0; k < 4; k++) { px |= FsrReplay.clamp(k == 3 ? 1f : c[i * 4 + k]) << (8 * k); po |= FsrReplay.clamp(k == 3 ? 1f : c[i * 4 + k] * 0.6f) << (8 * k); }
+                        cb.putInt(i * 4, px); ob2.putInt(i * 4, po);
+                        db.putFloat(i * 4, d[i]);
+                        mb.putShort(i * 4, Float.floatToFloat16(m[i * 2] / rw));
+                        mb.putShort(i * 4 + 2, Float.floatToFloat16(m[i * 2 + 1] / rh));
+                        rb2.put(i, (byte) (mode.equals("sdk") ? 0 : Math.min(255, (int) (255 * 4 * Math.abs(c[i * 4] - c[i * 4] * 0.6f)))));
+                    }
+                    FsrReplay.begin();
+                    FsrReplay.upload(color, bc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    FsrReplay.upload(depth, bd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    FsrReplay.upload(mvI, bm, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    FsrReplay.upload(opq, bo2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    FsrReplay.upload(rI, br, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    ImageRef colRef = new ImageRef(color.image(), color.format(), rw, rh, color.usage(), ImageRef.LAYOUT_SHADER_READ_ONLY);
+                    ImageRef react = new ImageRef(rI.image(), rI.format(), rw, rh, rI.usage(), ImageRef.LAYOUT_SHADER_READ_ONLY);
+                    if (mode.equals("sdk")) {
+                        if (!gInit) { FsrReplay.layout(gI, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); gInit = true; }
+                        else FsrReplay.layout(gI, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+                        boolean ok = session.generateReactive(FsrReplay.cmd.address(),
+                                new ImageRef(opq.image(), opq.format(), rw, rh, opq.usage(), ImageRef.LAYOUT_SHADER_READ_ONLY), colRef,
+                                new ImageRef(gI.image(), gI.format(), rw, rh, gI.usage(), ImageRef.LAYOUT_GENERAL), rw, rh, dev.elemore.iroh.upscale.fsr.ReactiveGen.DEFAULT);
+                        fine &= ok;
+                        FsrReplay.layout(gI, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        react = new ImageRef(gI.image(), gI.format(), rw, rh, gI.usage(), ImageRef.LAYOUT_SHADER_READ_ONLY);
+                    }
+                    UpscaleInputs in = FsrSession.inputs(FsrReplay.cmd.address(), colRef,
+                            new ImageRef(depth.image(), depth.format(), rw, rh, depth.usage(), ImageRef.LAYOUT_SHADER_READ_ONLY),
+                            new ImageRef(mvI.image(), mvI.format(), rw, rh, mvI.usage(), ImageRef.LAYOUT_SHADER_READ_ONLY),
+                            react, ImageRef.NONE,
+                            new ImageRef(out.image(), out.format(), dw, dh, out.usage(), ImageRef.LAYOUT_GENERAL),
+                            new FsrSession.Numbers(j[0], j[1], rw, rh, rw, rh, dw, dh, 0f, 16.6f, 0.05f, Float.MAX_VALUE, (float) Math.toRadians(70), false));
+                    session.dispatch(in);
+                    FsrReplay.download(out, bo);
+                    FsrReplay.submitWait();
+                    if (t == 5) {
+                        lastOut = new float[dw * dh * 4];
+                        ByteBuffer ob = MemoryUtil.memByteBuffer(bo.ptr(), (int) bo.size());
+                        for (int i = 0; i < lastOut.length; i++) lastOut[i] = (ob.get(i) & 0xFF) / 255f;
+                    }
+                }
+                ck(fine && lastOut != null && FsrReplay.finite(lastOut), "reactive mode " + mode + ": 6 frames dispatch without error, output finite" + (mode.equals("voxel") ? " (own mask images: the classes come from velocity.comp)" : ""));
+            }
+            String rm = session.drainMessages();
+            if (!rm.isEmpty()) System.out.println("FFX messages (reactive modes):\n" + rm);
+        }
         session.closeNow();
         deferred.forEach(Runnable::run);
         ck(counted[0] == 0, "after close nothing is counted");

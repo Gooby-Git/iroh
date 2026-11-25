@@ -117,6 +117,15 @@ public final class FsrSession {
         }
     }
 
+    /** FSR-Q6: records the SDK reactive-mask pass into {@code cmd} on the live context (call after {@link #ensure}); no-op without a context. */
+    public boolean generateReactive(long cmd, dev.elemore.iroh.upscale.ImageRef opaque, dev.elemore.iroh.upscale.ImageRef colour,
+                                    dev.elemore.iroh.upscale.ImageRef out, int renderW, int renderH, dev.elemore.iroh.upscale.fsr.ReactiveGen g) {
+        if (up == null)
+            return false;
+        up.generateReactive(cmd, opaque, colour, out, renderW, renderH, g);
+        return true;
+    }
+
     /** The five FSR tuning constants (SetConstant), applied to the live context at the next dispatch and to every later one. */
     public void setTuning(FsrTuning t) {
         for (FsrTuning.Key k : FsrTuning.Key.values())

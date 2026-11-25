@@ -32,6 +32,7 @@ public final class FsrMetrics {
     static boolean force16;
     static float rcasArg;
     static String rcasSweep;
+    static boolean reactiveSweep;
 
     // ---------------------------------------------------------------- scene: a diagonal edge, optional 1 px fence lines
     static float signX = -1, signY = -1;   // scene sampling sign (-1 = the shipped / SDK convention, see FsrReplay.JSX)
@@ -254,6 +255,7 @@ public final class FsrMetrics {
             }
             else if (a.startsWith("--rcas=")) rcasArg = Float.parseFloat(a.substring(7));
             else if (a.startsWith("--rcassweep=")) rcasSweep = a.substring(12);
+            else if (a.equals("--reactive=sweep")) reactiveSweep = true;
         }
         StringBuilder rep = new StringBuilder();
         try {
@@ -267,6 +269,7 @@ public final class FsrMetrics {
         FsrReplay.rcas = rcasArg;
         System.out.println("device: " + deviceName + "  native: " + FsrNative.version() + (rcasArg > 0 ? "  RCAS " + rcasArg : ""));
         try {
+            if (reactiveSweep) { FsrReactiveMetrics.sweep(); System.out.println("# fsrmetrics PASS (reactive sweep)"); System.exit(0); }
             if (rcasSweep != null) { runRcasSweep(rcasSweep); System.out.println("# fsrmetrics PASS (rcas sweep)"); System.exit(0); }
             if (sweep != null || combo != null) { runSweep(sweep, combo); System.out.println("# fsrmetrics PASS (sweep)"); System.exit(0); }
             run(dump);
@@ -275,6 +278,7 @@ public final class FsrMetrics {
             System.out.println("# fsrmetrics FAIL " + t);
             System.exit(1);
         }
+        FsrReactiveMetrics.section();   // FSR-Q6/Q7: reactive mask modes on ghost-trail scenes
         System.out.println("# fsrmetrics " + (fails == 0 ? "PASS" : "FAIL " + fails + " checks"));
         System.exit(fails == 0 ? 0 : 1);
     }

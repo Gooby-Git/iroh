@@ -7,7 +7,7 @@ import dev.elemore.iroh.natives.NativeLib;
  * means "unavailable" with a reason string the UI shows.
  */
 public final class NativeLoader {
-    private static final NativeLib LIB = new NativeLib("iroh.fsr.lib", "iroh_fsr", () -> FsrNative.structSize() == FsrDispatchStruct.SIZE ? 0 : 1);
+    private static final NativeLib LIB = new NativeLib("iroh.fsr.lib", "iroh_fsr", () -> FsrNative.structSize() == FsrDispatchStruct.SIZE && FsrNative.reactiveStructSize() == FsrDispatchStruct.REACTIVE_SIZE ? 0 : 1);
 
     private NativeLoader() {}
 

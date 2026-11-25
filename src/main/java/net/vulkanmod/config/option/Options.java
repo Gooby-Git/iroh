@@ -192,7 +192,7 @@ public abstract class Options {
                 new OptionBlock("", new Option<?>[]{look}),
                 new OptionBlock("", new Option<?>[]{toOption(IrohOptions.UPSCALER), toOption(IrohOptions.UPSCALE_QUALITY),
                         toOption(IrohOptions.UPSCALE_SHARPNESS), toOption(IrohOptions.UPSCALE_MIP_MODE),
-                        toOption(IrohOptions.UPSCALE_MIP_BIAS), fg})};
+                        toOption(IrohOptions.UPSCALE_MIP_BIAS), toOption(IrohOptions.UPSCALE_REACTIVE), fg})};
     }
 
     /** RT <-> Navidson: needs the hardware for RT and both looks built; Navidson alone is not a choice yet either. */

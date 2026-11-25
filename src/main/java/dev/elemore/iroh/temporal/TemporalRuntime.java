@@ -62,8 +62,8 @@ public final class TemporalRuntime {
     private static UpscalerAdapter adapter;
     private static VelocityPass velocityPass;
     /** render-size inputs; all null while off */
-    private static VulkanImage velocityImage, sceneDepth, mergedDepth, reactive, transparency, opaqueColour, opaqueDepth;
-    private static boolean haveSceneDepth, haveOpaque;
+    private static VulkanImage velocityImage, sceneDepth, mergedDepth, reactive, transparency, opaqueColour, opaqueDepth, phaseDepth, reactiveSdk;
+    private static boolean haveSceneDepth, haveOpaque, havePhase;
     private static boolean warnedNoVelocity;
     private static long lastFrameNanos;
     private static float frameTimeMs = 16.7f, partialTick;
@@ -165,7 +165,7 @@ public final class TemporalRuntime {
         if (!TemporalFrame.ACTIVE || !inGameRender || TemporalFrame.IN_WORLD)
             return;
         partialTick = entityPartialTick;
-        haveSceneDepth = haveOpaque = false;
+        haveSceneDepth = haveOpaque = havePhase = false;
         MainPass mp = Renderer.getInstance().getMainPass();
         try {
             if (mp instanceof DefaultMainPass dmp && dmp.beginWorld(TemporalFrame.renderW, TemporalFrame.renderH))
@@ -206,6 +206,25 @@ public final class TemporalRuntime {
             return;
         }
         haveOpaque = dmp.copyWorld(opaqueColour, opaqueDepth);
+    }
+
+    /**
+     * WorldRenderEvents.AFTER_TRANSLUCENT (via WorldStages), Voxel-Aware reactive mode only (FSR-Q7): a depth copy after the
+     * translucent terrain, tripwire and particles, before clouds and weather. Together with the opaque copy and the scene depth
+     * it tells which draw phase wrote a pixel (VoxelMask). One extra pass split + a 4 B/px copy per frame in this mode.
+     */
+    public static void onAfterTranslucent() {
+        if (!velocityFrame() || !haveOpaque || TemporalFrame.reactiveMode != dev.elemore.iroh.upscale.ReactiveMode.VOXEL
+                || !(Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp))
+            return;
+        try {
+            phaseDepth = ensure(phaseDepth, TemporalFrame.renderW, TemporalFrame.renderH, Vulkan.getDefaultDepthFormat(),
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "phase depth (after translucent)");
+        } catch (RuntimeException e) {
+            offForSession("upscale", e); // as onAfterEntities
+            return;
+        }
+        havePhase = dmp.copyWorld(null, phaseDepth);
     }
 
     /** GameRenderer.renderLevel: the INVOKE of RenderSystem.clear right before renderItemInHand (depth-only clear) */
@@ -316,11 +335,11 @@ public final class TemporalRuntime {
     private static void deactivate() {
         if (Renderer.getInstance().getMainPass() instanceof DefaultMainPass dmp)
             dmp.releaseWorld();
-        for (VulkanImage i : new VulkanImage[]{velocityImage, sceneDepth, mergedDepth, reactive, transparency, opaqueColour, opaqueDepth})
+        for (VulkanImage i : new VulkanImage[]{velocityImage, sceneDepth, mergedDepth, reactive, transparency, opaqueColour, opaqueDepth, phaseDepth, reactiveSdk})
             if (i != null)
                 i.free();
-        velocityImage = sceneDepth = mergedDepth = reactive = transparency = opaqueColour = opaqueDepth = null;
-        haveSceneDepth = haveOpaque = false;
+        velocityImage = sceneDepth = mergedDepth = reactive = transparency = opaqueColour = opaqueDepth = phaseDepth = reactiveSdk = null;
+        haveSceneDepth = haveOpaque = havePhase = false;
         if (adapter != null) {
             adapter.destroy();
             adapter = null;
@@ -361,6 +380,25 @@ public final class TemporalRuntime {
                     VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT);
             VulkanImage.transitionLayout(stack, cmd, worldColor, worldColor.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+            // FSR-Q6: the SDK's own reactive pass (colour is GENERAL now, the opaque copy SHADER_READ_ONLY); falls back to the own pass without a context
+            boolean sdk = false;
+            if (TemporalFrame.reactiveMode == dev.elemore.iroh.upscale.ReactiveMode.SDK && haveOpaque && a instanceof FsrAdapter fa) {
+                try {
+                    reactiveSdk = ensure(reactiveSdk, rw, rh, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "FSR generated reactive mask R32F");
+                    VulkanImage.transitionLayout(stack, cmd, reactiveSdk, reactiveSdk.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, cs, VK_ACCESS_SHADER_WRITE_BIT);
+                    sdk = fa.generateReactive(cmd, worldColor, opaqueColour, reactiveSdk, displayColor.width, displayColor.height, dev.elemore.iroh.upscale.fsr.ReactiveGen.DEFAULT);
+                    VulkanImage.transitionLayout(stack, cmd, reactiveSdk, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            cs, VK_ACCESS_SHADER_WRITE_BIT, cs, VK_ACCESS_SHADER_READ_BIT);
+                    // the SDK pass read colour in GENERAL: order it before the velocity pass's debug-view write to the same image
+                    org.lwjgl.vulkan.VkMemoryBarrier.Buffer mb = org.lwjgl.vulkan.VkMemoryBarrier.calloc(1, stack).sType$Default()
+                            .srcAccessMask(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+                    vkCmdPipelineBarrier(cmd, cs, cs, 0, mb, null, null);
+                } catch (RuntimeException e) {
+                    sdk = false;
+                    FeatureFailures.record("reactiveSdk", e, "the SDK reactive mask failed: the own colour-difference mask is used");
+                }
+            }
             OUTS[0] = velocityImage; OUTS[1] = mergedDepth; OUTS[2] = reactive; OUTS[3] = transparency; // INT-2: no per-frame array
             for (VulkanImage out : OUTS)
                 VulkanImage.transitionLayout(stack, cmd, out, out.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
@@ -376,6 +414,9 @@ public final class TemporalRuntime {
             f.tcView = transparency.getImageView();
             f.opaqueColourView = haveOpaque ? opaqueColour.getImageView() : 0L;
             f.opaqueDepthView = haveOpaque ? opaqueDepth.getImageView() : 0L;
+            f.voxel = TemporalFrame.reactiveMode == dev.elemore.iroh.upscale.ReactiveMode.VOXEL;
+            f.phaseDepthView = f.voxel && havePhase ? phaseDepth.getImageView() : 0L;
+            f.sdkReactiveView = sdk ? reactiveSdk.getImageView() : 0L;
             f.width = rw;
             f.height = rh;
             f.mode = TemporalFrame.debugMode;
@@ -413,7 +454,7 @@ public final class TemporalRuntime {
                 frameTimeMs, TemporalFrame.cameraNear, Float.MAX_VALUE, TemporalFrame.fovY, TemporalFrame.reset,
                 ran && haveOpaque ? reactive : null, ran ? transparency : null, sharp));
         TemporalFrame.frameDone();
-        haveSceneDepth = haveOpaque = false;
+        haveSceneDepth = haveOpaque = havePhase = false;
     }
 
     /** The bilinear null upscaler: src (render size) -> dst (display size), both GL row order, so no flip. */

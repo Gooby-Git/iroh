@@ -31,6 +31,8 @@ public final class UpscaleSwitches {
     public static final String VIEWPORT_FIX = "iroh.upscale.viewportFix";
     /** off | on | auto: enable the FSR device features at device creation (auto = when iroh.upscale.mode is set at launch) */
     public static final String FEATURES = "iroh.upscale.features";
+    /** FSR-Q6/Q7: iroh | sdk | voxel (own colour diff | FSR auto-generated mask | voxel-aware classes) */
+    public static final String REACTIVE_MODE = "iroh.upscale.reactiveMode";
     /** off | velocity | reactive | depth | jitter */
     public static final String DEBUG_VIEW = "iroh.debug.view";
 
@@ -98,6 +100,8 @@ public final class UpscaleSwitches {
                     }, v -> "ok"));
             DebugSwitches.register(new Switch(MIP_MODE, "pixelart", "auto mip bias rule: pixelart (formula + 0.5, foliage clamped) | formula (AMD log2(render/display) - 1) | off",
                     DebugSwitches.oneOf("pixelart", "formula", "off"), v -> "ok"));
+            DebugSwitches.register(new Switch(REACTIVE_MODE, dev.elemore.iroh.upscale.ReactiveMode.DEFAULT.key, "reactive mask source: " + dev.elemore.iroh.upscale.ReactiveMode.keys(),
+                    DebugSwitches.oneOf("iroh", "sdk", "voxel"), v -> "ok"));
             DebugSwitches.register(new Switch(VELOCITY, "auto", "camera velocity pass: auto | on | off",
                     DebugSwitches.oneOf("auto", "on", "off"), v -> "ok"));
             DebugSwitches.register(new Switch(VIEWPORT_FIX, "on", "map display-size viewports of mods to the render target in the world phase",

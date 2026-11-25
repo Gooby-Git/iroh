@@ -31,15 +31,19 @@ public final class VelocityPass {
     public static final String SHADER = "/assets/iroh/shaders/temporal/velocity.comp";
     public static final int MAX_OBJECTS = 64, OBJECT_FLOATS = 24, OBJECT_BYTES = OBJECT_FLOATS * 4;
     static final int UBO_SLOT = 512, SSBO_SLOT = MAX_OBJECTS * OBJECT_BYTES;
-    public static final int F_SEPARATE = 1, F_MASKS = 2, F_HAND = 4;
+    public static final int F_SEPARATE = 1, F_MASKS = 2, F_HAND = 4, F_SDK = 8, F_VOXEL = 16, F_PHASE = 32;
 
     /** Everything one dispatch needs. Views: 0 = absent where allowed (see {@link #record}). */
     public static final class Frame {
         public long endDepthView, sceneDepthView, velocityView, colourView, mergedDepthView, reactiveView, tcView,
-                opaqueColourView, opaqueDepthView;
+                opaqueColourView, opaqueDepthView,
+                phaseDepthView, sdkReactiveView;   // 0 = absent (FSR-Q7 / FSR-Q6)
         public int width, height, mode;
         public Matrix4dc reproject, handReproject, invCurPR;
         public float jitterNdcX, jitterNdcY, jitterPxX, jitterPxY;
+        /** FSR-Q7 voxel classes (VoxelMask.Params defaults); used when voxel is set */
+        public boolean voxel;
+        public dev.elemore.iroh.upscale.VoxelMask.Params vox = dev.elemore.iroh.upscale.VoxelMask.Params.DEFAULT;
         public float reactiveScale = 4f, reactiveMax = 0.9f, tcTranslucent = 0.8f, reactiveOnTranslucent = 0.5f, tcHand = 0.3f;
         /** packed objects: per object lo.xyz, tc, hi.xyz, 0, toPrevClip (16, column major) */
         public float[] objects = new float[0];
@@ -60,6 +64,7 @@ public final class VelocityPass {
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
             VkDescriptorSetLayoutBinding.Buffer b = VkDescriptorSetLayoutBinding.calloc(types.length, stack);
             for (int i = 0; i < types.length; i++)
@@ -71,7 +76,7 @@ public final class VelocityPass {
             pipelineLayout = pl.get(0);
 
             VkDescriptorPoolSize.Buffer ps = VkDescriptorPoolSize.calloc(4, stack);
-            ps.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4 * this.frames);
+            ps.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(6 * this.frames);
             ps.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(5 * this.frames);
             ps.get(2).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(this.frames);
             ps.get(3).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(this.frames);
@@ -164,7 +169,9 @@ public final class VelocityPass {
         int slot = Math.floorMod(frame, frames);
         long set = sets[slot];
         boolean separate = f.sceneDepthView != 0, masks = f.opaqueColourView != 0 && f.opaqueDepthView != 0;
-        int flags = (separate ? F_SEPARATE : 0) | (masks ? F_MASKS : 0) | (f.handReproject != null ? F_HAND : 0);
+        boolean sdk = masks && !f.voxel && f.sdkReactiveView != 0, phase = masks && f.voxel && f.phaseDepthView != 0;
+        int flags = (separate ? F_SEPARATE : 0) | (masks ? F_MASKS : 0) | (f.handReproject != null ? F_HAND : 0)
+                | (sdk ? F_SDK : 0) | (masks && f.voxel ? F_VOXEL : 0) | (phase ? F_PHASE : 0);
         writeParams(mapped, slot * UBO_SLOT, f, flags);
         int n = Math.min(f.objectCount, MAX_OBJECTS);
         int so = frames * UBO_SLOT + slot * SSBO_SLOT;
@@ -172,7 +179,7 @@ public final class VelocityPass {
             mapped.putFloat(so + i * 4, f.objects[i]);
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkWriteDescriptorSet.Buffer w = VkWriteDescriptorSet.calloc(11, stack);
+            VkWriteDescriptorSet.Buffer w = VkWriteDescriptorSet.calloc(13, stack);
             int R = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, G = VK_IMAGE_LAYOUT_GENERAL;
             img(stack, w, 0, set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, f.endDepthView, R);
             img(stack, w, 1, set, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, f.velocityView, G);
@@ -188,6 +195,9 @@ public final class VelocityPass {
             // without masks the opaque inputs are never read; bind valid stand-ins (colour in GENERAL, the scene depth)
             img(stack, w, 9, set, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, masks ? f.opaqueColourView : f.colourView, masks ? R : G);
             img(stack, w, 10, set, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, masks ? f.opaqueDepthView : (separate ? f.sceneDepthView : f.endDepthView), R);
+            long od = masks ? f.opaqueDepthView : (separate ? f.sceneDepthView : f.endDepthView);
+            img(stack, w, 11, set, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, phase ? f.phaseDepthView : od, R);   // stand-in: any depth sampler
+            img(stack, w, 12, set, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sdk ? f.sdkReactiveView : masks ? f.opaqueColourView : f.colourView, sdk || masks ? R : G);
             vkUpdateDescriptorSets(device, w, null);
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, f.mode != 0 ? debugPipeline : pipeline);
@@ -203,7 +213,7 @@ public final class VelocityPass {
         w.get(i).sType$Default().dstSet(set).dstBinding(binding).descriptorType(type).descriptorCount(1).pImageInfo(d);
     }
 
-    /** std140 Params block (velocity.comp): 3 mat4, vec4 jitter, ivec4 info, ivec4 counts, vec4 maskA, vec4 maskB. */
+    /** std140 Params block (velocity.comp): 3 mat4, vec4 jitter, ivec4 info, ivec4 counts, vec4 maskA, maskB, maskC, maskD. */
     static void writeParams(ByteBuffer b, int o, Frame f, int flags) {
         mat(b, o, f.reproject);
         mat(b, o + 64, f.handReproject != null ? f.handReproject : new org.joml.Matrix4d());
@@ -213,6 +223,9 @@ public final class VelocityPass {
         b.putInt(o + 224, Math.min(f.objectCount, MAX_OBJECTS)).putInt(o + 228, 0).putInt(o + 232, 0).putInt(o + 236, 0);
         b.putFloat(o + 240, f.reactiveScale).putFloat(o + 244, f.reactiveMax).putFloat(o + 248, f.tcTranslucent).putFloat(o + 252, f.reactiveOnTranslucent);
         b.putFloat(o + 256, f.tcHand).putFloat(o + 260, 0).putFloat(o + 264, 0).putFloat(o + 268, 0);
+        var v = f.vox;
+        b.putFloat(o + 272, v.scaleA()).putFloat(o + 276, v.maxA()).putFloat(o + 280, v.tcA()).putFloat(o + 284, 0);
+        b.putFloat(o + 288, v.scaleB()).putFloat(o + 292, v.maxB()).putFloat(o + 296, v.tcB()).putFloat(o + 300, v.scaleOther());
     }
 
     private static void mat(ByteBuffer b, int o, Matrix4dc m) {

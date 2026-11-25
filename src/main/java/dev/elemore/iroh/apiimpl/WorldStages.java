@@ -38,7 +38,11 @@ public final class WorldStages {
             if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD) // P4-1b: opaque copy for the reactive / T&C masks
                 dev.elemore.iroh.temporal.TemporalRuntime.onAfterEntities();
         });
-        WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_TRANSLUCENT));
+        WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> {
+            if (dev.elemore.iroh.temporal.TemporalFrame.IN_WORLD) // FSR-Q7: phase depth copy (Voxel-Aware reactive mode only)
+                dev.elemore.iroh.temporal.TemporalRuntime.onAfterTranslucent();
+            FrameHooks.dispatch(FrameStage.AFTER_TRANSLUCENT);
+        });
         WorldRenderEvents.LAST.register(ctx -> FrameHooks.dispatch(FrameStage.AFTER_WEATHER));
         WorldRenderEvents.END.register(ctx -> {
             // P3-4: the Navidson pack path (default off: one volatile read)

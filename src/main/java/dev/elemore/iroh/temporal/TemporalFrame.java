@@ -35,6 +35,8 @@ public final class TemporalFrame {
     /** FSR-Q5: the bias of alpha-tested (cutout) pipelines: clamped toward 0 so foliage and fences keep their edges */
     public static float cutoutBias;
     public static boolean velocityOn;
+    /** FSR-Q6/Q7: where the reactive mask comes from this frame */
+    public static dev.elemore.iroh.upscale.ReactiveMode reactiveMode = dev.elemore.iroh.upscale.ReactiveMode.DEFAULT;
     public static boolean viewportFix;
     /** 0 none, 1 velocity, 2 reactive, 3 depth, 4 jitter (velocity.comp modes) */
     public static int debugMode;
@@ -150,6 +152,7 @@ public final class TemporalFrame {
             case "jitter" -> 4;
             default -> 0;
         };
+        reactiveMode = dev.elemore.iroh.upscale.ReactiveMode.parse(DebugSwitches.getOr(UpscaleSwitches.REACTIVE_MODE, dev.elemore.iroh.upscale.ReactiveMode.DEFAULT.key));
         String v = DebugSwitches.getOr(UpscaleSwitches.VELOCITY, "auto");
         velocityOn = v.equals("on") || (v.equals("auto") && (upscalerWantsVelocity || debugMode != 0));
         String vf = DebugSwitches.getOr(UpscaleSwitches.VIEWPORT_FIX, "on");
@@ -311,6 +314,15 @@ public final class TemporalFrame {
         lastCameraType = lastDimension = null;
         lastScreen = haveContext = false;
         reproject.identity();
+    }
+
+    /**
+     * FSR-Q67: terrain.fsh's per-fragment foliage clamp. In the pass with alpha cutoff 0.5 (cutout_mipped merged into the solid
+     * pass by uniqueOpaqueLayer) fragments with alpha &lt; 1 (leaf, grass, fence edges) are sampled again with this extra bias,
+     * which cancels the sampler's negative bias; 0 everywhere else (the 0.1 cutout and translucent passes are handled per pipeline / left alone).
+     */
+    public static float foliageMipClamp(float alphaCutout) {
+        return MIP_ON && IN_WORLD && alphaCutout >= 0.3f ? -mipBias : 0f;
     }
 
     /** FSR-Q5: the world-phase LOD bias for a pipeline's samplers (cutout pipelines get the clamped bias). */

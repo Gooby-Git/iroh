@@ -30,6 +30,8 @@ layout(binding = 4, std140) uniform Params {
     ivec4 counts;  // x object count
     vec4 maskA;    // x reactive scale, y reactive max, z T&C translucent surface, w reactive weight on translucent surfaces
     vec4 maskB;    // x T&C hand
+    vec4 maskC;    // FSR-Q7 voxel mask, band A (translucent terrain, tripwire, particles): x reactive scale, y reactive max, z T&C, w unused
+    vec4 maskD;    // band B (clouds, weather): x reactive scale, y reactive max, z T&C; w = other (no depth write) reactive scale
 } pc;
 struct Obj { vec4 lo; vec4 hi; mat4 toPrevClip; }; // lo.w = T&C value for the object's pixels
 layout(binding = 5, std430) readonly buffer Objects { Obj obj[]; };
@@ -38,8 +40,10 @@ layout(binding = 7, r8) uniform writeonly image2D reactiveImg;
 layout(binding = 8, r8) uniform writeonly image2D tcImg;
 layout(binding = 9) uniform sampler2D opaqueColourTex;
 layout(binding = 10) uniform sampler2D opaqueDepthTex;
+layout(binding = 11) uniform sampler2D phaseDepthTex;   // FSR-Q7: depth copy at WorldRenderEvents.AFTER_TRANSLUCENT (F_PHASE)
+layout(binding = 12) uniform sampler2D sdkReactiveTex;  // FSR-Q6: the SDK's generated reactive mask, R32F (F_SDK)
 
-const int F_SEPARATE = 1, F_MASKS = 2, F_HAND = 4;
+const int F_SEPARATE = 1, F_MASKS = 2, F_HAND = 4, F_SDK = 8, F_VOXEL = 16, F_PHASE = 32;
 
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
@@ -86,14 +90,33 @@ void main() {
 
     float reactive = 0.0;
     if ((flags & F_MASKS) != 0 && !hand) {
-        vec3 cur = imageLoad(colourImg, p).rgb;
-        vec3 opq = texelFetch(opaqueColourTex, p, 0).rgb;
-        vec3 d = abs(cur - opq);
-        reactive = min(pc.maskA.y, pc.maskA.x * max(d.r, max(d.g, d.b)));
         float od = texelFetch(opaqueDepthTex, p, 0).r;
-        if (sceneRaw < od - 1e-7) {     // a translucent surface wrote depth in front of the opaque scene
+        bool front = sceneRaw < od - 1e-7;      // a translucent surface wrote depth in front of the opaque scene
+        float dm;
+        if ((flags & F_SDK) != 0) {
+            dm = 0.0;                           // reactive = the SDK pass output (FSR-Q6), same weighting as the own pass
+            reactive = min(pc.maskA.y, texelFetch(sdkReactiveTex, p, 0).r);
+        } else {
+            vec3 d = abs(imageLoad(colourImg, p).rgb - texelFetch(opaqueColourTex, p, 0).rgb);
+            dm = max(d.r, max(d.g, d.b));
+            reactive = min(pc.maskA.y, pc.maskA.x * dm);
+        }
+        if ((flags & F_VOXEL) != 0) {
+            // FSR-Q7 voxel-aware mask: class by WHICH draw phase wrote the depth (opaque copy -> AFTER_TRANSLUCENT copy -> end)
+            float ph = (flags & F_PHASE) != 0 ? texelFetch(phaseDepthTex, p, 0).r : od;
+            float diff = dm;                                                   // voxel and sdk are exclusive: F_SDK is never set here
+            if (front && (flags & F_PHASE) != 0 && sceneRaw < ph - 1e-7) {   // band B: clouds, weather
+                reactive = min(pc.maskD.y, pc.maskD.x * diff);
+                tc = max(tc, pc.maskD.z);
+            } else if (front) {                                                // band A: translucent terrain, tripwire, particles
+                reactive = min(pc.maskC.y, pc.maskC.x * diff);
+                tc = max(tc, pc.maskC.z);
+            } else {                                                           // drawn after the copy without writing depth
+                reactive = min(pc.maskA.y, pc.maskD.w * diff);
+            }
+        } else if (front) {
             tc = max(tc, pc.maskA.z);
-            reactive *= pc.maskA.w;     // it has its own depth and motion: lean on T&C, not reactivity
+            reactive *= pc.maskA.w;             // it has its own depth and motion: lean on T&C, not reactivity
         }
     }
     imageStore(reactiveImg, p, vec4(reactive));

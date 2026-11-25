@@ -79,6 +79,18 @@ public final class FsrUpscaler implements Upscaler {
         FsrNative.dispatch(ctx, params);
     }
 
+    private final ByteBuffer reactiveParams = FsrDispatchStruct.allocateReactive();
+
+    /**
+     * FSR-Q6: the SDK's auto-generated reactive mask: out = clamp-ish(scale * |colour - opaque|) (see {@link ReactiveGen}), recorded into
+     * {@code cmd} before the dispatch that reads {@code out}. opaque + colour SHADER_READ_ONLY, out R32_SFLOAT with STORAGE usage in GENERAL.
+     */
+    public void generateReactive(long cmd, ImageRef opaque, ImageRef colour, ImageRef out, int renderW, int renderH, ReactiveGen g) {
+        if (ctx == 0) throw new FsrException("generateReactive on a closed FsrUpscaler");
+        FsrDispatchStruct.writeReactive(reactiveParams, cmd, opaque, colour, out, renderW, renderH, g.scale(), g.cutoff(), g.binaryValue(), g.flags());
+        FsrNative.generateReactive(ctx, reactiveParams);
+    }
+
     /** Sets one tuning constant (clamped by the SDK); returns the stored value. */
     public float setConstant(FsrTuning.Key key, float value) {
         if (ctx == 0) throw new FsrException("setConstant on a closed FsrUpscaler");

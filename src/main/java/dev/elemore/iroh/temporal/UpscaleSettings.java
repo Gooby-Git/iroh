@@ -32,6 +32,21 @@ public final class UpscaleSettings {
         MipMode(String key) { this.key = key; }
     }
 
+    /** FSR-Q6/Q7 reactive mask row: BASIC = Iroh's colour difference, AUTO = FSR's Auto-Generated mask, VOXEL = Voxel-Aware Custom Mask */
+    public enum ReactiveMask {
+        BASIC("iroh"), AUTO("sdk"), VOXEL("voxel");
+        public final String key;
+        ReactiveMask(String key) { this.key = key; }
+    }
+
+    static ReactiveMask parseReactive(String s) {
+        try {
+            return ReactiveMask.valueOf(s);
+        } catch (RuntimeException e) {
+            return ReactiveMask.BASIC;
+        }
+    }
+
     static MipMode parseMip(String s) {
         try {
             return MipMode.valueOf(s);
@@ -70,6 +85,7 @@ public final class UpscaleSettings {
         DebugSwitches.set(UpscaleSwitches.MIP_MODE, mm.key);
         DebugSwitches.set(UpscaleSwitches.MIP_BIAS, mm == MipMode.MANUAL
                 ? String.format(Locale.ROOT, "%.2f", Math.max(-50, Math.min(0, c.upscaleMipBias)) / 10f) : "auto");
+        DebugSwitches.set(UpscaleSwitches.REACTIVE_MODE, parseReactive(c.upscaleReactiveMask).key);
         DebugSwitches.set(UpscaleSwitches.MODE, q.mode.key);
     }
 

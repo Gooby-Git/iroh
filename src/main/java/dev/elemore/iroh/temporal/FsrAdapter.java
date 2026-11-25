@@ -96,6 +96,21 @@ public final class FsrAdapter implements UpscalerAdapter {
 
     private float tunedRatio = -1f;
 
+    /**
+     * FSR-Q6: records the SDK's auto-generated reactive mask (|colour - opaque| scaled by {@code g}) into {@code out}
+     * (R32_SFLOAT, STORAGE, GENERAL) ahead of the velocity pass, which folds it into the R8 reactive mask. {@code colour}
+     * must be in GENERAL or SHADER_READ_ONLY (the layout it is in NOW), {@code opaque} SHADER_READ_ONLY.
+     * Returns false (caller falls back to the own colour-difference pass) when FSR has no context.
+     */
+    public boolean generateReactive(VkCommandBuffer cmd, VulkanImage colour, VulkanImage opaque, VulkanImage out, int displayW, int displayH,
+                                    dev.elemore.iroh.upscale.fsr.ReactiveGen g) {
+        int flags = fsrFlags();
+        int shim = DeviceCaps.fp16ShadersAllowed() ? 0 : FsrUpscaler.NO_FP16;
+        if (session.ensure(flags, shim, colour.width, colour.height, displayW, displayH) == null)
+            return false;
+        return session.generateReactive(cmd.address(), ref(opaque), ref(colour), ref(out), colour.width, colour.height, g);
+    }
+
     @Override
     public void dispatch(VkCommandBuffer cmd, MemoryStack stack, Inputs in) {
         int flags = fsrFlags();

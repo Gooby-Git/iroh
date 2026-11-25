@@ -13,6 +13,10 @@ public final class FsrNative {
 
     public static native String version();
     public static native int structSize();
+    /** FSR-Q6: size of the generateReactive parameter block (self-check against {@link FsrDispatchStruct#REACTIVE_SIZE}) */
+    public static native int reactiveStructSize();
+    /** FSR-Q6: ffxFsr3UpscalerContextGenerateReactiveMask, recorded into the command buffer named by the block */
+    public static native void generateReactive(long ctx, ByteBuffer params);
     public static native int phaseCount(int renderW, int displayW);
     public static native float[] jitter(int index, int phaseCount);
     public static native float upscaleRatio(int mode);

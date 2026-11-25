@@ -58,6 +58,8 @@ public class Config {
     public int upscaleSharpness = -10;
     /** FSR-Q5: PIXEL_ART (default) | FORMULA | MANUAL | OFF: how the world texture LOD bias is derived */
     public String upscaleMipMode = "PIXEL_ART";
+    /** FSR-Q6/Q7 reactive mask source: BASIC (own colour diff) | AUTO (FSR auto-generated) | VOXEL (voxel-aware layers) */
+    public String upscaleReactiveMask = "BASIC";
     /** FSR-Q5: the bias of MANUAL in tenths of a level, -50 .. 0 */
     public int upscaleMipBias = -10;
 

@@ -264,6 +264,7 @@ public final class IrohOptions {
     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Quality> UPSCALE_QUALITY;
     public static final Opt<Integer> UPSCALE_SHARPNESS;
     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.MipMode> UPSCALE_MIP_MODE;
+    public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.ReactiveMask> UPSCALE_REACTIVE;
     public static final Opt<Integer> UPSCALE_MIP_BIAS;
 
     // ---- stored by vanilla, shown on the screen ----
@@ -449,6 +450,17 @@ public final class IrohOptions {
                 .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.sharpnessReason(config));
         UPSCALE_MIP_MODE.applier = v -> {
             config.upscaleMipMode = v.name();
+            dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
+        };
+        UPSCALE_REACTIVE = enumOpt("upscaleReactiveMask", Category.SHADERS, dev.elemore.iroh.temporal.UpscaleSettings.ReactiveMask.class,
+                dev.elemore.iroh.temporal.UpscaleSettings.ReactiveMask.BASIC,
+                c -> parse(dev.elemore.iroh.temporal.UpscaleSettings.ReactiveMask.class, c.upscaleReactiveMask, dev.elemore.iroh.temporal.UpscaleSettings.ReactiveMask.BASIC),
+                (c, v) -> c.upscaleReactiveMask = v.name());
+        UPSCALE_REACTIVE.name("iroh.options.upscaleReactive").tooltip("iroh.options.upscaleReactive.tooltip")
+                .label(v -> Component.translatable("iroh.options.upscaleReactive." + v.name().toLowerCase()))
+                .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.sharpnessReason(config));
+        UPSCALE_REACTIVE.applier = v -> {
+            config.upscaleReactiveMask = v.name();
             dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
         };
         UPSCALE_MIP_BIAS = integer("upscaleMipBias", Category.SHADERS, -10, c -> c.upscaleMipBias, (c, v) -> c.upscaleMipBias = v);

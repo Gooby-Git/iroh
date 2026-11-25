@@ -199,8 +199,8 @@ public final class VelocityGoldenTest {
         return best;
     }
 
-    static Img dImg, hImg, vImg, cImg, mImg, rImg, tImg, ocImg, odImg;
-    static Buf dUp, hUp, cUp, ocUp, odUp, vOut, cOut, mOut, rOut, tOut;
+    static Img dImg, hImg, vImg, cImg, mImg, rImg, tImg, ocImg, odImg, pImg, sImg;
+    static Buf dUp, hUp, cUp, ocUp, odUp, pUp, sUp, vOut, cOut, mOut, rOut, tOut;
 
     static float f16(Buf b, int i, int c) { return Float.float16ToFloat(b.map().getShort(i * 4 + c * 2)); }
     static float r8(Buf b, int i) { return (b.map().get(i) & 0xFF) / 255f; }
@@ -262,6 +262,8 @@ public final class VelocityGoldenTest {
         dImg = image(VK_FORMAT_R32_SFLOAT, SR);
         hImg = image(VK_FORMAT_R32_SFLOAT, SR);
         odImg = image(VK_FORMAT_R32_SFLOAT, SR);
+        pImg = image(VK_FORMAT_R32_SFLOAT, SR);   // FSR-Q7 phase depth
+        sImg = image(VK_FORMAT_R32_SFLOAT, SR);   // FSR-Q6 SDK reactive
         ocImg = image(VK_FORMAT_R8G8B8A8_UNORM, SR);
         vImg = image(VK_FORMAT_R16G16_SFLOAT, ST);
         cImg = image(VK_FORMAT_R8G8B8A8_UNORM, ST | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -269,27 +271,31 @@ public final class VelocityGoldenTest {
         rImg = image(VK_FORMAT_R8_UNORM, ST);
         tImg = image(VK_FORMAT_R8_UNORM, ST);
         int n4 = W * H * 4;
-        dUp = buffer(n4); hUp = buffer(n4); cUp = buffer(n4); ocUp = buffer(n4); odUp = buffer(n4);
+        pUp = buffer(n4); sUp = buffer(n4); dUp = buffer(n4); hUp = buffer(n4); cUp = buffer(n4); ocUp = buffer(n4); odUp = buffer(n4);
         vOut = buffer(n4); cOut = buffer(n4); mOut = buffer(n4); rOut = buffer(W * H); tOut = buffer(W * H);
 
         // hand-only end depth: a block of hand texels in the lower right at depth 0.2, everything else cleared to 1.0
         boolean[] isHand = new boolean[W * H];
         // masks: the opaque copy differs from the final colour in a "particles" rectangle (no depth: reactive) and a
         // "water" rectangle where a translucent surface also wrote depth in front of the opaque scene (T&C)
-        boolean[] particles = new boolean[W * H], water = new boolean[W * H];
+        boolean[] particles = new boolean[W * H], water = new boolean[W * H], weather = new boolean[W * H];
         for (int y = 0; y < H; y++)
             for (int x = 0; x < W; x++) {
                 int i = y * W + x;
                 isHand[i] = x >= W - 30 && y < 20;
                 particles[i] = x >= 4 && x < 24 && y >= 30 && y < 46 && !isHand[i];
                 water[i] = x >= 40 && x < 60 && y >= 2 && y < 12 && !isHand[i] && depth[i] < 0.9999f;
+                weather[i] = x >= 60 && x < 80 && y >= 2 && y < 12 && !isHand[i] && depth[i] < 0.9999f;   // clouds / weather: drawn after the phase copy
                 dUp.map().putFloat(i * 4, depth[i]);
                 hUp.map().putFloat(i * 4, isHand[i] ? 0.2f : 1.0f);
-                odUp.map().putFloat(i * 4, water[i] ? Math.min(1f, depth[i] + 0.0005f) : depth[i]); // opaque behind the water
+                float odv = water[i] ? Math.min(1f, depth[i] + 0.0005f) : weather[i] ? Math.min(1f, depth[i] + 0.001f) : depth[i];
+                odUp.map().putFloat(i * 4, odv);                                                         // opaque behind the water / weather
+                pUp.map().putFloat(i * 4, weather[i] ? Math.min(1f, depth[i] + 0.0005f) : water[i] ? depth[i] : odv);         // phase copy: weather not drawn yet
+                sUp.map().putFloat(i * 4, 0.6f);                                                         // a constant SDK reactive value
                 cUp.map().putInt(i * 4, 0xFF808080);                                                    // final colour: grey
-                ocUp.map().putInt(i * 4, particles[i] || water[i] ? 0xFF000000 | 0x202020 : 0xFF808080); // opaque copy
+                ocUp.map().putInt(i * 4, particles[i] || water[i] || weather[i] ? 0xFF000000 | 0x202020 : 0xFF808080); // opaque copy
             }
-        upload(dImg, dUp); upload(hImg, hUp); upload(odImg, odUp); upload(ocImg, ocUp);
+        upload(dImg, dUp); upload(hImg, hUp); upload(odImg, odUp); upload(ocImg, ocUp); upload(pImg, pUp); upload(sImg, sUp);
 
         VelocityPass vp = new VelocityPass(device, 2);
         Matrix4d m = TemporalMath.reprojection(prPrev, prCur, camCur[0] - camPrev[0], camCur[1] - camPrev[1], camCur[2] - camPrev[2], new Matrix4d());
@@ -386,7 +392,7 @@ public final class VelocityGoldenTest {
         for (int i = 0; i < W * H; i++) {
             if (particles[i]) rPart = Math.min(rPart, r8(rOut, i));
             else if (water[i]) { tWater = Math.min(tWater, r8(tOut, i)); rWater = Math.max(rWater, r8(rOut, i)); }
-            else if (!isHand[i]) rElse = Math.max(rElse, r8(rOut, i));
+            else if (!isHand[i] && !weather[i]) rElse = Math.max(rElse, r8(rOut, i));
         }
         System.out.printf("masks: reactive particles min %.3f, elsewhere max %.3f; water T&C min %.3f reactive max %.3f%n", rPart, rElse, tWater, rWater);
         check("reactive ~0.9 where only colour changed (particles, weather, clouds)", Math.abs(rPart - 0.9) < 0.01);
@@ -396,6 +402,47 @@ public final class VelocityGoldenTest {
         for (int i = 0; i < W * H; i++) if (isHand[i]) handMask &= r8(rOut, i) == 0 && Math.abs(r8(tOut, i) - f.tcHand) < 0.01f;
         check("hand: reactive 0, T&C tcHand", handMask);
         writePng(cOut, "reactive-debug.png");
+
+        // 4b. FSR-Q6 SDK mode: reactive = the SDK pass image (constant 0.6), halved in front of the opaque depth, 0 on the hand
+        f.mode = 0;
+        sdkOn = true;
+        run(vp, f, true, true);
+        sdkOn = false;
+        double rs = 1, rsWater = 1; boolean sdkHand = true;
+        for (int i = 0; i < W * H; i++) {
+            if (isHand[i]) sdkHand &= r8(rOut, i) == 0;
+            else if (water[i] || weather[i]) rsWater = Math.min(rsWater, Math.abs(r8(rOut, i) - 0.3));
+            else rs = Math.min(rs, Math.abs(r8(rOut, i) - 0.6));
+        }
+        check("sdk mode: reactive = the SDK value (0.6) where nothing is in front", rs < 0.01);
+        check("sdk mode: halved (0.3) in front of the opaque depth, T&C 0.8", rsWater < 0.01);
+        check("sdk mode: hand reactive 0", sdkHand);
+
+        // 4c. FSR-Q7 voxel mode, no phase copy: pixels in front of the opaque depth are band A, the rest "other"
+        f.voxel = true;
+        run(vp, f, true, true);
+        double pa = 0, wa = 0, ta = 1;
+        for (int i = 0; i < W * H; i++) {
+            if (particles[i]) pa = r8(rOut, i);
+            else if (water[i]) { wa = r8(rOut, i); ta = Math.min(ta, r8(tOut, i)); }
+        }
+        var vp0 = dev.elemore.iroh.upscale.VoxelMask.Params.DEFAULT;
+        float diff = (0x80 - 0x20) / 255f;
+        check("voxel (no phase): drawn without depth = other class scale (" + vp0.scaleOther() + " x diff)", Math.abs(pa - Math.min(0.9f, vp0.scaleOther() * diff)) < 0.01);
+        check("voxel (no phase): in front = band A reactive scale " + vp0.scaleA() + ", T&C " + vp0.tcA(), Math.abs(wa - Math.min(vp0.maxA(), vp0.scaleA() * diff)) < 0.01 && Math.abs(ta - vp0.tcA()) < 0.01);
+
+        // 4d. voxel with the phase copy: weather pixels (phase depth behind the scene depth) are band B
+        phaseOn = true;
+        run(vp, f, true, true);
+        phaseOn = false;
+        double rwB = 1, twB = 1, rwA = 0;
+        for (int i = 0; i < W * H; i++) {
+            if (weather[i]) { rwB = Math.min(rwB, Math.abs(r8(rOut, i) - Math.min(vp0.maxB(), vp0.scaleB() * diff))); twB = Math.min(twB, Math.abs(r8(tOut, i) - vp0.tcB())); }
+            else if (water[i]) rwA = Math.max(rwA, Math.abs(r8(rOut, i) - Math.min(vp0.maxA(), vp0.scaleA() * diff)));
+        }
+        check("voxel (phase): clouds / weather pixels take band B reactive and T&C", rwB < 0.01 && twB < 0.01);
+        check("voxel (phase): translucent terrain stays band A", rwA < 0.01);
+        f.voxel = false;
 
         // 5. static camera: debug view black everywhere (Proctor U3 offline analogue)
         f.reproject = new Matrix4d();
@@ -446,6 +493,7 @@ public final class VelocityGoldenTest {
     }
 
     static int frameNo;
+    static boolean phaseOn, sdkOn;
 
     /** One dispatch: scene depth as end depth (or the hand-only end depth + scene copy), optional masks; downloads all outputs. */
     static void run(VelocityPass vp, VelocityPass.Frame f, boolean hand, boolean masks) {
@@ -458,6 +506,8 @@ public final class VelocityGoldenTest {
         f.tcView = tImg.view();
         f.opaqueColourView = masks ? ocImg.view() : 0L;
         f.opaqueDepthView = masks ? odImg.view() : 0L;
+        f.phaseDepthView = phaseOn ? pImg.view() : 0L;
+        f.sdkReactiveView = sdkOn ? sImg.view() : 0L;
         try (MemoryStack s = MemoryStack.stackPush()) {
             VkCommandBuffer cb = beginCb(s);
             int top = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, tr = VK_PIPELINE_STAGE_TRANSFER_BIT, cs = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;

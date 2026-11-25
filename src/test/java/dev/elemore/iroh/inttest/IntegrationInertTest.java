@@ -189,7 +189,7 @@ public final class IntegrationInertTest {
         expect.put("GlState.viewport", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
         expect.put("GlState.applyScissor", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
         expect.put("UniformSlots.jittered", "{TemporalFrame.IN_WORLD=1, TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}");
-        expect.put("WorldStages.register", "{FrameHooks.dispatch=7, FrameHooks.setInWorld=2, FrameHooks.setWorld=1, PackRuntime.onAfterSky=1, PackRuntime.onBeforeEntities=1, PackRuntime.onWorldEnd=1, PackRuntime.onWorldStart=1, TemporalFrame.IN_WORLD=2, TemporalRuntime.onAfterEntities=1, TemporalRuntime.onWorldStart=1}");
+        expect.put("WorldStages.register", "{FrameHooks.dispatch=7, FrameHooks.setInWorld=2, FrameHooks.setWorld=1, PackRuntime.onAfterSky=1, PackRuntime.onBeforeEntities=1, PackRuntime.onWorldEnd=1, PackRuntime.onWorldStart=1, TemporalFrame.IN_WORLD=3, TemporalRuntime.onAfterEntities=1, TemporalRuntime.onAfterTranslucent=1, TemporalRuntime.onWorldStart=1}");
         expect.put("IrohRenderScaleGameM.*", "{TemporalRuntime.chainHeight=1, TemporalRuntime.chainWidth=1, TemporalRuntime.onBeforeGui=1, TemporalRuntime.onBeforeHandClear=1, TemporalRuntime.onHand=1, TemporalRuntime.onRenderHead=1, TemporalRuntime.onRenderLevelHead=1, TemporalRuntime.onRenderTail=1}");
         expect.put("IrohRenderScaleLevelM.*", "{TemporalRuntime.chainHeight=1, TemporalRuntime.chainWidth=1}");
         expect.put("SlowFramesGameRendererM.*", "{SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");

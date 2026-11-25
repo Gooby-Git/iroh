@@ -9,6 +9,21 @@ import java.nio.ByteOrder;
 /** Writer for IrohFsrDispatch (296 bytes, little endian); offsets mirror iroh_fsr_jni.cpp, checked by NativeLoader via structSize(). */
 final class FsrDispatchStruct {
     static final int SIZE = 296;
+    /** IrohReactiveDispatch: cmdBuf, opaque, color, out (ImageRef x3), renderW/H, scale, cutoff, binaryValue, flags */
+    static final int REACTIVE_SIZE = 128;
+
+    static ByteBuffer allocateReactive() {
+        return ByteBuffer.allocateDirect(REACTIVE_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+    }
+
+    static void writeReactive(ByteBuffer b, long cmd, ImageRef opaque, ImageRef color, ImageRef out, int rw, int rh, float scale, float cutoff, float binary, int flags) {
+        b.clear();
+        b.putLong(0, cmd);
+        image(b, 8, opaque);
+        image(b, 40, color);
+        image(b, 72, out);
+        b.putInt(104, rw).putInt(108, rh).putFloat(112, scale).putFloat(116, cutoff).putFloat(120, binary).putInt(124, flags);
+    }
 
     static ByteBuffer allocate() {
         return ByteBuffer.allocateDirect(SIZE).order(ByteOrder.LITTLE_ENDIAN);
