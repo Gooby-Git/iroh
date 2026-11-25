@@ -1086,6 +1086,7 @@ tasks.register('timelineSyncRepro', JavaExec) {
 	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
 	ext.syncval = true
 	ext.syncHeuristic = true
+	doFirst { useLavapipe(it) }
 }
 
 // P2-11 (L8): the pre-warm worker's compatible render pass vs a renderer-style pass, lavapipe + validation (control: other depth format flagged)
