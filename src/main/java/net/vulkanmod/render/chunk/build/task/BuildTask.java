@@ -129,7 +129,11 @@ public class BuildTask extends ChunkTask {
         }
 
         TerrainBuilder trasnlucentTerrainBuilder = bufferBuilders.builder(TerrainRenderType.TRANSLUCENT);
-        if (trasnlucentTerrainBuilder.getBufferBuilder(QuadFacing.UNDEFINED.ordinal()).getVertices() > 0) {
+        int translucentVertices = trasnlucentTerrainBuilder.getBufferBuilder(QuadFacing.UNDEFINED.ordinal()).getVertices();
+        // R-P213BC: past 16384 quads the section stays unsorted (no sort state, so no re-sort task is ever scheduled for it)
+        if (translucentVertices > 0 && !TerrainBuilder.canSort(translucentVertices))
+            TerrainBuilder.warnUnsorted(translucentVertices);
+        if (translucentVertices > 0 && TerrainBuilder.canSort(translucentVertices)) {
             trasnlucentTerrainBuilder.setupQuadSortingPoints();
             trasnlucentTerrainBuilder.setupQuadSorting(camX - (float) startBlockPos.getX(), camY - (float) startBlockPos.getY(), camZ - (float) startBlockPos.getZ());
             compileResult.transparencyState = trasnlucentTerrainBuilder.getSortState();
