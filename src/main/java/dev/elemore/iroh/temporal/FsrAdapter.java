@@ -132,8 +132,9 @@ public final class FsrAdapter implements UpscalerAdapter {
         toRead(stack, cmd, in.reactive());
         toRead(stack, cmd, in.transparency());
         VulkanImage out = in.output();
+        // P2-12 (RQ-APP1-a): source = the stages/writes of the layout the output rests in, not ALL_COMMANDS
         VulkanImage.transitionLayout(stack, cmd, out, out.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                VulkanImage.stagesOfLayout(out.getCurrentLayout()), VulkanImage.writeAccessOfLayout(out.getCurrentLayout()),
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
 
         UpscaleInputs u = FsrSession.inputs(cmd.address(), ref(in.colour()), ref(in.depth()), ref(in.velocity()),
@@ -153,7 +154,7 @@ public final class FsrAdapter implements UpscalerAdapter {
         if (img == null || img.getCurrentLayout() == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
             return;
         VulkanImage.transitionLayout(stack, cmd, img, img.getCurrentLayout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                VulkanImage.stagesOfLayout(img.getCurrentLayout()), VulkanImage.writeAccessOfLayout(img.getCurrentLayout()),
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
 

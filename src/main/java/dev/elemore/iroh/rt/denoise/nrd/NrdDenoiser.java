@@ -1,5 +1,7 @@
 package dev.elemore.iroh.rt.denoise.nrd;
 
+import dev.elemore.iroh.perf.PipelineStats;
+
 import dev.elemore.iroh.rt.denoise.*;
 import dev.elemore.iroh.upscale.ImageRef;
 import org.lwjgl.PointerBuffer;
@@ -122,7 +124,9 @@ public final class NrdDenoiser implements Denoiser {
                 long module = lb.get(0);
                 VkComputePipelineCreateInfo.Buffer pci = VkComputePipelineCreateInfo.calloc(1, s).sType$Default().layout(pipelineLayout);
                 pci.stage().sType$Default().stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(s.UTF8("main"));
+                long pipeT0 = System.nanoTime(); // P2-11
                 int r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, pci, null, lb);
+                PipelineStats.created(PipelineStats.Kind.COMPUTE, System.nanoTime() - pipeT0);
                 vkDestroyShaderModule(dev, module, null);
                 if (r != VK_SUCCESS) throw new NrdException("vkCreateComputePipelines " + desc.pipelines[i].identifier() + ": VkResult " + r);
                 pipelines[i] = lb.get(0);

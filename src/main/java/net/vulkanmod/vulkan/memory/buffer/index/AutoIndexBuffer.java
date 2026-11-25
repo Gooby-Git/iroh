@@ -27,34 +27,38 @@ public class AutoIndexBuffer {
         this.vertexCount = vertexCount;
         ByteBuffer buffer;
 
-        IndexBuffer.IndexType indexType = IndexBuffer.IndexType.UINT16;
+        IndexBuffer.IndexType indexType = indexTypeFor(this.drawType, vertexCount);
 
-        if (vertexCount > U16_MAX_VERTEX_COUNT &&
-            (this.drawType == DrawType.QUADS || this.drawType == DrawType.LINES))
-        {
-            indexType = IndexBuffer.IndexType.UINT32;
-        }
-
-        switch (this.drawType) {
-            case QUADS -> {
-                if (indexType == IndexBuffer.IndexType.UINT16)
-                    buffer = genQuadIndices(vertexCount);
-                else {
-                    buffer = genIntQuadIndices(vertexCount);
-                }
-            }
-            case TRIANGLE_FAN -> buffer = genTriangleFanIndices(vertexCount);
-            case TRIANGLE_STRIP -> buffer = genTriangleStripIndices(vertexCount);
-            case LINES -> buffer = genLinesIndices(vertexCount);
-            case DEBUG_LINE_STRIP -> buffer = genDebugLineStripIndices(vertexCount);
-            default -> throw new IllegalArgumentException("Unsupported drawType: %s".formatted(this.drawType));
-        }
+        buffer = generate(this.drawType, indexType, vertexCount);
 
         int size = buffer.capacity();
         this.indexBuffer = new IndexBuffer(size, MemoryTypes.GPU_MEM, indexType);
         this.indexBuffer.copyBuffer(buffer, buffer.remaining());
 
         MemoryUtil.memFree(buffer);
+    }
+
+    /** Index width of an auto buffer sized for {@code vertexCount} vertices: QUADS and LINES go 32-bit past 16 bits. */
+    public static IndexBuffer.IndexType indexTypeFor(DrawType drawType, int vertexCount) {
+        return vertexCount > U16_MAX_VERTEX_COUNT && (drawType == DrawType.QUADS || drawType == DrawType.LINES)
+                ? IndexBuffer.IndexType.UINT32 : IndexBuffer.IndexType.UINT16;
+    }
+
+    /**
+     * The index data for {@code vertexCount} vertices of {@code drawType}, in {@code indexType}'s width (caller frees).
+     * Upstream VulkanMod 7a1e520: LINES past the 16-bit limit got 16-bit data in a buffer bound as UINT32, so every
+     * line draw after the first large one (more than ~43k line vertices in one draw) read garbage indices.
+     */
+    public static ByteBuffer generate(DrawType drawType, IndexBuffer.IndexType indexType, int vertexCount) {
+        boolean wide = indexType == IndexBuffer.IndexType.UINT32;
+        return switch (drawType) {
+            case QUADS -> wide ? genIntQuadIndices(vertexCount) : genQuadIndices(vertexCount);
+            case TRIANGLE_FAN -> genTriangleFanIndices(vertexCount);
+            case TRIANGLE_STRIP -> genTriangleStripIndices(vertexCount);
+            case LINES -> wide ? genIntLinesIndices(vertexCount) : genLinesIndices(vertexCount);
+            case DEBUG_LINE_STRIP -> genDebugLineStripIndices(vertexCount);
+            default -> throw new IllegalArgumentException("Unsupported drawType: %s".formatted(drawType));
+        };
     }
 
     public void checkCapacity(int vertexCount) {
@@ -159,6 +163,29 @@ public class AutoIndexBuffer {
             idxs.put(j + 3, (short) (i + 3));
             idxs.put(j + 4, (short) (i + 2));
             idxs.put(j + 5, (short) (i + 1));
+
+            j += 6;
+        }
+
+        return buffer;
+    }
+
+    /** Upstream VulkanMod 7a1e520: 32-bit variant of {@link #genLinesIndices} (same quad-per-segment pattern). */
+    public static ByteBuffer genIntLinesIndices(int vertexCount) {
+        int indexCount = vertexCount * 3 / 2;
+        indexCount = roundUpToDivisible(indexCount, 6);
+
+        ByteBuffer buffer = MemoryUtil.memAlloc(indexCount * Integer.BYTES);
+        IntBuffer idxs = buffer.asIntBuffer();
+
+        int j = 0;
+        for (int i = 0; i < vertexCount; i += 4) {
+            idxs.put(j + 0, i);
+            idxs.put(j + 1, i + 1);
+            idxs.put(j + 2, i + 2);
+            idxs.put(j + 3, i + 3);
+            idxs.put(j + 4, i + 2);
+            idxs.put(j + 5, i + 1);
 
             j += 6;
         }

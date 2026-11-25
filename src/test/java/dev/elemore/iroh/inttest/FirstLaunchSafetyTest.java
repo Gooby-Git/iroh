@@ -275,8 +275,8 @@ public final class FirstLaunchSafetyTest {
         String dm = Files.readString(Path.of("src/main/java/net/vulkanmod/vulkan/device/DeviceManager.java"));
         int c1 = dm.indexOf("int res = vkCreateDevice("), u = dm.indexOf("RtDeviceFeatures.unchain(", c1), c2 = dm.indexOf("res = vkCreateDevice(", u),
                 chk = dm.indexOf("Vulkan.checkResult(res, \"Failed to create logical device\")", c1);
-        check("DeviceManager: a failed create with RT retries ONCE with the original extensions before the fatal check",
-                c1 > 0 && u > c1 && c2 > u && chk > c2 && dm.indexOf("Vulkan.REQUIRED_EXTENSION", u) < c2);
+        check("DeviceManager: a failed create with RT retries ONCE with the original extensions (deviceExts: REQUIRED + present-pacer + sync/memory, merge 3b->4c) before the fatal check",
+                c1 > 0 && u > c1 && c2 > u && chk > c2 && dm.indexOf("heapNames(deviceExts", u) < c2);
         // the Look row at runtime: rule 8 follows the row (launch Look RAY_TRACED here)
         String back1 = dev.elemore.iroh.rt.game.RtFrameHooks.applyLook(false);
         boolean packAllowed = dev.elemore.iroh.render.MainPassArbiter.packRefusal(dev.elemore.iroh.rt.game.RtSwitch.lookRayTraced()) == null;

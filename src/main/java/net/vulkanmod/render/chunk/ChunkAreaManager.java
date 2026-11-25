@@ -248,6 +248,10 @@ public class ChunkAreaManager {
         ibUsed /= div;
         frag   /= div;
 
+        WorldRenderer wr = WorldRenderer.getInstance();
+        String world = wr != null ? wr.worldArenaStats() : null; // P2-7a: sections live in the world arena, not in area buffers
+        if (world != null)
+            return new String[]{world};
         return new String[]{
                 String.format("Vertex Buffers: %d/%d MB", vbUsed, vbSize),
                 String.format("Index Buffers: %d/%d MB", ibUsed, ibSize),

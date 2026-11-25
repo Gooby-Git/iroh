@@ -247,7 +247,9 @@ public final class PackProperties implements Json.Dumpable {
         m.put("bufferObjects", bufferObjects);
         m.put("features", Json.obj("required", featuresRequired, "optional", featuresOptional,
                 "unservedRequired", featuresRequired.stream().filter(f -> !StandardMacros.SERVED_FEATURES.contains(f)).toList(),
-                "unservedOptional", featuresOptional.stream().filter(f -> !StandardMacros.SERVED_FEATURES.contains(f)).toList()));
+                "unservedOptional", featuresOptional.stream().filter(f -> !StandardMacros.SERVED_FEATURES.contains(f)).toList(),
+                "unknown", java.util.stream.Stream.concat(featuresRequired.stream(), featuresOptional.stream())
+                        .filter(f -> !StandardMacros.KNOWN_FEATURES.contains(f)).distinct().toList()));
         m.put("flatKeys", flatKeys);
         m.put("flags", flags);
         m.put("notes", notes);

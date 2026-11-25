@@ -254,7 +254,61 @@ public final class ApiReplay {
         MemoryUtil.memFree(white);
     }
 
+    /** V-M31: a target constructor that fails mid-way frees everything it made; outside a frame it refuses with a code. */
+    static void failedConstructor() {
+        HeadlessGpuDevice dev = new HeadlessGpuDevice(1L << 30, false);
+        long base = dev.allocatedBytes();
+        GpuCore core = GpuCore.install(dev);
+        core.resize(W, H);
+        try {
+            dev.setOutsideFrame(true);
+            RenderTargetHandle t0 = IrohTargets.create(OWNER, "tick", IrohTargets.Format.RGBA8, 64, 64);
+            check("target from outside a frame: null + OUTSIDE_FRAME code, no image made (" + IrohBuffers.lastRefusal() + ")",
+                    t0 == null && IrohBuffers.lastRefusal().startsWith("OUTSIDE_FRAME") && dev.allocatedBytes() == base);
+            dev.setOutsideFrame(false);
+            dev.failNextCmds(1); // image exists, the layout transition cannot record
+            boolean threw = false;
+            try {
+                IrohTargets.create(OWNER, "boom", IrohTargets.Format.RGBA16F, 256, 256);
+            } catch (IllegalStateException e) {
+                threw = true;
+            }
+            dev.flush(); // deferred frees run
+            check("constructor failing after the image exists: threw, image/view/memory freed (" + (dev.allocatedBytes() - base) + " bytes left), owner holds 0",
+                    threw && dev.allocatedBytes() == base && IrohBuffers.ownerBytes(OWNER) == 0);
+            RenderTargetHandle ok = IrohTargets.create(OWNER, "after", IrohTargets.Format.RGBA8, 64, 64);
+            check("device usable after both failures", ok != null);
+        } finally {
+            GpuCore.uninstall();
+            dev.close(); // validation layer reports any object still alive here
+        }
+    }
+
+    /** {total barriers, ALL->ALL barriers} recorded by one frame of three passes */
+    static int[] countBarriers() {
+        HeadlessGpuDevice dev = new HeadlessGpuDevice(1L << 30, false);
+        GpuCore core = GpuCore.install(dev);
+        core.resize(W, H);
+        try {
+            RenderTargetHandle a = IrohTargets.create(OWNER, "bcA", IrohTargets.Format.RGBA8, W, H);
+            RenderTargetHandle b = IrohTargets.create(OWNER, "bcB", IrohTargets.Format.RGBA8, W, H);
+            dev.flush();
+            long t0 = dev.barriers, g0 = dev.globalBarriers;
+            for (RenderTargetHandle t : new RenderTargetHandle[]{a, b, a}) {
+                IrohTargets.beginRendering(t, null, true, new float[]{0, 0, 0, 0}, 1f);
+                IrohTargets.endRendering();
+            }
+            dev.flush();
+            return new int[]{(int) (dev.barriers - t0), (int) (dev.globalBarriers - g0)};
+        } finally {
+            core.freeOwner(OWNER);
+            GpuCore.uninstall();
+            dev.close();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
+        failedConstructor();
         int[] ref = reference(quads());
         StringBuilder h1 = new StringBuilder(), h2 = new StringBuilder();
         long[] left = new long[1];
@@ -266,6 +320,12 @@ public final class ApiReplay {
         int diff = 0;
         for (int i = 0; i < a.length; i++) if (a[i] != b[i]) diff++;
         check("zero-tail fallback (no drawIndirectCount) draws the same image (" + diff + " pixels differ)", diff == 0);
+        // P2-12 (RQ-APP1-a): barriers per frame of a 3-pass api 4 frame (two targets, the second pass samples nothing but reuses the first's colour)
+        int[] bc = countBarriers();
+        boolean legacy = Boolean.getBoolean("iroh.api4.legacyTargetBarrier");
+        System.out.println("     barriers per 3-pass frame: total " + bc[0] + ", ALL_COMMANDS->ALL_COMMANDS " + bc[1] + (legacy ? " (legacy path)" : ""));
+        check("no ALL_COMMANDS -> ALL_COMMANDS barrier per frame" + (legacy ? " (legacy negative control: expected " + bc[0] + " > 0)" : ""),
+                legacy ? bc[1] > 0 : bc[1] == 0);
         String golden = System.getProperty("golden", "");
         System.out.println("     image sha256 " + h1);
         if (!golden.isEmpty()) check("golden " + golden, golden.contentEquals(h1));

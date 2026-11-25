@@ -59,12 +59,52 @@ public class Synchronization {
         this.signalUnconsumed.add(cb);
     }
 
-    /** Frame submit: the semaphores to wait on (consumed by this submit). */
+    /** Frame submit: the binary semaphores to wait on (consumed by this submit). */
     public synchronized long[] takeWaitSemaphores() {
         long[] s = this.pendingWaits.toLongArray();
         this.pendingWaits.clear();
         this.signalUnconsumed.clear();
         return s;
+    }
+
+    /**
+     * P2-12 (L9): the stages of the frame submit that wait for uploads: every stage that can read what the transfer queue wrote (buffers
+     * for vertex/index fetch, indirect commands, uniform/storage reads in any shader stage incl. compute, transfer copies from them).
+     * The base waited at ALL_COMMANDS, which also held back the frame's attachment clears / early depth work for no reason. Attachment
+     * stages are excluded on purpose: nothing uploaded through the transfer queue is read there. (A branch with acceleration-structure
+     * builds reading uploaded buffers adds VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR here.)
+     */
+    public static final int UPLOAD_WAIT_STAGES = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT
+            | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+            | VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+    private final LongArrayList timelineSems = new LongArrayList();
+    private final LongArrayList timelineValues = new LongArrayList();
+
+    /** A signalling upload submit raised {@code semaphore} (a timeline) to {@code value}: the next frame submit waits for it. */
+    public synchronized void addTimelineWait(long semaphore, long value) {
+        for (int i = 0; i < timelineSems.size(); i++)
+            if (timelineSems.getLong(i) == semaphore) {
+                if (value > timelineValues.getLong(i)) timelineValues.set(i, value);
+                return;
+            }
+        timelineSems.add(semaphore);
+        timelineValues.add(value);
+    }
+
+    /** Frame submit: {semaphores, values} to wait on for uploads; binary ones first (value 0), timelines after (consumed by this submit). */
+    public synchronized long[][] takeUploadWaits() {
+        long[] bin = takeWaitSemaphores();
+        int n = bin.length + timelineSems.size();
+        long[] sems = new long[n], vals = new long[n];
+        System.arraycopy(bin, 0, sems, 0, bin.length);
+        for (int i = 0; i < timelineSems.size(); i++) {
+            sems[bin.length + i] = timelineSems.getLong(i);
+            vals[bin.length + i] = timelineValues.getLong(i);
+        }
+        timelineSems.clear();
+        timelineValues.clear();
+        return new long[][]{sems, vals};
     }
 
     /** After the frame submit that consumed the waits: command buffers held back only for their signal can be recycled. */

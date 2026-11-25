@@ -1,0 +1,37 @@
+#version 450
+// Iroh P2-7c: one level of the Hi-Z pyramid (HiZPyramid.java documents the frame flow).
+// Level 0 is ceil(W/2) x ceil(H/2) and is read from the scene depth (depth-only view); level k is ceil(level k-1 / 2).
+// Texel (x, y) of level k holds the FARTHEST depth of the pixels [x * 2^(k+1), (x + 1) * 2^(k+1)) of the depth image
+// (clamped to the image), so a box whose nearest depth lies behind every covering texel is hidden behind drawn geometry.
+// Farthest = MAX for standard depth (0 near, 1 far, Iroh today), MIN for reversed-Z (push constant; FSR-Q Q9/Q10).
+// Variants by define: none = four texelFetch (level 0 always, every level on the shader path);
+// MINMAX = one textureLod through a MAX / MIN reduction sampler (samplerFilterMinmax) at the shared corner of the 2x2
+// footprint (weights 1/4 each, so all four texels take part; clamp-to-edge repeats the last texel of an odd level).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, r32f) uniform writeonly image2D dst;
+
+layout(push_constant) uniform PC {
+    ivec2 srcSize;
+    ivec2 dstSize;
+    uint reversed;
+} pc;
+
+float farther(float a, float b) {
+    return pc.reversed != 0u ? min(a, b) : max(a, b);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.dstSize.x || p.y >= pc.dstSize.y) return;
+#ifdef MINMAX
+    float d = textureLod(src, vec2(2 * p + 1) / vec2(pc.srcSize), 0.0).r;
+#else
+    ivec2 a = 2 * p, b = min(a + 1, pc.srcSize - 1);
+    float d = farther(farther(texelFetch(src, a, 0).r, texelFetch(src, ivec2(b.x, a.y), 0).r),
+                      farther(texelFetch(src, ivec2(a.x, b.y), 0).r, texelFetch(src, b, 0).r));
+#endif
+    imageStore(dst, p, vec4(d, 0.0, 0.0, 0.0));
+}

@@ -1,5 +1,7 @@
 package dev.elemore.iroh.rt.denoise;
 
+import dev.elemore.iroh.perf.PipelineStats;
+
 import dev.elemore.iroh.upscale.ImageRef;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
@@ -137,7 +139,9 @@ public final class SvgfDenoiser implements Denoiser {
         long m = lb.get(0);
         VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, s).sType$Default().layout(pl);
         ci.stage().sType$Default().stage(VK_SHADER_STAGE_COMPUTE_BIT).module(m).pName(s.UTF8("main"));
+        long pipeT0 = System.nanoTime(); // P2-11
         int r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, ci, null, lb);
+        PipelineStats.created(PipelineStats.Kind.COMPUTE, System.nanoTime() - pipeT0);
         vkDestroyShaderModule(dev, m, null);
         vk(r, "pipeline " + name);
         return lb.get(0);

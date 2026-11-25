@@ -169,13 +169,13 @@ public abstract class DeviceManager {
 
             VkPhysicalDeviceVulkan11Features deviceVulkan11Features = VkPhysicalDeviceVulkan11Features.calloc(stack);
             deviceVulkan11Features.sType$Default();
-            deviceVulkan11Features.shaderDrawParameters(device.isDrawIndirectSupported());
 
             // api 4 (card V-M1): drawIndirectCount when the device has it (Vulkan 1.2 core; Iroh's instance is 1.2)
             VkPhysicalDeviceVulkan12Features deviceVulkan12Features = VkPhysicalDeviceVulkan12Features.calloc(stack);
             deviceVulkan12Features.sType$Default();
-            drawIndirectCountEnabled = device.availableFeatures12.drawIndirectCount();
-            deviceVulkan12Features.drawIndirectCount(drawIndirectCountEnabled);
+            drawIndirectCountEnabled = IndirectDrawCaps.applyDrawCount(device.availableFeatures12, deviceVulkan12Features); // P2-7b: also the GPU cull tier
+            IndirectDrawCaps.applyMinmax(device.availableFeatures12, deviceVulkan12Features); // P2-7c: Hi-Z reduction sampler where offered
+            IndirectDrawCaps.noteMinmaxFormat(net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(device.physicalDevice));
 
             VkPhysicalDeviceFeatures2 deviceFeatures = VkPhysicalDeviceFeatures2.calloc(stack);
             deviceFeatures.sType$Default();
@@ -185,11 +185,16 @@ public abstract class DeviceManager {
             dev.elemore.iroh.temporal.DeviceCaps.linkFeatureChain(deviceFeatures, deviceVulkan11Features, deviceVulkan12Features);
             deviceFeatures.features().samplerAnisotropy(device.availableFeatures.features().samplerAnisotropy());
             deviceFeatures.features().logicOp(device.availableFeatures.features().logicOp());
-            // TODO: Disable indirect draw option if unsupported.
-            deviceFeatures.features().multiDrawIndirect(device.isDrawIndirectSupported());
-            // H1C (RQ-APP1-c, gpuav): api 4 multiDrawIndirectCount commands may carry a firstInstance (gl_InstanceIndex = per-draw id);
-            // VUID-VkDrawIndexedIndirectCommand-firstInstance-00554 needs this feature for any non-zero value (every desktop GPU offers it)
-            deviceFeatures.features().drawIndirectFirstInstance(device.availableFeatures.features().drawIndirectFirstInstance());
+            // P2-3 (RQ-P2D-a): multiDrawIndirect + shaderDrawParameters as before, plus drawIndirectFirstInstance where offered: terrain
+            // indirect commands carry firstInstance = packed section offset (VUID-VkDrawIndexedIndirectCommand-firstInstance-00554),
+            // and so may api 4 multiDrawIndirectCount commands (gl_InstanceIndex per-draw id; int-4c H1C). Without either bit
+            // terrain is drawn directly (IndirectDrawCaps.useTerrainIndirect), whatever the indirectDraw option says.
+            IndirectDrawCaps.apply(device.availableFeatures.features(), device.availableFeatures11, deviceFeatures.features(), deviceVulkan11Features);
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", IndirectDrawCaps.report());
+            try { // P2-11: capability report only; the GPL pipeline path is not implemented
+                dev.elemore.iroh.temporal.DeviceCaps.probeGpl(net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(device.physicalDevice));
+                net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", dev.elemore.iroh.temporal.DeviceCaps.gplReport());
+            } catch (RuntimeException e) { net.vulkanmod.Initializer.LOGGER.warn("Iroh: GPL probe failed: {}", e.toString()); }
 
             // PACK-FULL (VUID-RuntimeSpirv-NonWritable-06341): shader-pack vertex/fragment image stores (Navidson voxel_img)
             String packFeatures = dev.elemore.iroh.shaderpack.runtime.PackDeviceFeatures.apply(device.availableFeatures.features(), deviceFeatures.features());
@@ -214,6 +219,7 @@ public abstract class DeviceManager {
             enabledFeatures = "samplerAnisotropy=" + deviceFeatures.features().samplerAnisotropy()
                     + " logicOp=" + deviceFeatures.features().logicOp()
                     + " multiDrawIndirect=" + deviceFeatures.features().multiDrawIndirect()
+                    + " drawIndirectFirstInstance=" + deviceFeatures.features().drawIndirectFirstInstance()
                     + " wideLines=" + deviceFeatures.features().wideLines()
                     + " shaderDrawParameters=" + deviceVulkan11Features.shaderDrawParameters()
                     + " drawIndirectCount=" + deviceVulkan12Features.drawIndirectCount()
@@ -252,26 +258,40 @@ public abstract class DeviceManager {
 //                deviceVulkan13Features.pNext(deviceVulkan11Features.address());
             }
 
+            // P2-10: optional VK_KHR_present_id + present_wait pacing (off unless -Diroh.presentWait=true and offered)
+            java.util.List<String> deviceExts = new ArrayList<>(Vulkan.REQUIRED_EXTENSION);
+            net.vulkanmod.vulkan.PresentPacer.configure(stack, physicalDevice, deviceExts, deviceVulkan12Features);
+            // P2-12 (L9/L10): timeline semaphore (Vulkan 1.2 core feature), VK_EXT_memory_budget and VK_EXT_memory_priority, each only when offered
+            java.util.Set<String> offeredExts = net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(physicalDevice);
+            SyncMemCaps.Decision syncMem = SyncMemCaps.apply(offeredExts, device.availableFeatures12.timelineSemaphore(),
+                    SyncMemCaps.priorityFeatureOffered(stack, physicalDevice, offeredExts), deviceVulkan12Features);
+            if (syncMem.priority())
+                SyncMemCaps.chainPriority(deviceVulkan12Features, VkPhysicalDeviceMemoryPriorityFeaturesEXT.calloc(stack));
+            net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", SyncMemCaps.report());
+            enabledFeatures += " timelineSemaphore=" + syncMem.timeline() + " memoryBudget=" + syncMem.budget() + " memoryPriority=" + syncMem.priority();
+
             // Iroh P5-2: RT (only when requested at launch AND available): ONE AS + ONE ray-query feature struct in front of
-            // the 1.2 struct's tail, bufferDeviceAddress in the SAME single 1.2 struct, + 3 extensions; else unchanged
+            // the 1.2 struct's tail, bufferDeviceAddress in the SAME single 1.2 struct, + 3 extensions; else unchanged.
+            // Merge 3b->4c: chained AFTER the P2-10 present-id/wait and P2-12 memory-priority structs so unchain() restores them on a retry.
             deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.chain(stack, physicalDevice, deviceVulkan12Features, deviceVulkan12Features.pNext()));
             enabledFeatures += dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits(); // empty unless RT was requested
             // H1A: extension name pointers and strings on the heap (freed in the finally below), so device creation does not scale with the list on the 64 KB stack
             java.util.List<Runnable> extAllocs = new ArrayList<>();
+            deviceExts.addAll(SyncMemCaps.extensionNames());
 //            Configuration.DEBUG_FUNCTIONS.set(true);
 
-            // Iroh (P1-1): device layers are deprecated since Vulkan 1.0 (VUID-VkDeviceCreateInfo-enabledLayerCount-12384).
-            createInfo.ppEnabledLayerNames(null);
+                // Iroh (P1-1): device layers are deprecated since Vulkan 1.0 (VUID-VkDeviceCreateInfo-enabledLayerCount-12384).
+                createInfo.ppEnabledLayerNames(null);
 
             try {
-                createInfo.ppEnabledExtensionNames(heapNames(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(Vulkan.REQUIRED_EXTENSION), extAllocs));
+                createInfo.ppEnabledExtensionNames(heapNames(dev.elemore.iroh.rt.game.RtDeviceFeatures.extensions(new java.util.LinkedHashSet<>(deviceExts)), extAllocs));
                 PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
                 int res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
                 if (res != VK_SUCCESS && dev.elemore.iroh.rt.game.RtDeviceFeatures.enabled) {
                     // INT-4: a driver that offers the RT features but refuses the device with them: ONE line, RT off, retry
                     // once with exactly the int-3 chain and extensions (never fail a launch for an optional feature)
                     deviceVulkan12Features.pNext(dev.elemore.iroh.rt.game.RtDeviceFeatures.unchain(deviceVulkan12Features, res));
-                    createInfo.ppEnabledExtensionNames(heapNames(Vulkan.REQUIRED_EXTENSION, extAllocs));
+                    createInfo.ppEnabledExtensionNames(heapNames(deviceExts, extAllocs));
                     enabledFeatures = enabledFeatures.substring(0, enabledFeatures.indexOf(" rt=")) + dev.elemore.iroh.rt.game.RtDeviceFeatures.selfCheckBits();
                     res = vkCreateDevice(physicalDevice, createInfo, null, pDevice);
                 }
@@ -290,7 +310,7 @@ public abstract class DeviceManager {
         }
     }
 
-    /** H1A: heap pointer array + UTF-8 strings for extension names; every allocation is added to {@code allocs} (as a free action) for the caller to run. */
+    /** H1A: heap pointer array + UTF-8 strings for extension names; every allocation adds its free action to {@code allocs} for the caller to run. */
     private static PointerBuffer heapNames(java.util.Collection<String> names, java.util.List<Runnable> allocs) {
         PointerBuffer pb = org.lwjgl.system.MemoryUtil.memAllocPointer(names.size());
         allocs.add(() -> org.lwjgl.system.MemoryUtil.memFree(pb));

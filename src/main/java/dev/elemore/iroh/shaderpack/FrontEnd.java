@@ -118,7 +118,8 @@ public final class FrontEnd {
         res.properties = PackProperties.read(pack, std, res.options);
         for (String f : res.properties.featuresRequired)
             if (!cfg.env().features().contains(f))
-                res.packErrors.add("iris.features.required names " + f + ", which Iroh does not serve: the pack is refused (Iris rule)");
+                res.packErrors.add("iris.features.required names " + f + ", " + StandardMacros.featureProblem(f, cfg.env().features())
+                        + ": the pack is refused (Iris rule)");
         Map<String, String> propMacros = new LinkedHashMap<>(std);
         propMacros.putAll(res.options.macroValues());
         res.idMaps = IdMaps.read(pack, "", propMacros);

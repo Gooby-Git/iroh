@@ -9,7 +9,9 @@ set -uo pipefail
 WT=$(readlink -f "${1:-.}"); cd "$WT"
 export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}; export PATH=$JAVA_HOME/bin:$PATH
 OUT=$WT/build/vkval-extra; mkdir -p "$OUT"
-TASKS=("packReplay" "packReplay -Ppost" "packFlightRepro" "packFullVkRepro" "apiReplay" "uploadSyncRepro" "mcReplay" "rtReplay -Pquick=1 -Pstep=ab" "fsrReplay" "fsrConstantsTest" "fsrMetrics" "fsrMipMetrics" "chainReplay" "fsrAdapterReplay" "fgReplay" "rtHangRepro" "rtWorldReplay -Pframes=60")  # R1-HANG: +2 (AS builds with game upload order, world-scale); PACK-FULL: +packFullVkRepro; UPLOAD-SYNC: +uploadSyncRepro
+# MERGE-2B: + the int-2b/3b gpuav set (P2-3/7b/7c/11): terrainCullReplay / hizCullReplay twice (shader-instrumented without the horizon
+# combinations, lavapipe SIGSEGVs in the instrumented horizon build shader, RQ-B-gpuav-lvp pattern; and every combination with instrumentation off).
+TASKS=("terrainIndirectRepro" "terrainWorldReplay -Ptw.quick" "terrainCullReplay -Ptc.quick -Ptc.noHorizon" "terrainCullReplay -Ptc.quick -PvkvalSet.gpuav_shader_instrumentation=false" "hizCullReplay -Phz.quick -Phz.noHorizon" "hizCullReplay -Phz.quick -PvkvalSet.gpuav_shader_instrumentation=false" "hwCapsRepro" "pipelinePrewarmRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro" "packFullVkRepro" "apiReplay" "uploadSyncRepro" "mcReplay" "rtReplay -Pquick=1 -Pstep=ab" "fsrReplay" "fsrConstantsTest" "fsrMetrics" "fsrMipMetrics" "chainReplay" "fsrAdapterReplay" "fgReplay" "rtHangRepro" "rtWorldReplay -Pframes=60")  # R1-HANG: +2 (AS builds with game upload order, world-scale); PACK-FULL: +packFullVkRepro; UPLOAD-SYNC: +uploadSyncRepro
 have() { grep -q "register('$1'" build.gradle; }
 rc=0
 for mode in gpuav bestpractices; do

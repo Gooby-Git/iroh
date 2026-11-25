@@ -72,6 +72,14 @@ public class TerrainBufferBuilder implements VertexConsumer {
         this.vertices = 0;
     }
 
+    /** Upstream VulkanMod babff0c: frees the native block. The builder must not be used afterwards. */
+    public void free() {
+        ALLOCATOR.free(this.bufferPtr);
+        this.bufferPtr = 0L;
+        this.capacity = 0;
+        this.clear();
+    }
+
     public ByteBuffer getBuffer() {
         return MemoryUtil.memByteBuffer(this.bufferPtr, this.vertices * this.vertexSize);
     }

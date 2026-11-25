@@ -19,6 +19,7 @@
     "window.WindowAccessor",
 
     "chunk.ClientPacketListenerM",
+    "chunk.BulkDirtyM",
     "chunk.ClientChunkCacheM",
     "chunk.DirectionMixin",
     "chunk.FrustumMixin",
@@ -42,6 +43,7 @@
 
     "profiling.GuiMixin",
     "profiling.KeyboardHandlerM",
+    "profiling.TelemetryKeyM",
     "profiling.LevelRendererMixin",
     "profiling.slow.SlowFramesMinecraftM",
     "profiling.slow.SlowFramesGameRendererM",
@@ -71,6 +73,8 @@
     "render.entity.model.ModelPartM",
     "render.frame.MinecraftMixin",
     "render.frame.TaskBudgetM",
+    "render.frame.LimiterM",
+    "render.frame.PipelinePrewarmM",
     "render.frame.RenderSystemMixin",
     "render.frapi.BakedModelM",
     "render.frapi.ItemRendererAccessor",
@@ -109,6 +113,7 @@
     "vertex.VertexMultiConsumersM$SheetDecalM",
 
     "wayland.InputConstantsM",
+    "wayland.KeyboardHandlerM",
     "wayland.MinecraftMixin",
 
 

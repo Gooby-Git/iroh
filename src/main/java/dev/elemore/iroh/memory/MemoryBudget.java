@@ -58,7 +58,10 @@ public final class MemoryBudget {
     }
 
     private void recompute() {
-        long c = configuredCapMiB > 0 ? configuredCapMiB * MiB : autoCap(largestHeap);
+        // P2-12 (RQ-RD2a-a): the automatic cap is a share of what the driver lets THIS process use (VK_EXT_memory_budget: 14.22 GiB of a
+        // 15.92 GiB heap on RADV), not of the heap size; without the extension the budget is VMA's estimate (80% of the heap)
+        long basis = driverBudget > 0 ? Math.min(largestHeap, driverBudget) : largestHeap;
+        long c = configuredCapMiB > 0 ? configuredCapMiB * MiB : autoCap(basis);
         if (driverBudget > 0) {
             long headroom = driverBudget - driverUsage - DESKTOP_RESERVE; // what the process may still add safely
             c = Math.min(c, Math.max(0, irohUsage + headroom));

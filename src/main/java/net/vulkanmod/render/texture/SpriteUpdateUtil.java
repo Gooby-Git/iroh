@@ -31,9 +31,13 @@ public abstract class SpriteUpdateUtil {
 
         VkCommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().handle;
 
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            transitionedLayouts.forEach(image -> image.readOnlyLayout(stack, commandBuffer));
-            transitionedLayouts.clear();
+        // Upstream VulkanMod 6b2db6e: one stack frame per image. The base recorded every image's barrier struct into one
+        // frame, so enough distinct animated / dynamic textures in one upload could overflow the 64 KB MemoryStack.
+        for (VulkanImage image : transitionedLayouts) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                image.readOnlyLayout(stack, commandBuffer);
+            }
         }
+        transitionedLayouts.clear();
     }
 }

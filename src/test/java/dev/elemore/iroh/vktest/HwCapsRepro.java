@@ -3,6 +3,8 @@ package dev.elemore.iroh.vktest;
 import dev.elemore.iroh.rt.game.RtDeviceFeatures;
 import dev.elemore.iroh.temporal.DeviceCaps;
 import dev.elemore.iroh.upscale.fsr.FsrUpscaler;
+import net.vulkanmod.vulkan.device.IndirectDrawCaps;
+import net.vulkanmod.vulkan.device.SyncMemCaps;
 import net.vulkanmod.vulkan.util.VkEnum;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -20,7 +22,8 @@ import static org.lwjgl.vulkan.VK12.*;
  * (1) creates the rc14 device (upscale features off) and checks nothing is enabled; (2) creates the upscale device with the real chain and checks
  * every enabled bit is offered, and that DeviceCaps' fsr / velocity / fp16 answers equal an independent derivation from raw Vulkan queries;
  * (3) builds the real FSR context when fsrCapable says so (must succeed); (4) validation errors must be 0. Reports tier, enabled features and
- * upscaler availability. Run: ./gradlew hwCapsRepro. Last line "# hwcaps PASS|FAIL ..." (key=value tier line follows as "# hwcaps-tier ...").
+ * upscaler availability. P2-3: also the terrain draw tier (indirect only with drawIndirectFirstInstance enabled, direct otherwise).
+ * Run: ./gradlew hwCapsRepro. Last line "# hwcaps PASS|FAIL ..." (key=value tier line follows as "# hwcaps-tier ...").
  */
 public final class HwCapsRepro {
     static final List<String> PROBLEMS = new ArrayList<>();
@@ -74,7 +77,7 @@ public final class HwCapsRepro {
             tier = upTier;
             extra = " fsr3=" + (natives && DeviceCaps.fsrCapable() ? "available" : natives ? "needs-device-features" : "needs-native-library")
                 + " fsrCtx=" + (fsrMade ? "created" : "n/a") + " dlss=" + (nvidia ? "notYet(nvidia)" : "needsNvidia")
-                + rtTier(s, phys, exts);
+                + rtTier(s, phys, exts) + terrainTier(s, phys) + syncMemPath(s, phys, exts);
             for (String e : Float16Repro.ERRORS.subList(before, Float16Repro.ERRORS.size())) {
                 System.out.println("    ! " + e.substring(0, Math.min(170, e.length())).replace("\n", " "));
             }
@@ -161,6 +164,11 @@ public final class HwCapsRepro {
 
     /** The production device-creation sequence (DeviceManager order). Returns true when an FSR context was created on it (only attempted when fsrCapable). */
     static boolean create(MemoryStack outer, boolean tryFsr) {
+        return create(outer, tryFsr, false);
+    }
+
+    /** {@code maskFirstInstance}: the device reports no drawIndirectFirstInstance (P2-3 fallback case: a GPU without it). */
+    static boolean create(MemoryStack outer, boolean tryFsr, boolean maskFirstInstance) {
         VkPhysicalDevice phys = Float16Repro.phys;
         try (MemoryStack s = outer.push()) {
             VkPhysicalDeviceVulkan12Features e12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
@@ -171,6 +179,15 @@ public final class HwCapsRepro {
             VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a11.address());
             a11.pNext(a12.address());
             vkGetPhysicalDeviceFeatures2(phys, a2);
+            if (maskFirstInstance) a2.features().drawIndirectFirstInstance(false);
+            IndirectDrawCaps.applyDrawCount(a12, e12); // P2-7b: DeviceManager order (drawIndirectCount, then the terrain tier)
+            lastEnabledDrawCount = e12.drawIndirectCount();
+            IndirectDrawCaps.applyMinmax(a12, e12); // P2-7c: DeviceManager order (samplerFilterMinmax where offered, then the R32F format bit)
+            IndirectDrawCaps.noteMinmaxFormat(net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(phys));
+            lastEnabledMinmax = e12.samplerFilterMinmax();
+            IndirectDrawCaps.apply(a2.features(), a11, e2.features(), e11); // P2-3: DeviceManager order (before DeviceCaps)
+            lastEnabledMdi = e2.features().multiDrawIndirect();
+            lastEnabledFirstInstance = e2.features().drawIndirectFirstInstance();
             DeviceCaps.apply(s, phys, a2.features(), e2.features(), a11, e11, e12);
             DeviceCaps.linkFeatureChain(e2, e11, e12);
             extendChain(s, phys, e12);
@@ -195,18 +212,127 @@ public final class HwCapsRepro {
         }
     }
 
-    /** Branch hook: extra feature structs the branch's own device code chains behind the 1.2 struct (RT structs on 4c). */
-    static void extendChain(MemoryStack s, VkPhysicalDevice phys, VkPhysicalDeviceVulkan12Features e12) {
-        RtDeviceFeatures.enabled = false;
-        RtDeviceFeatures.unavailable = null;
-        e12.pNext(RtDeviceFeatures.chain(s, phys, e12, e12.pNext())); // DeviceManager order: RT structs in front of the 1.2 struct's tail
+    static boolean lastEnabledMdi, lastEnabledFirstInstance;
+
+    /**
+     * P2-3 (RQ-P2D-a): terrain draw tier. Indirect terrain commands carry firstInstance (packed section offset), so the indirect tier
+     * must only be chosen with drawIndirectFirstInstance (and multiDrawIndirect) ENABLED on the created device; otherwise the direct
+     * fallback (T-C). Checked on the real device, on the same device with firstInstance masked (no profile lacks it), and on the
+     * pure decision table. Returns the tier-line fragment.
+     */
+    static boolean lastEnabledDrawCount, lastEnabledMinmax;
+
+    static String terrainTier(MemoryStack s, VkPhysicalDevice phys) {
+        boolean rawMdi, rawSdp, rawFi, rawDc, rawMinmax;
+        try (MemoryStack f = s.push()) {
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(f).sType$Default();
+            VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(f).sType$Default().pNext(a12.address());
+            VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(f).sType$Default().pNext(a11.address());
+            vkGetPhysicalDeviceFeatures2(phys, a2);
+            rawMdi = a2.features().multiDrawIndirect(); rawSdp = a11.shaderDrawParameters(); rawFi = a2.features().drawIndirectFirstInstance();
+            rawDc = a12.drawIndirectCount();
+            rawMinmax = a12.samplerFilterMinmax();
+        }
+        // the device as created by the last production create(..) call (the upscale device)
+        IndirectDrawCaps.TerrainTier t = IndirectDrawCaps.tier();
+        IndirectDrawCaps.TerrainTier expect = rawMdi && rawSdp && rawFi ? IndirectDrawCaps.TerrainTier.INDIRECT : IndirectDrawCaps.TerrainTier.DIRECT;
+        check(t == expect, "terrain tier " + t + " != raw " + expect + " (mdi=" + rawMdi + " sdp=" + rawSdp + " firstInstance=" + rawFi + ")");
+        check(t != IndirectDrawCaps.TerrainTier.INDIRECT || (lastEnabledFirstInstance && lastEnabledMdi),
+            "indirect terrain tier without drawIndirectFirstInstance/multiDrawIndirect ENABLED on the device");
+        check(!lastEnabledFirstInstance || rawFi, "drawIndirectFirstInstance enabled but not offered");
+        check(!lastEnabledMdi || (rawMdi && rawSdp), "multiDrawIndirect enabled but not offered");
+        String real = t == IndirectDrawCaps.TerrainTier.INDIRECT ? "indirect" : "direct";
+        // P2-7b: GPU terrain-cull tier from the same device: COUNT (T-A) / FIXED (T-B) / CPU (T-C)
+        IndirectDrawCaps.CullTier ct = IndirectDrawCaps.cullTier();
+        IndirectDrawCaps.CullTier ctExpect = IndirectDrawCaps.decideCull(expect, rawDc);
+        check(ct == ctExpect, "cull tier " + ct + " != raw " + ctExpect + " (drawIndirectCount=" + rawDc + ")");
+        check(lastEnabledDrawCount == rawDc, "drawIndirectCount enabled=" + lastEnabledDrawCount + " offered=" + rawDc);
+        String cull = switch (ct) { case COUNT -> "count(T-A)"; case FIXED -> "fixed(T-B)"; case CPU -> "cpu(T-C)"; };
+        // P2-7c: Hi-Z pyramid reduction path from the same device: MINMAX (samplerFilterMinmax + R32F minmax format bit) / SHADER / NONE
+        boolean fmtMinmax = net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(phys);
+        IndirectDrawCaps.HiZPath hz = IndirectDrawCaps.hiZPath(), hzExpect = IndirectDrawCaps.decideHiZ(ctExpect, rawMinmax, fmtMinmax);
+        check(hz == hzExpect, "hiz path " + hz + " != raw " + hzExpect + " (samplerFilterMinmax=" + rawMinmax + " r32fMinmax=" + fmtMinmax + ")");
+        check(lastEnabledMinmax == rawMinmax, "samplerFilterMinmax enabled=" + lastEnabledMinmax + " offered=" + rawMinmax);
+        check(IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.CPU, true, true) == IndirectDrawCaps.HiZPath.NONE
+                && IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.FIXED, true, false) == IndirectDrawCaps.HiZPath.SHADER
+                && IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.COUNT, false, true) == IndirectDrawCaps.HiZPath.SHADER
+                && IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.COUNT, true, true) == IndirectDrawCaps.HiZPath.MINMAX, "decideHiZ table");
+        cull += " hiz=" + hz.name().toLowerCase();
+        // fallback: the same device without drawIndirectFirstInstance must choose direct draws and create cleanly
+        create(s, false, true);
+        check(IndirectDrawCaps.tier() == IndirectDrawCaps.TerrainTier.DIRECT, "masked firstInstance: tier " + IndirectDrawCaps.tier() + " (expected DIRECT)");
+        check(!lastEnabledFirstInstance, "masked firstInstance: still enabled");
+        // pure decision table
+        for (int i = 0; i < 4; i++) {
+            boolean m = (i & 1) != 0, fi = (i & 2) != 0;
+            check(IndirectDrawCaps.decide(m, fi) == (m && fi ? IndirectDrawCaps.TerrainTier.INDIRECT : IndirectDrawCaps.TerrainTier.DIRECT),
+                "decide(mdi=" + m + ", firstInstance=" + fi + ")");
+        }
+        create(s, false); // leave the real decision behind
+        check(IndirectDrawCaps.tier() == t, "terrain tier not restored");
+        for (IndirectDrawCaps.TerrainTier tt : IndirectDrawCaps.TerrainTier.values())
+            for (boolean dc : new boolean[]{false, true})
+                check(IndirectDrawCaps.decideCull(tt, dc) == (tt != IndirectDrawCaps.TerrainTier.INDIRECT ? IndirectDrawCaps.CullTier.CPU
+                        : dc ? IndirectDrawCaps.CullTier.COUNT : IndirectDrawCaps.CullTier.FIXED), "decideCull(" + tt + ", " + dc + ")");
+        return " terrainDraw=" + real + (t == IndirectDrawCaps.TerrainTier.INDIRECT ? "(firstInstance)" : "(T-C fallback)") + " terrainFallback=direct terrainCull=" + cull;
     }
 
-    /** Branch hook: device extensions the branch's own device code enables (RT structs on 4c). */
+    static SyncMemCaps.Decision lastSyncMem;
+
+    /** Branch hook: extra feature structs the device code chains behind the 1.2 struct (P2-12 timeline semaphore + memory priority, then the RT structs on 4c). */
+    static void extendChain(MemoryStack s, VkPhysicalDevice phys, VkPhysicalDeviceVulkan12Features e12) {
+        Set<String> exts = VkEnum.deviceExtensions(phys);
+        VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
+        vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a12.address()));
+        lastSyncMem = SyncMemCaps.apply(exts, a12.timelineSemaphore(), SyncMemCaps.priorityFeatureOffered(s, phys, exts), e12);
+        if (lastSyncMem.priority()) SyncMemCaps.chainPriority(e12, VkPhysicalDeviceMemoryPriorityFeaturesEXT.calloc(s));
+        RtDeviceFeatures.enabled = false;
+        RtDeviceFeatures.unavailable = null;
+        e12.pNext(RtDeviceFeatures.chain(s, phys, e12, e12.pNext())); // DeviceManager order: RT structs after the P2-10/P2-12 structs
+    }
+
+    /** Branch hook: device extensions the device code enables (P2-12 memory budget / priority when offered, RT extensions on 4c). */
     static void deviceExtensions(MemoryStack s, VkDeviceCreateInfo dci) {
-        if (!RtDeviceFeatures.enabled) return;
-        PointerBuffer ext = s.mallocPointer(RtDeviceFeatures.EXTENSIONS.length);
-        for (String e : RtDeviceFeatures.EXTENSIONS) ext.put(s.UTF8(e));
-        dci.ppEnabledExtensionNames(ext.flip());
+        List<String> names = new java.util.ArrayList<>(SyncMemCaps.extensionNames());
+        if (RtDeviceFeatures.enabled) java.util.Collections.addAll(names, RtDeviceFeatures.EXTENSIONS);
+        if (names.isEmpty()) return;
+        PointerBuffer pb = s.mallocPointer(names.size());
+        for (String n : names) pb.put(s.UTF8(n));
+        dci.ppEnabledExtensionNames(pb.flip());
+    }
+
+    /**
+     * P2-12: the sync / memory path this device takes (timeline vs binary semaphores, VK_EXT_memory_budget, VK_EXT_memory_priority), checked
+     * against a raw query (used only when offered) and with each switch off (the fallback creates a clean device). Returns the tier-line fragment.
+     */
+    static String syncMemPath(MemoryStack s, VkPhysicalDevice phys, Set<String> exts) {
+        SyncMemCaps.Decision real = lastSyncMem;
+        boolean rawTl;
+        try (MemoryStack f = s.push()) {
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(f).sType$Default();
+            vkGetPhysicalDeviceFeatures2(phys, VkPhysicalDeviceFeatures2.calloc(f).sType$Default().pNext(a12.address()));
+            rawTl = a12.timelineSemaphore();
+        }
+        boolean rawBudget = exts.contains(SyncMemCaps.EXT_BUDGET), rawPrio = exts.contains(SyncMemCaps.EXT_PRIORITY) && SyncMemCaps.priorityFeatureOffered(s, phys, exts);
+        check(real != null && real.timeline() == rawTl && real.budget() == rawBudget && real.priority() == rawPrio,
+            "sync/memory decision " + real + " != raw (timeline=" + rawTl + " budget=" + rawBudget + " priority=" + rawPrio + ")");
+        String path = real == null ? "?" : real.path();
+        String oldT = System.getProperty("iroh.sync.timeline"), oldM = System.getProperty("iroh.memory.ext");
+        try {
+            System.setProperty("iroh.sync.timeline", "off");
+            System.setProperty("iroh.memory.ext", "off");
+            create(s, false);
+            check(lastSyncMem != null && !lastSyncMem.timeline() && !lastSyncMem.budget() && !lastSyncMem.priority(), "switches off: decision still " + lastSyncMem);
+        } finally {
+            restore("iroh.sync.timeline", oldT);
+            restore("iroh.memory.ext", oldM);
+        }
+        create(s, false); // leave the real decision behind
+        check(lastSyncMem != null && lastSyncMem.equals(real), "sync/memory decision not restored: " + lastSyncMem);
+        return " syncPath=" + path.replace(' ', ',');
+    }
+
+    private static void restore(String k, String v) {
+        if (v == null) System.clearProperty(k); else System.setProperty(k, v);
     }
 }

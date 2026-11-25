@@ -131,13 +131,17 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
                     break;
                 }
             VkPhysicalDeviceVulkan12Features have12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
-            VkPhysicalDeviceFeatures2 have = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(have12.address());
+            VkPhysicalDeviceVulkan11Features have11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(have12.address());
+            VkPhysicalDeviceFeatures2 have = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(have11.address());
             vkGetPhysicalDeviceFeatures2(phys, have);
             drawIndirectCount = have12.drawIndirectCount() && !forceNoIndirectCount;
             VkPhysicalDeviceVulkan12Features want12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default().drawIndirectCount(drawIndirectCount);
-            VkPhysicalDeviceFeatures2 want = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(want12.address());
-            want.features().multiDrawIndirect(have.features().multiDrawIndirect());
-            want.features().drawIndirectFirstInstance(have.features().drawIndirectFirstInstance()); // as the game device (H1C, gpuav VUID firstInstance-00554)
+            // P2-3 review (b97ae0e #1.3): the game device's multiDrawIndirect + shaderDrawParameters rule (IndirectDrawCaps), not its static tier
+            boolean mdi = net.vulkanmod.vulkan.device.IndirectDrawCaps.multiDrawSupported(have.features(), have11);
+            VkPhysicalDeviceVulkan11Features want11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(want12.address()).shaderDrawParameters(mdi);
+            VkPhysicalDeviceFeatures2 want = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(want11.address());
+            want.features().multiDrawIndirect(mdi);
+            want.features().drawIndirectFirstInstance(have.features().drawIndirectFirstInstance()); // as the game device (P2-3 / int-4c H1C, gpuav VUID firstInstance-00554)
             PointerBuffer exts = null;
             if (rayTracing) {
                 VkPhysicalDeviceAccelerationStructureFeaturesKHR haveAs = VkPhysicalDeviceAccelerationStructureFeaturesKHR.calloc(s).sType$Default();
@@ -204,8 +208,7 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
     @Override public boolean supportsDrawIndirectCount() { return drawIndirectCount; }
     @Override public long capBytes() { return cap; }
     @Override public boolean canRecordOutsideMainPass() { return !inRendering && !mainPassBound; }
-    @Override public boolean inFrameCopyPossible() { return !inRendering && !mainPassBound && !betweenFrames; }
-    @Override public boolean frameRecording() { return !betweenFrames; }
+    @Override public boolean inFrameCopyPossible() { return !inRendering && !mainPassBound && frameRecording(); }
     @Override protected VkDevice device() { return device; }
     @Override protected long pipelineCache() { return VK_NULL_HANDLE; }
     @Override protected long sampler(boolean linear) { return linear ? samplerLinear : sampler; }
@@ -365,8 +368,23 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
         return uploadCmd;
     }
 
+    private int failCmds;
+    private boolean outsideFrame;
+
+    /** V-M31 test seam: the next n cmd() calls throw (a recording that fails after the image exists). */
+    public void failNextCmds(int n) { failCmds = n; }
+
+    /** V-M31 test seam: frameRecording() answers false (a client tick). */
+    public void setOutsideFrame(boolean v) { outsideFrame = v; }
+
+    @Override public boolean frameRecording() { return !outsideFrame && !betweenFrames; } // UPLOAD-SYNC: betweenFrames too
+
     @Override
     protected VkCommandBuffer cmd() {
+        if (failCmds > 0) {
+            failCmds--;
+            throw new IllegalStateException("injected: no frame is recording");
+        }
         if (!recording) {
             try (MemoryStack s = stackPush()) {
                 vkResetCommandBuffer(cmd, 0);
@@ -470,13 +488,13 @@ public final class HeadlessGpuDevice extends VkGpuDevice implements AutoCloseabl
             vkUnmapMemory(device, ((Mem) st.alloc()).memory());
             VkCommandBuffer uc = uploadCmd();
             long dst = ((VkBuf) buffer).buffer();
-            if (!uploadDsts.add(dst)) { // V-0: a second write to the same buffer in one upload batch (syncval WRITE_AFTER_WRITE)
+            if (!uploadDsts.add(dst)) { // UPLOAD-SYNC (from 4c V-0): a second write to one buffer in a batch, as UploadManager.dstBuffers
                 vkCmdPipelineBarrier(uc, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                         VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT), null, null);
                 uploadDsts.clear();
                 uploadDsts.add(dst);
             }
-            vkCmdCopyBuffer(uc, st.buffer(), ((VkBuf) buffer).buffer(), VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
+            vkCmdCopyBuffer(uc, st.buffer(), dst, VkBufferCopy.calloc(1, s).srcOffset(0).dstOffset(offset).size(len));
         }
         uploadStaging.add(st);
     }

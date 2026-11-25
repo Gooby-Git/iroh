@@ -111,12 +111,12 @@ public class QuadSorter {
             final int quadIndex = sortingPointsIndices[i];
             final int baseVertex = quadIndex * stride;
 
-            MemoryUtil.memPutInt(ptr + (size * 0L), baseVertex + 0);
-            MemoryUtil.memPutInt(ptr + (size * 1L), baseVertex + 1);
-            MemoryUtil.memPutInt(ptr + (size * 2L), baseVertex + 2);
-            MemoryUtil.memPutInt(ptr + (size * 3L), baseVertex + 2);
-            MemoryUtil.memPutInt(ptr + (size * 4L), baseVertex + 3);
-            MemoryUtil.memPutInt(ptr + (size * 5L), baseVertex + 0);
+            putIndex(ptr + (size * 0L), size, baseVertex + 0);
+            putIndex(ptr + (size * 1L), size, baseVertex + 1);
+            putIndex(ptr + (size * 2L), size, baseVertex + 2);
+            putIndex(ptr + (size * 3L), size, baseVertex + 2);
+            putIndex(ptr + (size * 4L), size, baseVertex + 3);
+            putIndex(ptr + (size * 5L), size, baseVertex + 0);
 
             ptr += size * 6L;
         }
@@ -143,15 +143,27 @@ public class QuadSorter {
             final int quadIndex = sortingPoints[i];
             final int baseVertex = quadIndex * stride;
 
-            MemoryUtil.memPutInt(ptr + (size * 0L), baseVertex + 0);
-            MemoryUtil.memPutInt(ptr + (size * 1L), baseVertex + 1);
-            MemoryUtil.memPutInt(ptr + (size * 2L), baseVertex + 2);
-            MemoryUtil.memPutInt(ptr + (size * 3L), baseVertex + 2);
-            MemoryUtil.memPutInt(ptr + (size * 4L), baseVertex + 3);
-            MemoryUtil.memPutInt(ptr + (size * 5L), baseVertex + 0);
+            putIndex(ptr + (size * 0L), size, baseVertex + 0);
+            putIndex(ptr + (size * 1L), size, baseVertex + 1);
+            putIndex(ptr + (size * 2L), size, baseVertex + 2);
+            putIndex(ptr + (size * 3L), size, baseVertex + 2);
+            putIndex(ptr + (size * 4L), size, baseVertex + 3);
+            putIndex(ptr + (size * 5L), size, baseVertex + 0);
 
             ptr += size * 6L;
         }
+    }
+
+    /**
+     * R-P213BC: one index of the element's own width. The base wrote a 4-byte int at a 2-byte stride for 16-bit
+     * indices: the neighbours overwrote each other's upper half in order, and the last index of the last quad stored
+     * 2 bytes past indexCount * 2.
+     */
+    static void putIndex(long address, int size, int value) {
+        if (size == 2)
+            MemoryUtil.memPutShort(address, (short) value);
+        else
+            MemoryUtil.memPutInt(address, value);
     }
 
     public void reset() {

@@ -1,5 +1,7 @@
 package dev.elemore.iroh.shaderpack.runtime;
 
+import dev.elemore.iroh.perf.PipelineStats;
+
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.*;
@@ -578,7 +580,9 @@ public abstract class VkPackBackend implements GpuBackend {
                 long m = module(d.computeSpirv());
                 VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, s).sType$Default().layout(layout);
                 ci.stage().sType$Default().stage(VK_SHADER_STAGE_COMPUTE_BIT).module(m).pName(main);
+                long pipeT0 = System.nanoTime(); // P2-11
                 check(vkCreateComputePipelines(device(), pipelineCache(), ci, null, lb), "compute pipeline " + d.id());
+                PipelineStats.created(PipelineStats.Kind.COMPUTE, System.nanoTime() - pipeT0);
                 vkDestroyShaderModule(device(), m, null);
                 pipes.add(new Pipe(d.id(), lb.get(0), layout, l0, l1, true));
                 return pipes.size() - 1;
@@ -675,7 +679,9 @@ public abstract class VkPackBackend implements GpuBackend {
                     .pMultisampleState(ms).pColorBlendState(cbs).pDynamicState(dyn).layout(layout).renderPass(renderPass(formats, depthFmt)).subpass(0);
             if (depthFmt != 0)
                 ci.get(0).pDepthStencilState(dss);
+            long pipeT0 = System.nanoTime(); // P2-11
             check(vkCreateGraphicsPipelines(device(), pipelineCache(), ci, null, lb), "graphics pipeline " + d.id());
+            PipelineStats.created(PipelineStats.Kind.GRAPHICS, System.nanoTime() - pipeT0);
             vkDestroyShaderModule(device(), vm, null);
             vkDestroyShaderModule(device(), fm, null);
             pipes.add(new Pipe(d.id(), lb.get(0), layout, l0, l1, false));

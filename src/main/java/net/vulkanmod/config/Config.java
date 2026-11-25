@@ -30,11 +30,44 @@ public class Config {
 
     public boolean backFaceCulling = true;
 
+    // ---- P2-7b: GPU terrain culling techniques (Culling page). Each its own option, all off by default until an in-game
+    // A/B shows a gain with 0 missing sections; active only with the world terrain arena on an indirect-draw device.
+    /** compute frustum test per command against the frame's MVP (sections the async walk kept from the last frame) */
+    public boolean cullGpuFrustum = false;
+    /** compute horizon test: hidden below opaque section columns near the camera */
+    public boolean cullGpuHorizon = false;
+    /** compute screen-size test: sections whose box covers no pixel sample */
+    public boolean cullGpuScreenSize = false;
+    /** compute facing test: per-facing buckets against the section's geometry box (replaces the CPU facing mask) */
+    public boolean cullGpuFacing = false;
+    /**
+     * P2-7c: two-pass Hi-Z occlusion of the opaque layers (previous frame's depth pyramid, then a retest of what only that
+     * culled against this frame's pyramid: nothing visible goes missing on fast turns)
+     */
+    public boolean cullGpuHiZ = false;
+    /** P2-7c: the translucent layer through the GPU cull with Hi-Z against the depth it is drawn against (order kept) */
+    public boolean cullGpuHiZTranslucent = false;
+
     // ---- options the pack relied on (Sodium / Sodium Extra / Iris / Cull Fewer Leaves), see IrohOptions ----
     /** DEFAULT follows the vanilla Graphics setting, FAST / FANCY override it. */
     public String leavesQuality = "DEFAULT";
     public boolean enableVignette = true;
-    public boolean showFps = false;
+    // ---- Telemetry tab (card TEL-1; replaces the old showFps flag, which iroh.json migrates, see IrohOptions) ----
+    /** Master switch of the on-screen overlay. */
+    public boolean telemetryOverlay = false;
+    public boolean telFps = true, telAvg = true, telLow1 = true, telLow01 = false, telFrameTime = false, telGraph = false;
+    public boolean telGpuBusy = false, telVram = false, telRam = false, telPing = false, telTps = false, telChunks = false;
+    public boolean telEntities = false, telRenderDist = false, telFeatures = false, telGenFps = false;
+    /** TOP_LEFT / TOP_RIGHT / BOTTOM_LEFT / BOTTOM_RIGHT */
+    public String telPosition = "TOP_LEFT";
+    /** WHITE / GREEN / CYAN / YELLOW / ORANGE / PINK */
+    public String telColor = "WHITE";
+    /** F9 / F7 / F12 / PAUSE / SCROLL_LOCK / INSERT / HOME / END / NONE */
+    public String telHotkey = "F9";
+    /** 50..200 percent */
+    public int telScale = 100;
+    /** 10..100 percent */
+    public int telOpacity = 100;
     /** -1 terrain fog off, 0 vanilla, n > 0 chunks (not verified, treated as vanilla). */
     public int fogDistanceChunks = 0;
     /** Iroh leaf culling (Cull Fewer Leaves behaviour) on/off. Off unless migrated from cull-fewer-leaves.toml. */

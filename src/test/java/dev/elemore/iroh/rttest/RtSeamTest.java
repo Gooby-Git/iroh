@@ -240,7 +240,8 @@ public final class RtSeamTest {
             "rt/game/RtStartup", "rt/game/RtSwitch", "rt/game/RtFailures", "rt/game/RtLookArbiter", "rt/RtLook", "rt/RtCapabilities");
     /** P5-2: the pinned hook sites (merge notes in knowledge/rt-iroh.md "Integration notes"); int-3 adds StartupReport, IrohOptions, Options (the Iroh section's Look row). */
     static final Set<String> HOOK_SITES = Set.of("net/vulkanmod/vulkan/device/DeviceManager", "net/vulkanmod/vulkan/Vulkan",
-            "net/vulkanmod/render/chunk/buffer/AreaBuffer", "net/vulkanmod/render/chunk/WorldRenderer",
+            "net/vulkanmod/render/chunk/buffer/GameOps", "dev/elemore/iroh/perf/AreaArena", // merge 3b->4c: the arena (P2-4) moved the RT usage bits from AreaBuffer to GameOps / AreaArena
+            "net/vulkanmod/render/chunk/WorldRenderer",
             "net/vulkanmod/render/chunk/build/frapi/render/AbstractBlockRenderContext", "dev/elemore/iroh/gpu/game/IrohGpuDevice",
             "dev/elemore/iroh/diag/StartupReport", "dev/elemore/iroh/config/IrohOptions", "net/vulkanmod/config/option/Options",
             // INT-4 MainPassArbiter rule 8 (Look RT vs the pack): reached only when the pack path is requested

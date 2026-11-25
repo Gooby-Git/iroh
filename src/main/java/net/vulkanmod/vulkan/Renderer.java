@@ -59,6 +59,7 @@ public class Renderer {
 
     public static void initRenderer() {
         INSTANCE = new Renderer();
+        dev.elemore.iroh.perf.PipelineStats.RECORDING = Renderer::isRecordingSafe; // P2-11: "in frame" for the pipeline-creation counter
         INSTANCE.init();
         // api 4 (card V-M1): mod GPU buffers / compute / targets on Iroh's device. INT-2: only records the sizes; the
         // device objects are created on a mod's first api-4 call (GpuCore.get)
@@ -402,6 +403,9 @@ public class Renderer {
         // Iroh (P1-13a): GPU timestamps start outside the render pass
         if (dev.elemore.iroh.apiimpl.FrameProfiler.ON)
             dev.elemore.iroh.apiimpl.FrameProfiler.frameStart(commandBuffer, currentFrame);
+        // Iroh (TEL-1): Telemetry overlay GPU frame time + render-thread start stamp (one plain static test when off)
+        if (dev.elemore.iroh.telemetry.TelemetryGpu.ON)
+            dev.elemore.iroh.telemetry.TelemetryGpu.frameStart(commandBuffer, currentFrame);
         // Iroh (td-4a9be3): a new frame command buffer; uses recorded in the previous one have executed or will
         // execute before anything recorded from now on (see VulkanImage.uploadOwned / frameUse).
         net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
@@ -434,6 +438,7 @@ public class Renderer {
 
         // Iroh (rc3r2, td-7937f0): mainPass.end ends the command buffer; from here on nothing may record into it, even if
         // the submit below throws (device lost / out of date during a world teardown).
+        if (dev.elemore.iroh.telemetry.TelemetryGpu.ON) dev.elemore.iroh.telemetry.TelemetryGpu.frameEnd(currentCmdBuffer); // TEL-1
         try {
             mainPass.end(currentCmdBuffer);
         } finally {
@@ -510,21 +515,33 @@ public class Renderer {
             VkSubmitInfo submitInfo = VkSubmitInfo.calloc(stack);
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO);
 
-            // perf/uploads: also wait (on the GPU) for the transfer-queue uploads submitted since the last frame
-            long[] uploadWaits = Synchronization.INSTANCE.takeWaitSemaphores();
-            java.nio.LongBuffer waits = stack.mallocLong(1 + uploadWaits.length);
-            java.nio.IntBuffer stages = stack.mallocInt(1 + uploadWaits.length);
+            // perf/uploads: also wait (on the GPU) for the transfer-queue uploads submitted since the last frame.
+            // P2-12 (L9): at the stages that read uploaded data (Synchronization.UPLOAD_WAIT_STAGES), not ALL_COMMANDS; with timeline
+            // semaphores one wait per upload queue (value = its last upload), else one binary semaphore per upload command buffer.
+            long[][] uploadWaits = Synchronization.INSTANCE.takeUploadWaits();
+            long[] upSems = uploadWaits[0], upVals = uploadWaits[1];
+            boolean anyTimeline = false;
+            for (long v : upVals) anyTimeline |= v != 0L;
+            java.nio.LongBuffer waits = stack.mallocLong(1 + upSems.length);
+            java.nio.IntBuffer stages = stack.mallocInt(1 + upSems.length);
+            java.nio.LongBuffer waitValues = anyTimeline ? stack.mallocLong(1 + upSems.length) : null;
             waits.put(imageAvailableSemaphores.get(currentFrame));
             stages.put(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            for (long w : uploadWaits) {
-                waits.put(w);
-                stages.put(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            if (waitValues != null) waitValues.put(0L);
+            for (int i = 0; i < upSems.length; i++) {
+                waits.put(upSems[i]);
+                stages.put(Synchronization.UPLOAD_WAIT_STAGES);
+                if (waitValues != null) waitValues.put(upVals[i]);
             }
             waits.flip();
             stages.flip();
             submitInfo.waitSemaphoreCount(waits.remaining());
             submitInfo.pWaitSemaphores(waits);
             submitInfo.pWaitDstStageMask(stages);
+            if (waitValues != null) {
+                waitValues.flip();
+                net.vulkanmod.vulkan.queue.UploadSubmit.chainWaitValues(stack, submitInfo, waitValues);
+            }
             submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
             submitInfo.pCommandBuffers(stack.pointers(currentCmdBuffer));
 
@@ -546,10 +563,13 @@ public class Renderer {
             presentInfo.pSwapchains(stack.longs(swapChain.getId()));
 
             presentInfo.pImageIndices(stack.ints(imageIndex));
+            PresentPacer.attach(stack, presentInfo); // P2-10: optional present_id, no-op by default
 
             if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.PRESENT);
             vkResult = dev.elemore.iroh.memory.MemoryGuard.check(vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo), "vkQueuePresentKHR");
             if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.exit(dev.elemore.iroh.diag.SlowFrames.Phase.PRESENT);
+
+            if (vkResult == VK_SUCCESS) PresentPacer.afterPresent(device, swapChain.getId()); // P2-10: optional, no-op by default
 
             if (vkResult == VK_ERROR_OUT_OF_DATE_KHR || vkResult == VK_SUBOPTIMAL_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
@@ -1093,14 +1113,14 @@ public class Renderer {
         return null;
     }
 
-    public static boolean isRecording() {
-        return INSTANCE.recordingCmds;
-    }
-
     /** UPLOAD-SYNC: a frame command buffer is recording (no log, no renderer = false) */
     public static boolean isRecordingSafe() {
         Renderer r = INSTANCE;
         return r != null && r.recordingCmds && r.currentCmdBuffer != null;
+    }
+
+    public static boolean isRecording() {
+        return INSTANCE.recordingCmds;
     }
 
     public static void scheduleSwapChainUpdate() {

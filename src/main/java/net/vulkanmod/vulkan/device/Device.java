@@ -47,7 +47,9 @@ public class Device {
         this.vendorIdString = decodeVendor(properties.vendorID());
         this.deviceName = properties.deviceNameString();
         this.driverVersion = decodeDvrVersion(properties.driverVersion(), properties.vendorID());
-        this.vkVersion = decDefVersion(getVkVer());
+        getVkVer(); // keeps the instance-level "Vulkan 1.2 or newer" check
+        // Upstream VulkanMod 1e6db2d: report the device's Vulkan version (what it supports), not the loader's.
+        this.vkVersion = decDefVersion(properties.apiVersion());
 
         this.availableFeatures = VkPhysicalDeviceFeatures2.calloc();
         this.availableFeatures.sType$Default();
@@ -69,16 +71,23 @@ public class Device {
 
         vkGetPhysicalDeviceFeatures2(this.physicalDevice, this.availableFeatures);
 
-        if (this.availableFeatures.features().multiDrawIndirect() && this.availableFeatures11.shaderDrawParameters())
-            this.drawIndirectSupported = true;
+        this.drawIndirectSupported = IndirectDrawCaps.multiDrawSupported(this.availableFeatures.features(), this.availableFeatures11);
 
     }
 
     private static String decodeVendor(int i) {
         return switch (i) {
             case (0x10DE) -> "Nvidia";
-            case (0x1022) -> "AMD";
+            case (0x1022), (0x1002) -> "AMD"; // upstream 62a5106: 0x1002 is the PCI id RADV / AMDVLK report
             case (0x8086) -> "Intel";
+            // upstream 13e925f: non-PC / software vendors
+            case (0x1010) -> "Imagination Technologies";
+            case (0x13B5) -> "ARM";
+            case (0x5143) -> "Qualcomm";
+            case (0x106B) -> "Apple";
+            case (0x14E4) -> "Broadcom";
+            case (0x1AE0) -> "Google"; // SwiftShader
+            case (0x10005) -> "Mesa"; // VK_VENDOR_ID_MESA: lavapipe, Honeykrisp
             default -> "undef"; //Either AMD or Unknown Driver version/vendor and.or Encoding Scheme
         };
     }
@@ -95,7 +104,7 @@ public class Device {
     private static String decodeDvrVersion(int v, int i) {
         return switch (i) {
             case (0x10DE) -> decodeNvidia(v); //Nvidia
-            case (0x1022) -> decDefVersion(v); //AMD
+            case (0x1022), (0x1002) -> decDefVersion(v); //AMD
             case (0x8086) -> decIntelVersion(v); //Intel
             default -> decDefVersion(v); //Either AMD or Unknown Driver Encoding Scheme
         };
@@ -139,7 +148,7 @@ public class Device {
     // Added these to allow detecting GPU vendor, to allow handling vendor specific circumstances:
     // (e.g. such as in case we encounter a vendor specific driver bug)
     public boolean isAMD() {
-        return vendorId == 0x1022;
+        return vendorId == 0x1022 || vendorId == 0x1002;
     }
 
     public boolean isNvidia() {
