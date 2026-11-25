@@ -110,7 +110,7 @@ public final class UpscaleDefaultOffTest {
         // Wiring: the temporal package is referenced from exactly these files outside itself.
         Set<String> expected = new TreeSet<>(Set.of(
                 "net/vulkanmod/vulkan/VRenderSystem.java", "dev/elemore/iroh/shader/UniformSlots.java",
-                "net/vulkanmod/vulkan/shader/Pipeline.java", "dev/elemore/iroh/glshim/GlState.java",
+                "net/vulkanmod/vulkan/shader/Pipeline.java", "net/vulkanmod/vulkan/shader/Uniforms.java", "dev/elemore/iroh/glshim/GlState.java",
                 "net/vulkanmod/vulkan/pass/DefaultMainPass.java", "dev/elemore/iroh/apiimpl/WorldStages.java",
                 "net/vulkanmod/vulkan/device/DeviceManager.java", "net/vulkanmod/vulkan/Vulkan.java",
                 "net/vulkanmod/mixin/render/upscale/IrohRenderScaleGameM.java", "net/vulkanmod/mixin/render/upscale/IrohRenderScaleLevelM.java",

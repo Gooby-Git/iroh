@@ -37,6 +37,7 @@ public class Uniforms {
         vec1f_uniformMap.put("GameTime", RenderSystem::getShaderGameTime);
         vec1f_uniformMap.put("GlintAlpha", RenderSystem::getShaderGlintAlpha);
         vec1f_uniformMap.put("AlphaCutout", () -> VRenderSystem.alphaCutout);
+        vec1f_uniformMap.put("MipClamp", () -> dev.elemore.iroh.temporal.TemporalFrame.foliageMipClamp(VRenderSystem.alphaCutout));
 
         //Vec2
         vec2f_uniformMap.put("ScreenSize", VRenderSystem::getScreenSize);
