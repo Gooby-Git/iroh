@@ -64,7 +64,11 @@ public class RenderSection {
     public byte steps;
     public byte directionChanges;
 
+    /** P2-6: stable slot in SectionGrid.sections (the async visibility graph indexes by it). */
+    public final int gridIndex;
+
     public RenderSection(int index, int x, int y, int z) {
+        this.gridIndex = index;
         this.xOffset = x;
         this.yOffset = y;
         this.zOffset = z;
@@ -315,20 +319,27 @@ public class RenderSection {
         return zOffset;
     }
 
+    /**
+     * The section lost this layer: free its segments and clear its draw parameters.
+     * TERRAIN-HOLES (RQ-P24-a, now unconditional): the base passed a BYTE offset to setSegmentFree, which takes ELEMENT
+     * offsets, so the layer's own segment leaked and a live segment of ANOTHER section starting at offset*elementSize was
+     * freed at once; the next upload overwrote it while that section still drew from it (missing / wrong faces). The
+     * free is now by element offset, only when this slot owns the segment, after the frames in flight
+     * (SectionSegments.freeLayer); the translucent index segment, never freed before, goes the same way.
+     */
     public void resetDrawParameters(TerrainRenderType renderType) {
-        for (int i = 0; i < QuadFacing.COUNT; ++i) {
-            DrawBuffers drawBuffers = this.chunkArea.getDrawBuffers();
-            long ptr = DrawParametersBuffer.getParamsPtr(drawBuffers.getDrawParamsPtr(), this.inAreaIndex, renderType.ordinal(), i);
-
-            AreaBuffer areaBuffer = drawBuffers.getAreaBuffer(renderType);
-            int vertexOffset = DrawParametersBuffer.getVertexOffset(ptr);
-            if (areaBuffer != null && vertexOffset != -1) {
-                int segmentOffset = vertexOffset * DrawBuffers.VERTEX_SIZE;
-                areaBuffer.setSegmentFree(segmentOffset);
-            }
-
-            DrawParametersBuffer.resetParameters(ptr);
+        if (this.chunkArea == null)
+            return;
+        if (this.chunkArea.getDrawBuffers().worldMode()) { // P2-7a: the layer's arena ranges (vertex + sorted index) go back
+            this.chunkArea.getDrawBuffers().resetLayerWorld(this.inAreaIndex, this.gridIndex, renderType); // P2-7b: + GPU-cull box
+            return;
         }
+        DrawBuffers drawBuffers = this.chunkArea.getDrawBuffers();
+        long ptr0 = DrawParametersBuffer.getParamsPtr(drawBuffers.getDrawParamsPtr(), this.inAreaIndex, renderType.ordinal(), 0);
+        net.vulkanmod.render.chunk.buffer.SectionSegments.freeLayer(drawBuffers.getAreaBuffer(renderType),
+                renderType == TerrainRenderType.TRANSLUCENT ? drawBuffers.getIndexBuffer() : null, ptr0, QuadFacing.COUNT);
+        for (int i = 0; i < QuadFacing.COUNT; ++i)
+            DrawParametersBuffer.resetParameters(ptr0 + i * DrawParametersBuffer.STRIDE);
     }
 
     public void setChunkArea(ChunkArea chunkArea) {
@@ -354,11 +365,18 @@ public class RenderSection {
     }
 
     public void setVisibility(long visibility) {
+        long old = this.visibility;
         this.visibility = visibility;
+        if (old != visibility) // P2-6: async graph repairs openings, re-walks after closings
+            net.vulkanmod.render.chunk.graph.AsyncVisibility.inputChanged(this.gridIndex,
+                    net.vulkanmod.render.chunk.graph.VisibilityWalk.opens(old, false, visibility, false));
     }
 
     public void setCompletelyEmpty(boolean b) {
+        boolean old = this.completelyEmpty;
         this.completelyEmpty = b;
+        if (old != b)
+            net.vulkanmod.render.chunk.graph.AsyncVisibility.inputChanged(this.gridIndex, b);
     }
 
     public void setContainsBlockEntities(boolean b) {
@@ -420,17 +438,18 @@ public class RenderSection {
         this.resetDrawParameters();
     }
 
+    /** Relocation (setOrigin): every layer leaves this slot. TERRAIN-HOLES: the segments are freed too (they leaked). */
     private void resetDrawParameters() {
         if (this.chunkArea == null)
             return;
 
-        long basePtr = this.chunkArea.getDrawBuffers().getDrawParamsPtr();
-        for (TerrainRenderType renderType : TerrainRenderType.VALUES) {
-            for (QuadFacing facing : QuadFacing.VALUES) {
-                long ptr = DrawParametersBuffer.getParamsPtr(basePtr, this.inAreaIndex, renderType.ordinal(), facing.ordinal());
-                DrawParametersBuffer.resetParameters(ptr);
-            }
+        if (this.chunkArea.getDrawBuffers().worldMode()) {
+            // P2-7a: no area release reclaims world-arena ranges, so a moved / cleared section frees its own
+            this.chunkArea.getDrawBuffers().resetSectionWorld(this.inAreaIndex, this.gridIndex); // P2-7b: + GPU-cull metadata
+            return;
         }
+        for (TerrainRenderType renderType : TerrainRenderType.VALUES)
+            this.resetDrawParameters(renderType);
     }
 
     public void setDirty(boolean playerChanged) {

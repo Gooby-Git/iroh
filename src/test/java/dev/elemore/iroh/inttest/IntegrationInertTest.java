@@ -57,7 +57,8 @@ public final class IntegrationInertTest {
         PINNED.put("IrohDrawIdsM.* / IrohBlockEntityIdsM.*", "Substitution.HOOK x1 at HEAD and x1 at RETURN per entity / block entity render (volatile int; INT-3: P3-11 draw ids)");
         PINNED.put("IrohWeatherContextM.*", "Substitution.HOOK x1 at renderSnowAndRain HEAD, a plain static store at RETURN (INT-3: P3-11)");
         PINNED.put("DefaultMainPass.rebindMainTarget", "");
-        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog), PackRuntime.onTranslucentTerrain x1 (only inside the pack-terrain branch; first statement !active; INT-3: P3-11)");
+        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog), PackRuntime.onTranslucentTerrain x1 (only inside the pack-terrain branch; first statement !active; INT-3: P3-11); P2-7a: this.worldArena x1 (plain field, null unless iroh.terrain.mdi was on at the last allChanged; the audit does not list instance fields); P2-7c: this.terrainCull != null x2 (plain field, null until a GPU-cull technique ran once with the world arena: the CUTOUT call's retest hook and the later layers' safety net), both after the worldArena test");
+
         PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1 (plain static)");
         PINNED.put("Pipeline.needsUpdate", "TemporalFrame.MIP_ON x1 per image descriptor (plain static; IN_WORLD only read when MIP_ON)");
         PINNED.put("GlState.viewport", "TemporalFrame.IN_WORLD x1 (plain static)");
@@ -65,11 +66,16 @@ public final class IntegrationInertTest {
         PINNED.put("UniformSlots.jittered", "TemporalFrame.JITTER_ON x1 per converted-shader ProjMat read (plain static)");
         PINNED.put("TaskBudgetM.*", "TaskBudget.enabled x7 = PerfSwitches.tasksBudgetOn (one volatile read each; was a switch-map lookup), runAllTasks wrapped (original called), SlowFrames.ON x3");
         PINNED.put("IrohRenderScaleGameM.*", "TemporalRuntime.onRenderHead (UpscaleSwitches.modeSet volatile) / onRenderTail / onRenderLevelHead / onBeforeHandClear / onHand / onBeforeGui / chainWidth / chainHeight: one plain static read each");
-        PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON");
+        PINNED.put("SectionGraph.update", "SectionGraph.cacheEnabled x1 = PerfSwitches.graphCacheOn (volatile), SlowFrames.ON x2 (P2-6 GRAPH_FILTER_ONLY counter on the async path)");
         PINNED.put("SectionGraph.scheduleRebuilds0", "rebuildBudget x1 = PerfSwitches.rebuildBudgetOn (volatile), RenderRegionBuilder.beginBatch (cloneCacheOn volatile), SlowFrames.ON");
         PINNED.put("TaskDispatcher.adaptBuilders", "this.adaptive null test (adaptive builders off)");
         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
+        PINNED.put("TaskDispatcher.updateSections0", "IntakeBudget.enabled x1 = PerfSwitches.intakeBudgetOn (one volatile read per intake), SlowFrames.ON");
+        PINNED.put("BulkDirtyM.*", "PerfSwitches.bulkDirtyOn x1 (one volatile read per setSectionDirtyWithNeighbors call)");
+        PINNED.put("CompileResult.updateSection / UploadBuffer.*", "P2-7b: SectionCullData.current x1 (one volatile read per compile result applied / per worker upload result; null unless the world arena exists on a GPU-cull tier)");
+        PINNED.put("WorldRenderer.drawWorldLayer", "P2-7b: SectionCullData.OPAQUE_LAYERS (static final) after this.cullData != null (plain field, null without the world arena on a GPU-cull tier); only reached with the world arena; P2-7c: translucent layer: the same this.cullData != null test first, then CONFIG.cullGpuHiZTranslucent");
         PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onAfterSky (INT-3: P3-11)/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
+
     }
 
     public static void main(String[] args) throws Exception {
@@ -110,10 +116,18 @@ public final class IntegrationInertTest {
         check("task budget off", !TaskBudget.enabled());
         boolean perfOff = true;
         for (String k : List.of(PerfSwitches.TASKS_BUDGET, PerfSwitches.GRAPH_CACHE, PerfSwitches.CLONE_CACHE, PerfSwitches.REBUILD_BUDGET,
-                PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL))
+                PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL,
+                PerfSwitches.AREA_ARENA, PerfSwitches.INTAKE_BUDGET, PerfSwitches.BULK_DIRTY, PerfSwitches.TERRAIN_MDI)) // P2-7a
             perfOff &= !PerfSwitches.on(k);
         check("every perf switch off", perfOff);
+        check("P2-7a: no world terrain arena with iroh.terrain.mdi off (per-area buffers and draws)", net.vulkanmod.render.chunk.buffer.WorldArena.current() == null);
         check("api 4 not installed offline", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
+        // P2-7b: every GPU culling technique is a player option, off by default; no metadata mirror without the world arena
+        net.vulkanmod.config.Config dc = new net.vulkanmod.config.Config();
+        check("P2-7b: GPU culling options (frustum, horizon, screen size, facing) all off by default",
+                !dc.cullGpuFrustum && !dc.cullGpuHorizon && !dc.cullGpuScreenSize && !dc.cullGpuFacing);
+        check("P2-7c: Hi-Z occlusion and translucent Hi-Z options off by default", !dc.cullGpuHiZ && !dc.cullGpuHiZTranslucent);
+        check("P2-7b: no GPU-cull metadata (SectionCullData) without the world arena", net.vulkanmod.render.chunk.cull.SectionCullData.current() == null);
         // INT-2 (RQ-INT1-a): what Renderer init does in game creates NOTHING until a mod calls api 4
         dev.elemore.iroh.gpu.game.GpuLifecycle.install(3, 1920, 1080);
         for (int i = 0; i < 1000; i++) {
@@ -127,7 +141,8 @@ public final class IntegrationInertTest {
         dev.elemore.iroh.gpu.game.GpuLifecycle.resetForTest();
         check("fog capture not armed (no FogState per frame) until a mod asks", !dev.elemore.iroh.apiimpl.Sections.fogWanted());
         check("per-frame guards are plain flags and all off", !PerfSwitches.tasksBudgetOn && !PerfSwitches.graphCacheOn
-                && !PerfSwitches.cloneCacheOn && !PerfSwitches.rebuildBudgetOn && !UpscaleSwitches.modeSet);
+                && !PerfSwitches.cloneCacheOn && !PerfSwitches.rebuildBudgetOn && !UpscaleSwitches.modeSet
+                && !PerfSwitches.areaArenaOn && !PerfSwitches.intakeBudgetOn && !PerfSwitches.bulkDirtyOn && !PerfSwitches.terrainMdiOn);
 
         // --- one registry ---
         check("IrohDebug.set refused without -Dproctor=1 / -Diroh.debug=true", IrohDebug.set(UpscaleSwitches.MODE, "quality").startsWith("refused"));
@@ -159,11 +174,16 @@ public final class IntegrationInertTest {
         expect.put("Renderer.beginFrame0", "{GpuLifecycle.frameStart=1, SlowFrames.ON=4, SlowFrames.enter=2, SlowFrames.exit=2}");
         expect.put("Renderer.endFrame", "{FrameHooks.dispatch=1, SlowFrames.ON=5, SlowFrames.enter=3, SlowFrames.exit=3}");
         expect.put("TaskBudgetM.*", "{SlowFrames.ON=3, SlowFrames.count=1, SlowFrames.enter=1, SlowFrames.exit=1, TaskBudget.enabled=7, TaskBudget.forGame=1, TaskBudget.targetNs=1}");
-        expect.put("SectionGraph.update", "{SectionGraph.cacheEnabled=1, SlowFrames.ON=1, SlowFrames.count=1}");
+        expect.put("SectionGraph.update", "{SectionGraph.cacheEnabled=1, SlowFrames.ON=2, SlowFrames.count=2}");
         expect.put("SectionGraph.scheduleRebuilds0", "{RenderRegionBuilder.beginBatch=1, SectionGraph.rebuildBudget=1, SlowFrames.ON=1, SlowFrames.count=1}");
         expect.put("TaskDispatcher.adaptBuilders", "{}");
         expect.put("TaskDispatcher.doSectionUpdate", "{Sections.any=1, Sections.built=1}");
+        expect.put("TaskDispatcher.updateSections0", "{IntakeBudget.enabled=1, SlowFrames.ON=2, SlowFrames.count=3}"); // P2-4
+        expect.put("BulkDirtyM.*", "{PerfSwitches.bulkDirtyOn=1}"); // P2-4
         expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
+        expect.put("CompileResult.updateSection", "{SectionCullData.current=1}"); // P2-7b
+        expect.put("UploadBuffer.*", "{SectionCullData.current=1}"); // P2-7b
+        expect.put("WorldRenderer.drawWorldLayer", "{SectionCullData.OPAQUE_LAYERS=1}"); // P2-7b
         // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
         expect.put("Renderer.bindGraphicsPipeline", "{Substitution.HOOK=1}"); // INT-3: P3-10/P3-11
         expect.put("Renderer.uploadAndBindUBOs", "{Substitution.HOOK=1}"); // INT-3: P3-11, per draw

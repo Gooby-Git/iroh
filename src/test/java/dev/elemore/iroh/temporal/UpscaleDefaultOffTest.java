@@ -116,7 +116,8 @@ public final class UpscaleDefaultOffTest {
                 "net/vulkanmod/mixin/render/upscale/IrohRenderScaleGameM.java", "net/vulkanmod/mixin/render/upscale/IrohRenderScaleLevelM.java",
                 "dev/elemore/iroh/api/IrohDebug.java", "net/vulkanmod/vulkan/framebuffer/SceneTarget.java",
                 "dev/elemore/iroh/config/IrohOptions.java",
-                "dev/elemore/iroh/diag/StartupReport.java")); // INT-2: read-only (startup self-check line)
+                "dev/elemore/iroh/diag/StartupReport.java", // INT-2: read-only (startup self-check line)
+                "dev/elemore/iroh/telemetry/McSources.java")); // TEL-1 (merge int-2b): read-only (overlay shows scale mode / temporal state)
         Set<String> found = new TreeSet<>();
         Path root = Path.of("src/main/java");
         for (Path p : Files.walk(root).filter(p -> p.toString().endsWith(".java") && !p.toString().contains("dev/elemore/iroh/temporal/") && !p.toString().contains("dev/elemore/iroh/upscale/")).toList())

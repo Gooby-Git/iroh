@@ -1,5 +1,6 @@
 package dev.elemore.iroh.gpu.game;
 
+import dev.elemore.iroh.gpu.GpuCore;
 import dev.elemore.iroh.gpu.VkGpuDevice;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.texture.VulkanImage;
@@ -32,15 +33,16 @@ public final class MainDepth {
         try (MemoryStack s = MemoryStack.stackPush()) {
             int old = depth.getCurrentLayout();
             depth.transitionImageLayout(s, cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            dev.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            // P2-12 (RQ-APP1-a): the target was last used as an attachment / sampled texture / copy target, not by ALL_COMMANDS
+            dev.barrier(GpuCore.TARGET_STAGES, GpuCore.TARGET_ACCESS,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
             VkImageCopy.Buffer r = VkImageCopy.calloc(1, s);
             r.srcSubresource().aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
             r.dstSubresource().aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
             r.extent().width(depth.width).height(depth.height).depth(1);
             vkCmdCopyImage(cmd, depth.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target.image, VK_IMAGE_LAYOUT_GENERAL, r);
-            dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                    VK_ACCESS_MEMORY_READ_BIT);
+            dev.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, GpuCore.TARGET_STAGES,
+                    GpuCore.TARGET_ACCESS);
             if (old != VK_IMAGE_LAYOUT_UNDEFINED) depth.transitionImageLayout(s, cmd, old);
         }
         if (wasInMainPass) Renderer.getInstance().getMainPass().rebindMainTarget();

@@ -24,3 +24,27 @@ Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (ref
 NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
   this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
   distributed by this project.
+
+Upstream VulkanMod changes after the fork point (LGPL-3.0, same project, xCollateral and contributors), back-ported by
+card P2-13 from https://github.com/xCollateral/VulkanMod branch dev (one Iroh commit per upstream commit, adapted to 1.21.1):
+  7a1e520 "Add int index type for lines render type": vulkan/memory/buffer/index/AutoIndexBuffer.java (genIntLinesIndices),
+          vulkan/Drawer.java (capacity in vertices).
+  babff0c "Fix memory leak on section upload": render/vertex/TerrainBuilder.java (index realloc field, free),
+          render/vertex/TerrainBufferBuilder.java, render/chunk/build/thread/{ThreadBuilderPack,BuilderResources}.java,
+          render/chunk/build/task/{TaskDispatcher,SortTransparencyTask}.java.
+  e5dad79 "Fix sort task thread race condition bug": render/chunk/build/task/SortTransparencyTask.java (null sort state).
+  45b97c3 "Mitigate translucency sorting issue": render/chunk/WorldRenderer.java (sortTranslucentSections counts only
+          scheduled sorts; Iroh keeps vanilla's limit of 15 instead of upstream's 200 non-empty sections).
+  cc5f05e "Fix outline color": mixin/vertex/EntityOutlineGeneratorM.java (outline colour on the fast vertex path).
+  62a5106 "Add another AMD device id" (whitebelyash): vulkan/device/Device.java (vendor 0x1002).
+  13e925f "Add vendor ids for non-PC/exotic vendors" (whitebelyash): vulkan/device/Device.java.
+  2eabf9a "Prevent crash if texture id is invalid": gl/VkGlTexture.java (bindTexture; the 1.21.10 encoder part does not apply).
+  85a3734 "Fix Ctrl+key combos inserting characters in text fields on Wayland" (tmpod): mixin/wayland/KeyboardHandlerM.java
+          (adapted to the 1.21.1 charTyped signature), iroh.mixins.json.
+  5a80b35 "Port to 1.21.11" (WorldRenderer hunk only): render/chunk/WorldRenderer.java (no UBO upload/bind for areas that
+          do not draw).
+  e55e432 "Port to 1.21.2" (VRenderSystem.initRenderer hunk only): vulkan/VRenderSystem.java (initial shader colour).
+  1e6db2d "Use device's Vulkan version": vulkan/device/Device.java.
+  00f3013 "Fix 1 leak" (Icyllis Milica): vulkan/shader/Pipeline.java (descriptor set handles in a heap array).
+  397186a "Fix out of stack memory error": vulkan/shader/Pipeline.java (descriptor set layout array off the MemoryStack).
+  6b2db6e "Fix out of stack memory error on layout transitions": render/texture/SpriteUpdateUtil.java.

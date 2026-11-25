@@ -68,10 +68,17 @@ public class TaskDispatcher {
 
         this.stopThreads = false;
 
+        // Upstream VulkanMod babff0c: the old threads were joined by stopThreads() above (or earlier, when the world was
+        // unloaded), so their builders are free to release. The base only cleared them, leaking every builder's native
+        // index and vertex blocks (tens of MB of address space per thread) on each allChanged / builder-count change.
         if(this.resources != null) {
-            for (BuilderResources resources : this.resources) {
-                resources.clear();
-            }
+            if (this.allJoined) {
+                for (BuilderResources resources : this.resources) {
+                    if (resources != null)
+                        resources.free();
+                }
+            } // else a builder is still running on them (stopThreads timed out): leak rather than free under it
+            this.resources = null;
         }
 
         // perf/hitches: count from physical cores (ThreadPolicy), configured count = the base; adaptive extra builders
@@ -89,7 +96,7 @@ public class TaskDispatcher {
         this.resources = new BuilderResources[n];
 
         for (int i = 0; i < n; i++) {
-            BuilderResources builderResources = new BuilderResources();
+            BuilderResources builderResources = this.resourceFactory.get();
             final int index = i;
             Thread thread = new Thread(() -> {
                         dev.elemore.iroh.perf.ThreadPolicy.registerBuilderThread(); // perf/hitches: nice + off the render core
@@ -105,7 +112,7 @@ public class TaskDispatcher {
     }
 
     private void runTaskThread(int index, BuilderResources builderResources) {
-        while(!this.stopThreads) {
+        while(!this.stopThreads && this.isCurrent(index)) {
             if (index >= this.activeLimit) { // perf/hitches: an adaptive builder parks while the backlog is small
                 synchronized (this.parkLock) { // its own monitor: schedule()'s notify() must reach an idle ACTIVE builder
                     if (index >= this.activeLimit && !this.stopThreads) {
@@ -113,7 +120,7 @@ public class TaskDispatcher {
                         try {
                             this.parkLock.wait(200);
                         } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
+                            return; // only stopThreads' timeout path interrupts a builder
                         } finally {
                             this.parkedThreads--;
                         }
@@ -123,28 +130,62 @@ public class TaskDispatcher {
             }
             ChunkTask task = this.pollTask();
 
-            if(task == null)
+            if (task == null) {
+                Runnable hook = this.afterEmptyPoll; // test seam: the gap between the empty poll and the wait
+                if (hook != null)
+                    hook.run();
+                // R-P213BC: the wait condition is checked inside the monitor. schedule() offers the task and then notifies
+                // under this same monitor, and stopThreads() sets its flag before its notifyAll, so a wakeup that lands
+                // between the poll above and the wait below can no longer be lost (it hung stopThreads' join).
                 synchronized (this) {
-                    try {
+                    if (!this.stopThreads && this.highPriorityTasks.isEmpty() && this.lowPriorityTasks.isEmpty()) {
                         this.idleThreads++;
-                        this.wait();
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
+                        try {
+                            this.wait();
+                        } catch (InterruptedException e) {
+                            return; // only stopThreads' timeout path interrupts a builder
+                        } finally {
+                            this.idleThreads--;
+                        }
                     }
-                    this.idleThreads--;
                 }
-
-            if(task == null)
                 continue;
+            }
 
             try {
                 task.runTask(builderResources);
+                this.failures.succeeded(task);
+            } catch (Throwable t) {
+                // R-P213BC: one failing task used to end this builder for the rest of the session (e5dad79's NPE was one).
+                if (t instanceof VirtualMachineError && !(t instanceof StackOverflowError))
+                    throw t; // OutOfMemoryError and friends: not ours to swallow
+                // the task died half way: its TerrainBuilders are still in begin() state and would fail every later task
+                try {
+                    if (builderResources != null)
+                        builderResources.clear();
+                    this.failures.taskFailed(task, t);
+                } catch (Throwable ignored) {
+                    // reporting must not end the thread either
+                }
             } finally {
                 this.pendingTasks.decrementAndGet();
                 task.finish();
             }
         }
     }
+
+    /** R-P213BC: false for a builder of an older generation (stopThreads timed out, createThreads started new ones). */
+    private boolean isCurrent(int index) {
+        Thread[] t = this.threads;
+        return t != null && index < t.length && t[index] == Thread.currentThread();
+    }
+
+    /** R-P213BC: failed chunk tasks: rate-limited log, bounded retry of the section. */
+    final ChunkTaskFailures failures = new ChunkTaskFailures();
+    /** Test seam: BuilderResources needs the Fabric renderer, which a headless test does not have. */
+    java.util.function.Supplier<BuilderResources> resourceFactory = BuilderResources::new;
+    /** Test seam (null in the game): runs on a builder thread after pollTask() returned nothing, before it waits. */
+    volatile Runnable afterEmptyPoll;
 
     public void schedule(ChunkTask chunkTask) {
         if(chunkTask == null)
@@ -159,7 +200,7 @@ public class TaskDispatcher {
         }
 
         synchronized (this) {
-            this.notify();
+            this.notifyAll(); // all: a waiter above activeLimit would swallow a single notify (adaptive builders)
         }
     }
 
@@ -186,15 +227,30 @@ public class TaskDispatcher {
             this.parkLock.notifyAll();
         }
 
+        // R-P213BC: bounded join. A builder stuck in a task (or a wakeup bug) must not freeze the render thread in
+        // allChanged / setLevel(null); builders that miss the deadline are interrupted and their native blocks are NOT freed.
+        long deadline = System.nanoTime() + JOIN_TIMEOUT_NS;
+        boolean all = true;
         for (Thread thread : this.threads) {
             try {
-                thread.join();
+                long ms = Math.max(1L, (deadline - System.nanoTime()) / 1_000_000L);
+                thread.join(ms);
             } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                Thread.currentThread().interrupt();
+            }
+            if (thread.isAlive()) {
+                all = false;
+                thread.interrupt();
             }
         }
-
+        this.allJoined = all;
+        if (!all)
+            net.vulkanmod.Initializer.LOGGER.error("Iroh: chunk builder threads did not stop within {} ms; their native buffers are left allocated",
+                    JOIN_TIMEOUT_NS / 1_000_000L);
     }
+
+    static final long JOIN_TIMEOUT_NS = Long.getLong("iroh.builderJoinMs", 5000L) * 1_000_000L;
+    private volatile boolean allJoined = true;
 
     /** perf/uploads: render-thread section-upload budget per frame while playing (unlimited on loading screens). */
     private static final long UPLOAD_BUDGET_NS = Long.getLong("iroh.uploadBudgetUs", 1000L) * 1000L;
@@ -257,25 +313,43 @@ public class TaskDispatcher {
         return this.compileResults.size();
     }
 
+    /** P2-4: per-section cost model of the intake ({@code iroh.intake.budget}). */
+    private final dev.elemore.iroh.perf.IntakeBudget intakeBudget = new dev.elemore.iroh.perf.IntakeBudget();
+
     private boolean updateSections0(boolean unlimited) {
         long t0 = System.nanoTime();
         long bytes0 = dev.elemore.iroh.diag.UploadStats.chunkBytes;
         CompileResult result;
         boolean flag = false;
         int n = 0;
+        // P2-4: predict the next section's cost and stop BEFORE it crosses the budget (the old rule checks after)
+        boolean predict = !unlimited && dev.elemore.iroh.perf.IntakeBudget.enabled();
         while ((result = this.compileResults.peek()) != null) {
-            if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > uploadBudgetBytes())) {
+            long nextBytes = 0;
+            if (predict) {
+                nextBytes = result.byteSize();
+                if (!this.intakeBudget.admit(System.nanoTime() - t0, UPLOAD_BUDGET_NS, approxBytes, uploadBudgetBytes(), nextBytes, n)) {
+                    this.intakeBudget.deferredSections += this.compileResults.size();
+                    if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.INTAKE_DEFERRED, this.compileResults.size());
+                    if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.sectionsDeferred += this.compileResults.size();
+                    break;
+                }
+            } else if (!unlimited && n > 0 && (System.nanoTime() - t0 > UPLOAD_BUDGET_NS || approxBytes > uploadBudgetBytes())) {
                 if (dev.elemore.iroh.diag.UploadStats.ON) dev.elemore.iroh.diag.UploadStats.sectionsDeferred += this.compileResults.size();
                 break;
             }
             this.compileResults.poll();
             flag = true;
             n++;
+            long s0 = predict ? System.nanoTime() : 0;
+            long grows0 = predict ? net.vulkanmod.render.chunk.buffer.AreaBuffer.bufferEvents : 0;
             try {
                 doSectionUpdate(result);
             } finally {
                 releaseAll(result); // idempotent: whatever the upload did not consume goes back
             }
+            if (predict)
+                this.intakeBudget.observe(nextBytes, System.nanoTime() - s0, net.vulkanmod.render.chunk.buffer.AreaBuffer.bufferEvents != grows0);
         }
         if (dev.elemore.iroh.diag.SlowFrames.ON) {
             dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SECTIONS, n);
@@ -286,6 +360,7 @@ public class TaskDispatcher {
             dev.elemore.iroh.diag.UploadStats.sectionsUploaded += n;
             dev.elemore.iroh.diag.UploadStats.frameUploadNs += System.nanoTime() - t0;
         }
+        if (dev.elemore.iroh.diag.SegmentCheck.ON) dev.elemore.iroh.diag.SegmentCheck.afterIntake(); // TERRAIN-HOLES
 
         return flag;
     }

@@ -202,25 +202,36 @@ culling, shader/pipeline warm-up to remove hitches, GC pressure in the frame loo
 scheduling, frame pacing, and Iroh's own profiler overlay (`-Diroh.profile`: per-stage CPU and GPU
 times) as the tool every later phase uses.
 
-**P2-0 [P] Perf scenes.** Fixed camera paths: citadel fly-through, dense forest, 32-chunk vista,
-cave, boss fight with particles, storm. Record avg, 1% low, frame-time histogram, GPU and CPU time
-on OpenGL+Sodium (from the baseline clone) and on Iroh. `knowledge/perf.md`.
+**Plan: `docs/P2-PLAN.md` (P2-D, 2026-11-24).** It holds the measured frame-time breakdown, the
+ranked levers with tiers and fallbacks, the measurement protocol and the card list below. Three
+findings drive it: the 240 cap binds (avg fps is compared as busy fps, pending owner acceptance),
+shaders-off frames are render-thread bound with the GPU nearly idle, and hop flight is already
+slower than Sodium on 1% low. The old P2-0..P2-3 are folded in (P2-0 -> P2-1/P2-2, P2-1 -> P2-13,
+P2-2 -> P2-3/P2-7/P2-11/P2-12, P2-3 -> P2-5/P2-15).
 
-**P2-1 [O] Back-port upstream improvements.** Diff tag 0.5.5 against 0.6.6 / dev; list each renderer
-improvement not bound to newer Minecraft; port in separate commits. **Accept** list in
-`knowledge/vulkanmod.md` with ported / skipped + reason; gates green.
+| card | model | what (details and acceptance in P2-PLAN.md section 3) |
+|---|---|---|
+| P2-1 | [S/G] | Proctor measurement harness: busy-time hook, cross-clone perfpair, suite mode, pregenerated route, 1440p |
+| P2-2 | [P] | Baseline v12 vs iroh-gl3 + render-thread / GPU / slow-frame captures |
+| P2-3 | [O] | drawIndirectFirstInstance on int-2b/3b (RQ-P2D-a), indirectDraw gated on support |
+| P2-4 | [O] | Streaming hitches: TaskBudget v2, AreaBuffer arena, per-section intake budget |
+| P2-5 | [S] | Thread policy A/B (L-T, builders, ThreadTuner, Vista Sched) |
+| P2-6 | [O] | Visibility graph on a worker with the verify oracle |
+| P2-7a/b/c | [O] | GPU-driven terrain: world arena + MDI, compute cull + drawIndexedIndirectCount, two-pass Hi-Z |
+| P2-8 | [O] | Entity / block-entity fast path with injector-aware fallback |
+| P2-9 | [S] | Render-thread mod hot spots (apoli, puzzleslib, dreamdisplays) from P2-2 profiles |
+| P2-10 | [S/G] | Precise fps limiter, optional present_wait pacing |
+| P2-11 | [S/G] | Pipeline creation inside frames: counter, pre-warm, GPL where offered |
+| P2-12 | [S] | Timeline semaphores, upload wait stages, RQ-APP1-a remainder, RQ-APP1-e VMA flags |
+| P2-13 | [O] | Upstream VulkanMod back-port review (was P2-1) |
+| P2-14 | [O] | Navidson: shadow pass on GPU culling, per-pass GPU table vs Iris |
+| P2-15 | [P] | 30-minute pack soak, flat memory (was in P2-3) |
 
-**P2-2 [O] Modern Vulkan.** Target Vulkan 1.3 core where available (dynamic rendering,
-synchronization2, descriptor indexing / buffer for bindless textures), multi-draw indirect with GPU
-culling for terrain, persistent mapped staging, pipeline cache on disk, async pipeline compile
-without hitching, VMA budget handling, frame pacing. 1.2 fallback stays. **Accept** perf scenes at
-or above Sodium on every scene; no 1% low regression.
+Order: P2-1, P2-2, P2-3, then batches A (P2-4 + P2-12), B (P2-5 + P2-10 + P2-11), C (P2-6 + P2-8 +
+P2-9), D (P2-7a/b/c), P2-13, P2-14, P2-15. Offline lanes (P2-3, P2-7a, P2-13) may run in parallel.
 
-**P2-3 [S] Threading and memory.** Chunk meshing scheduler co-operating with Vista's Sched and
-elemore ThreadTuner (see memory note on Java priorities being no-ops on Linux), upload budget per
-frame, leak check over a 30 minute soak. **Accept** soak shows flat native memory.
-
-**Gate 2** perf scenes: Iroh raster >= OpenGL+Sodium on all, recorded. Phase 1 gates still green.
+**Gate 2** DECISIONS.md "Performance target vs Sodium + Iris" on every perf scene at RD24 and RD32
+(shaders off), measured by P2-PLAN.md section 4; Phase 1 gates still green.
 
 ---
 

@@ -112,7 +112,7 @@ public class Drawer {
 
             if (autoIndexBuffer != null) {
                 int indexCount = autoIndexBuffer.getIndexCount(vertexCount);
-                autoIndexBuffer.checkCapacity(indexCount);
+                autoIndexBuffer.checkCapacity(vertexCount); // upstream VulkanMod 7a1e520: capacity is in vertices
 
                 drawIndexed(vertexBuffer, autoIndexBuffer.getIndexBuffer(), indexCount);
             }

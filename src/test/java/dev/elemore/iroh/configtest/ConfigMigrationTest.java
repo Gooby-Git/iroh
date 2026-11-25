@@ -50,7 +50,7 @@ public class ConfigMigrationTest {
         check(j.get("builderThreads").getAsInt() == Math.min(srcThreads, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)),
                 "chunk_builder_threads " + srcThreads + " -> builderThreads");
         check(j.get("chunkBuildDeferMode").getAsString().equals(srcDefer), "chunk_build_defer_mode " + srcDefer);
-        check(j.get("showFps").getAsBoolean(), "show_fps true -> showFps");
+        check(j.get("telemetryOverlay").getAsBoolean() && j.get("telFps").getAsBoolean() && j.get("telAvg").getAsBoolean() && j.get("telLow1").getAsBoolean() && !j.has("showFps"), "show_fps true -> Telemetry overlay with FPS, average, 1% low");
         check(j.get("fogDistanceChunks").getAsInt() == -1, "atmospheric distance_chunks -1 -> fogDistanceChunks -1");
         check(j.get("shaderPack").getAsString().equals("Navidson") && j.get("shadersEnabled").getAsBoolean(), "iris shaderPack Navidson, enabled");
         check(j.get("leafCullingRejection").getAsInt() == 20 && j.get("leafCullingDepth").getAsInt() == 2, "cull-fewer-leaves randomRejection 20, depth 2");
@@ -64,7 +64,7 @@ public class ConfigMigrationTest {
         Files.writeString(a.resolve("sodium-options.json"), "{\"quality\":{\"leaves_quality\":\"FAST\"}}");
         Config cb = new Config();
         IrohOptions.load(cb, a);
-        check(cb.leavesQuality.equals("FANCY") && !cb.enableVignette && cb.showFps && cb.fogDistanceChunks == -1, "second run reads iroh.json, ignores the old files");
+        check(cb.leavesQuality.equals("FANCY") && !cb.enableVignette && cb.telemetryOverlay && cb.fogDistanceChunks == -1, "second run reads iroh.json, ignores the old files");
         cb.enableVignette = true;
         IrohOptions.save();
         Config cb2 = new Config();
@@ -92,9 +92,20 @@ public class ConfigMigrationTest {
         Path d = Files.createTempDirectory("iroh-cfg-d");
         Config cd = new Config();
         IrohOptions.load(cd, d);
-        check(cd.leavesQuality.equals("DEFAULT") && cd.enableVignette && !cd.showFps && cd.fogDistanceChunks == 0 && cd.builderThreads == 0,
+        check(cd.leavesQuality.equals("DEFAULT") && cd.enableVignette && !cd.telemetryOverlay && cd.fogDistanceChunks == 0 && cd.builderThreads == 0,
                 "no files: defaults (vignette on, fps off, vanilla fog)");
         check(Files.exists(d.resolve("iroh.json")), "iroh.json written on first run");
+
+        // --- TEL-1: an iroh.json from before the Telemetry tab (showFps) becomes the overlay; the transient CSV switch is never saved ---
+        Path t = Files.createTempDirectory("iroh-cfg-tel");
+        Files.writeString(t.resolve("iroh.json"), "{\"showFps\": true}");
+        Config ct = new Config();
+        ct.telFps = ct.telAvg = ct.telLow1 = false;
+        IrohOptions.load(ct, t);
+        check(ct.telemetryOverlay && ct.telFps && ct.telAvg && ct.telLow1, "old iroh.json showFps true -> overlay on with the old counter's items");
+        IrohOptions.save();
+        String saved = Files.readString(t.resolve("iroh.json"));
+        check(!saved.contains("showFps") && saved.contains("telemetryOverlay") && !saved.contains("telRecordCsv"), "saved file has the new keys, no showFps, no record switch");
 
         // --- E: garbage in the file does not crash ---
         Files.writeString(d.resolve("iroh.json"), "{\"advCulling\": 77, \"leavesQuality\": \"WOBBLY\", \"fogDistanceChunks\": 9999, \"showFps\": \"yes\"}");

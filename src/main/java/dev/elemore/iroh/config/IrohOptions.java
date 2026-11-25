@@ -46,10 +46,10 @@ public final class IrohOptions {
     public static final String FILE = "iroh.json";
     public static final String LEGACY_FILE = "vulkanmod_settings.json";
 
-    public enum Category { VIDEO, QUALITY, PERFORMANCE, SHADERS, ADVANCED }
+    public enum Category { VIDEO, QUALITY, PERFORMANCE, SHADERS, TELEMETRY, ADVANCED }
     public enum Reload { NONE, RESTART, RELOAD_CHUNKS, RELOAD_RESOURCES }
-    /** JSON: config/iroh.json. VANILLA: options.txt. READ_ONLY: shown, never edited from the screen. */
-    public enum Storage { JSON, VANILLA, READ_ONLY }
+    /** JSON: config/iroh.json. VANILLA: options.txt. READ_ONLY: shown, never edited from the screen. TRANSIENT: editable, never saved (Record to CSV). */
+    public enum Storage { JSON, VANILLA, READ_ONLY, TRANSIENT }
     public enum LeavesQuality { DEFAULT, FAST, FANCY }
     public enum DeferMode { ALWAYS, ONE_FRAME, ZERO_FRAMES }
 
@@ -182,6 +182,22 @@ public final class IrohOptions {
         return o;
     }
 
+    /**
+     * P2-7b: why the GPU culling techniques cannot run here (greyed with this reason), or null. Live: device tier, the
+     * world-arena switch (the arena only exists while it is on; read at the last chunk reload), a shader pack (vertex
+     * displacement is not in the boxes).
+     */
+    static Component gpuCullUnavailable() {
+        var tier = net.vulkanmod.vulkan.device.IndirectDrawCaps.cullTier();
+        if (tier == net.vulkanmod.vulkan.device.IndirectDrawCaps.CullTier.CPU)
+            return Component.translatable("iroh.options.cullGpu.noIndirect");
+        if (!dev.elemore.iroh.perf.PerfSwitches.terrainMdiOn)
+            return Component.translatable("iroh.options.cullGpu.needsArena");
+        if (dev.elemore.iroh.shaderpack.runtime.PackRuntime.active())
+            return Component.translatable("iroh.options.cullGpu.shaderPack");
+        return null;
+    }
+
     private static Opt<Boolean> bool(String id, Category c, boolean def, Function<Config, Boolean> g, BiConsumer<Config, Boolean> s) {
         Opt<Boolean> o = new Opt<>(id, Boolean.class, def, c);
         o.getter = () -> g.apply(config);
@@ -250,11 +266,22 @@ public final class IrohOptions {
     // ---- the pack's Sodium / Sodium Extra / Iris / Cull Fewer Leaves settings ----
     public static final Opt<LeavesQuality> LEAVES_QUALITY;
     public static final Opt<Boolean> ENABLE_VIGNETTE;
-    public static final Opt<Boolean> SHOW_FPS;
     public static final Opt<Integer> FOG_DISTANCE_CHUNKS;
+
+    // ---- Telemetry tab (card TEL-1) ----
+    public static final Opt<Boolean> TEL_OVERLAY, TEL_FPS, TEL_AVG, TEL_LOW1, TEL_LOW01, TEL_FRAME_TIME, TEL_GRAPH, TEL_GPU_BUSY,
+            TEL_VRAM, TEL_RAM, TEL_PING, TEL_TPS, TEL_CHUNKS, TEL_ENTITIES, TEL_RENDER_DIST, TEL_FEATURES, TEL_GEN_FPS, TEL_RECORD;
+    public static final Opt<dev.elemore.iroh.telemetry.Telemetry.Position> TEL_POSITION;
+    public static final Opt<dev.elemore.iroh.telemetry.Telemetry.Colour> TEL_COLOR;
+    public static final Opt<dev.elemore.iroh.telemetry.Telemetry.Hotkey> TEL_HOTKEY;
+    public static final Opt<Integer> TEL_SCALE, TEL_OPACITY;
     public static final Opt<Boolean> LEAF_CULLING;
     public static final Opt<Integer> LEAF_CULLING_DEPTH;
     public static final Opt<Integer> LEAF_CULLING_REJECTION;
+    /** P2-7b: GPU terrain culling techniques (Culling page) */
+    public static final Opt<Boolean> CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING;
+    /** P2-7c: Hi-Z occlusion (opaque, two-pass) and translucent Hi-Z (Culling page) */
+    public static final Opt<Boolean> CULL_GPU_HIZ, CULL_GPU_HIZ_TRANSLUCENT;
     public static final Opt<DeferMode> CHUNK_BUILD_DEFER_MODE;
     public static final Opt<String> SHADER_PACK;
     public static final Opt<Boolean> SHADERS_ENABLED;
@@ -357,7 +384,56 @@ public final class IrohOptions {
         };
 
         ENABLE_VIGNETTE = bool("enableVignette", Category.QUALITY, true, c -> c.enableVignette, (c, v) -> c.enableVignette = v);
-        SHOW_FPS = bool("showFps", Category.VIDEO, false, c -> c.showFps, (c, v) -> c.showFps = v);
+
+        // ---- Telemetry tab (TEL-1): the old "FPS counter" lives here as the first three items ----
+        TEL_OVERLAY = bool("telemetryOverlay", Category.TELEMETRY, false, c -> c.telemetryOverlay, (c, v) -> c.telemetryOverlay = v);
+        TEL_FPS = bool("telFps", Category.TELEMETRY, true, c -> c.telFps, (c, v) -> c.telFps = v);
+        TEL_AVG = bool("telAvg", Category.TELEMETRY, true, c -> c.telAvg, (c, v) -> c.telAvg = v);
+        TEL_LOW1 = bool("telLow1", Category.TELEMETRY, true, c -> c.telLow1, (c, v) -> c.telLow1 = v);
+        TEL_LOW01 = bool("telLow01", Category.TELEMETRY, false, c -> c.telLow01, (c, v) -> c.telLow01 = v);
+        TEL_FRAME_TIME = bool("telFrameTime", Category.TELEMETRY, false, c -> c.telFrameTime, (c, v) -> c.telFrameTime = v);
+        TEL_GRAPH = bool("telGraph", Category.TELEMETRY, false, c -> c.telGraph, (c, v) -> c.telGraph = v);
+        TEL_GPU_BUSY = bool("telGpuBusy", Category.TELEMETRY, false, c -> c.telGpuBusy, (c, v) -> c.telGpuBusy = v);
+        TEL_VRAM = bool("telVram", Category.TELEMETRY, false, c -> c.telVram, (c, v) -> c.telVram = v);
+        TEL_RAM = bool("telRam", Category.TELEMETRY, false, c -> c.telRam, (c, v) -> c.telRam = v);
+        TEL_PING = bool("telPing", Category.TELEMETRY, false, c -> c.telPing, (c, v) -> c.telPing = v);
+        TEL_TPS = bool("telTps", Category.TELEMETRY, false, c -> c.telTps, (c, v) -> c.telTps = v);
+        TEL_CHUNKS = bool("telChunks", Category.TELEMETRY, false, c -> c.telChunks, (c, v) -> c.telChunks = v);
+        TEL_ENTITIES = bool("telEntities", Category.TELEMETRY, false, c -> c.telEntities, (c, v) -> c.telEntities = v);
+        TEL_RENDER_DIST = bool("telRenderDist", Category.TELEMETRY, false, c -> c.telRenderDist, (c, v) -> c.telRenderDist = v);
+        TEL_FEATURES = bool("telFeatures", Category.TELEMETRY, false, c -> c.telFeatures, (c, v) -> c.telFeatures = v);
+        TEL_GEN_FPS = bool("telGenFps", Category.TELEMETRY, false, c -> c.telGenFps, (c, v) -> c.telGenFps = v);
+        TEL_POSITION = enumOpt("telPosition", Category.TELEMETRY, dev.elemore.iroh.telemetry.Telemetry.Position.class,
+                dev.elemore.iroh.telemetry.Telemetry.Position.TOP_LEFT,
+                c -> parse(dev.elemore.iroh.telemetry.Telemetry.Position.class, c.telPosition, dev.elemore.iroh.telemetry.Telemetry.Position.TOP_LEFT),
+                (c, v) -> c.telPosition = v.name());
+        TEL_POSITION.label(v -> Component.translatable("iroh.options.telPosition." + v.name().toLowerCase()));
+        TEL_COLOR = enumOpt("telColor", Category.TELEMETRY, dev.elemore.iroh.telemetry.Telemetry.Colour.class,
+                dev.elemore.iroh.telemetry.Telemetry.Colour.WHITE,
+                c -> parse(dev.elemore.iroh.telemetry.Telemetry.Colour.class, c.telColor, dev.elemore.iroh.telemetry.Telemetry.Colour.WHITE),
+                (c, v) -> c.telColor = v.name());
+        TEL_COLOR.label(v -> Component.translatable("iroh.options.telColor." + v.name().toLowerCase()));
+        TEL_HOTKEY = enumOpt("telHotkey", Category.TELEMETRY, dev.elemore.iroh.telemetry.Telemetry.Hotkey.class,
+                dev.elemore.iroh.telemetry.Telemetry.Hotkey.F9,
+                c -> parse(dev.elemore.iroh.telemetry.Telemetry.Hotkey.class, c.telHotkey, dev.elemore.iroh.telemetry.Telemetry.Hotkey.F9),
+                (c, v) -> c.telHotkey = v.name());
+        TEL_HOTKEY.label(v -> Component.translatable("iroh.options.telHotkey." + v.name().toLowerCase()));
+        TEL_SCALE = integer("telScale", Category.TELEMETRY, 100, c -> c.telScale, (c, v) -> c.telScale = v);
+        TEL_SCALE.range(50, 200, 10).label(v -> Component.literal(v + "%"));
+        TEL_OPACITY = integer("telOpacity", Category.TELEMETRY, 100, c -> c.telOpacity, (c, v) -> c.telOpacity = v);
+        TEL_OPACITY.range(10, 100, 10).label(v -> Component.literal(v + "%"));
+        TEL_RECORD = bool("telRecordCsv", Category.TELEMETRY, false, c -> false, (c, v) -> { });
+        TEL_RECORD.storage = Storage.TRANSIENT;
+        TEL_RECORD.getter = dev.elemore.iroh.telemetry.CsvRecorder::active;
+        TEL_RECORD.applier = v -> {
+            if (v) {
+                var f = dev.elemore.iroh.telemetry.CsvRecorder.start(mc().gameDirectory.toPath().resolve("iroh-telemetry"), System.nanoTime());
+                LOGGER.info("Telemetry: {}", f == null ? "could not start the CSV recording" : "recording to " + f);
+            } else {
+                dev.elemore.iroh.telemetry.CsvRecorder.stop();
+                LOGGER.info("Telemetry: CSV recording stopped");
+            }
+        };
 
         FOG_DISTANCE_CHUNKS = integer("fogDistanceChunks", Category.QUALITY, 0, c -> c.fogDistanceChunks, (c, v) -> c.fogDistanceChunks = v);
         FOG_DISTANCE_CHUNKS.choices(-1, 0, 4, 8, 12, 16, 24, 32).loose().range(-1, 256, 1);
@@ -374,6 +450,22 @@ public final class IrohOptions {
         LEAF_CULLING_REJECTION = integer("leafCullingRejection", Category.QUALITY, 0, c -> c.leafCullingRejection, (c, v) -> c.leafCullingRejection = v);
         LEAF_CULLING_REJECTION.range(0, 100, 5).reload(Reload.RELOAD_CHUNKS)
                 .label(v -> Component.literal(v + "%"));
+
+        // P2-7b: GPU culling, every technique its own switch, default off (DECISIONS "GPU culling techniques as player options")
+        CULL_GPU_FRUSTUM = bool("cullGpuFrustum", Category.PERFORMANCE, false, c -> c.cullGpuFrustum, (c, v) -> c.cullGpuFrustum = v);
+        CULL_GPU_HORIZON = bool("cullGpuHorizon", Category.PERFORMANCE, false, c -> c.cullGpuHorizon, (c, v) -> c.cullGpuHorizon = v);
+        CULL_GPU_SCREEN_SIZE = bool("cullGpuScreenSize", Category.PERFORMANCE, false, c -> c.cullGpuScreenSize, (c, v) -> c.cullGpuScreenSize = v);
+        CULL_GPU_FACING = bool("cullGpuFacing", Category.PERFORMANCE, false, c -> c.cullGpuFacing, (c, v) -> c.cullGpuFacing = v);
+        CULL_GPU_HIZ = bool("cullGpuHiZ", Category.PERFORMANCE, false, c -> c.cullGpuHiZ, (c, v) -> c.cullGpuHiZ = v); // P2-7c
+        CULL_GPU_HIZ_TRANSLUCENT = bool("cullGpuHiZTranslucent", Category.PERFORMANCE, false, c -> c.cullGpuHiZTranslucent, (c, v) -> c.cullGpuHiZTranslucent = v);
+        for (Opt<Boolean> o : List.of(CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING, CULL_GPU_HIZ, CULL_GPU_HIZ_TRANSLUCENT)) {
+            o.unavailable(IrohOptions::gpuCullUnavailable);
+            o.note("iroh.options.cullGpu.note");
+        }
+        CULL_GPU_FACING.unavailable(() -> {
+            Component r = gpuCullUnavailable();
+            return r != null || config.backFaceCulling ? r : Component.translatable("iroh.options.cullGpu.needsBackface");
+        });
 
         CHUNK_BUILD_DEFER_MODE = enumOpt("chunkBuildDeferMode", Category.PERFORMANCE, DeferMode.class, DeferMode.ALWAYS,
                 c -> parse(DeferMode.class, c.chunkBuildDeferMode, DeferMode.ALWAYS), (c, v) -> c.chunkBuildDeferMode = v.name());
@@ -535,7 +627,6 @@ public final class IrohOptions {
         };
         // Settings that change what the chunk mesher produces need the sections rebuilt.
         ENABLE_VIGNETTE.applier = v -> config.enableVignette = v;
-        SHOW_FPS.applier = v -> config.showFps = v;
         FOG_DISTANCE_CHUNKS.applier = v -> config.fogDistanceChunks = v;
         LEAF_CULLING.applier = v -> { config.leafCulling = v; applyLeafCulling(true); };
         LEAF_CULLING_DEPTH.applier = v -> { config.leafCullingDepth = v; applyLeafCulling(true); };
@@ -592,7 +683,6 @@ public final class IrohOptions {
     /** Vignette on? Read by the Gui.renderVignette cancel (priority 1500). */
     public static boolean vignette() { return config.enableVignette; }
 
-    public static boolean showFps() { return config.showFps; }
 
     /** Terrain fog setting: -1 off, 0 vanilla; any other value is unverified and reads as vanilla. */
     public static int fogDistanceChunks() {
@@ -709,15 +799,31 @@ public final class IrohOptions {
         try {
             JsonObject root = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
             for (Opt<?> o : BY_ID.values()) {
-                if (o.storage == Storage.VANILLA) continue;
+                if (o.storage == Storage.VANILLA || o.storage == Storage.TRANSIENT) continue;
                 JsonElement e = root.get(o.id);
                 if (e == null || e.isJsonNull()) continue;
                 if (!o.fromJson(e)) log.add("ignored bad value for " + o.id + ": " + e);
+            }
+            // TEL-1: the old "FPS counter" flag (config/iroh.json before the Telemetry tab) becomes the overlay with its first line
+            JsonElement legacyFps = root.get("showFps");
+            if (legacyFps != null && !root.has("telemetryOverlay")) {
+                try {
+                    migrateShowFps(config, legacyFps.getAsBoolean(), log);
+                } catch (RuntimeException ex) {
+                    log.add("ignored bad value for showFps: " + legacyFps);
+                }
             }
         } catch (IOException | RuntimeException e) {
             log.add("could not read " + file + ": " + e);
             LOGGER.warn("Could not read {} ({}); using defaults for what it does not say", file, e.toString());
         }
+    }
+
+    /** The old FPS counter showed "N FPS (avg. A / 1% low L)": the same three items stay on, in the overlay. */
+    public static void migrateShowFps(Config c, boolean on, List<String> log) {
+        c.telemetryOverlay = on;
+        if (on) c.telFps = c.telAvg = c.telLow1 = true;
+        log.add("showFps " + on + " -> telemetryOverlay " + on + (on ? " (FPS, average, 1% low)" : ""));
     }
 
     private static void migrateLegacy(Path legacy, List<String> log) {
@@ -746,7 +852,7 @@ public final class IrohOptions {
         JsonObject root = new JsonObject();
         root.addProperty("version", 1);
         for (Opt<?> o : BY_ID.values()) {
-            if (o.storage == Storage.VANILLA) continue;
+            if (o.storage == Storage.VANILLA || o.storage == Storage.TRANSIENT) continue;
             if (o == VIDEO_MODE && config.videoMode == null) continue;
             root.add(o.id, o.toJson());
         }

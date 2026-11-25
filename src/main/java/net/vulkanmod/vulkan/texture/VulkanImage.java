@@ -69,6 +69,11 @@ public class VulkanImage {
     private static long frameSerial;
 
     /** Renderer: a new frame command buffer was begun (frame start, or resumed after flushCmds). */
+    /** P2-7b: the frame command buffer serial (changes at every frame command buffer begin, also after flushCmds) */
+    public static long frameSerial() {
+        return frameSerial;
+    }
+
     public static void nextFrameSerial() {
         frameSerial++;
     }
@@ -382,7 +387,10 @@ public class VulkanImage {
                 for (int i = 0, n = IF_IMAGES.size(); i < n; i++) {
                     VulkanImage img = IF_IMAGES.get(i);
                     if (img.id == 0L) continue;
+                    // P2-12 (RQ-P213-a, upstream 94d137a): a second copy into an image this flush already copied into is a WAW
+                    boolean copiedBefore = img.currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                     img.transitionImageLayout(stack, cb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    if (copiedBefore) dev.elemore.iroh.glshim.ImageSync.transferWriteToTransferWrite(cb);
                     int o = i * 8;
                     ImageUtil.copyBufferToImageCmd(stack, cb, IF_DATA.getLong(o), img.id, (int) IF_DATA.getLong(o + 2),
                             (int) IF_DATA.getLong(o + 3), (int) IF_DATA.getLong(o + 4), (int) IF_DATA.getLong(o + 5),
@@ -642,7 +650,7 @@ public class VulkanImage {
             }
             case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> {
                 dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                destinationStage = dev.elemore.iroh.glshim.ImageSync.SAMPLED_STAGES; // P2-12 (RQ-P213-a): the lightmap is sampled in vertex shaders
             }
             case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> {
                 dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
@@ -664,6 +672,37 @@ public class VulkanImage {
 
         transitionLayout(stack, commandBuffer, image, image.currentLayout, newLayout,
                 sourceStage, srcAccessMask, destinationStage, dstAccessMask);
+    }
+
+    /**
+     * P2-12 (RQ-APP1-a): every pipeline stage that can have touched (read or written) an image resting in {@code layout}: the source
+     * stage mask of a barrier that leaves the layout, instead of ALL_COMMANDS. GENERAL (api 4 / pack images, any use) lists every
+     * stage a storage / copy / attachment use can run in; a branch with ray tracing adds its stages at its own call sites.
+     */
+    public static int stagesOfLayout(int layout) {
+        return switch (layout) {
+            case VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR -> VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+            case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL -> VK_PIPELINE_STAGE_TRANSFER_BIT;
+            case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                    | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            default -> VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                    | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                    | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT; // GENERAL and anything unknown
+        };
+    }
+
+    /** P2-12: the WRITE accesses an image in {@code layout} can have pending (the srcAccessMask of a barrier leaving it). */
+    public static int writeAccessOfLayout(int layout) {
+        return switch (layout) {
+            case VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL -> 0;
+            case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL -> VK_ACCESS_TRANSFER_WRITE_BIT;
+            case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            default -> VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                    | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        };
     }
 
     public static void transitionLayout(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int oldLayout, int newLayout,
@@ -720,7 +759,7 @@ public class VulkanImage {
         if (this.currentLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
             throw new IllegalStateException("batched read-only transition expects TRANSFER_DST, layout " + this.currentLayout);
         batch.add(this.getId(), this.aspect, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, dev.elemore.iroh.glshim.ImageSync.SAMPLED_STAGES, VK_ACCESS_SHADER_READ_BIT);
         this.currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         noteRecordedIn(this, commandBuffer);
     }

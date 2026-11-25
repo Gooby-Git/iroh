@@ -27,7 +27,7 @@ public final class HotPathAudit {
         HOT.put("net/vulkanmod/vulkan/framebuffer/Framebuffer.java", new String[]{"beginRenderPass"});
         HOT.put("net/vulkanmod/vulkan/framebuffer/SceneTarget.java", new String[]{"getFramebufferId"});
         HOT.put("net/vulkanmod/vulkan/pass/DefaultMainPass.java", new String[]{"begin", "end", "rebindMainTarget"});
-        HOT.put("net/vulkanmod/render/chunk/WorldRenderer.java", new String[]{"renderSectionLayer"});
+        HOT.put("net/vulkanmod/render/chunk/WorldRenderer.java", new String[]{"renderSectionLayer", "drawWorldLayer"}); // P2-7b: + drawWorldLayer
         HOT.put("net/vulkanmod/vulkan/VRenderSystem.java", new String[]{"applyProjectionMatrix"});
         HOT.put("net/vulkanmod/vulkan/shader/Pipeline.java", new String[]{"needsUpdate", "updateDescriptorSet"});
         HOT.put("dev/elemore/iroh/glshim/GlState.java", new String[]{"viewport", "applyScissor"});
@@ -45,8 +45,12 @@ public final class HotPathAudit {
         // INT-2: per-frame / per-update paths of the perf switches and api 4
         HOT.put("net/vulkanmod/render/chunk/graph/SectionGraph.java", new String[]{"update", "scheduleRebuilds0"});
         HOT.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java", new String[]{"beginBatch"});
-        HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate"});
+        HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate", "updateSections0"});
+        HOT.put("net/vulkanmod/mixin/chunk/BulkDirtyM.java", new String[]{"*"}); // P2-4
         HOT.put("net/vulkanmod/render/chunk/RenderSection.java", new String[]{"reset"});
+        // P2-7b: GPU terrain cull hooks (world arena only; the metadata hooks are one volatile read when it is off)
+        HOT.put("net/vulkanmod/render/chunk/build/task/CompileResult.java", new String[]{"updateSection"});
+        HOT.put("net/vulkanmod/render/chunk/build/UploadBuffer.java", new String[]{"*"});
     }
 
     /**
@@ -57,6 +61,8 @@ public final class HotPathAudit {
     public static final Map<String, String> CALLEE_GUARD = new LinkedHashMap<>();
     static {
         CALLEE_GUARD.put("dev/elemore/iroh/perf/TaskBudget.java#enabled", "PerfSwitches.tasksBudgetOn");
+        CALLEE_GUARD.put("dev/elemore/iroh/perf/IntakeBudget.java#enabled", "PerfSwitches.intakeBudgetOn");
+        CALLEE_GUARD.put("dev/elemore/iroh/perf/AreaArena.java#on", "PerfSwitches.areaArenaOn");
         CALLEE_GUARD.put("net/vulkanmod/render/chunk/graph/SectionGraph.java#cacheEnabled", "PerfSwitches.graphCacheOn");
         CALLEE_GUARD.put("net/vulkanmod/render/chunk/graph/SectionGraph.java#rebuildBudget", "PerfSwitches.rebuildBudgetOn");
         CALLEE_GUARD.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java#beginBatch", "clones.isEmpty()");
@@ -106,7 +112,8 @@ public final class HotPathAudit {
 
     /** feature guards and hook calls: the things that run when everything is off */
     static final Pattern GUARD = Pattern.compile(
-            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
+            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|IntakeBudget|AreaArena|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|GpuCore|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy|SectionCullData|TerrainCull)"
+
                     + "\\s*\\.\\s*(\\w+)");
 
     public static Map<String, List<String>> audit(Path src) throws Exception {

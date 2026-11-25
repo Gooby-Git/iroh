@@ -8,6 +8,7 @@ import net.vulkanmod.interfaces.VertexFormatMixed;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.device.DeviceManager;
+import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.*;
@@ -31,6 +32,11 @@ public class GraphicsPipeline extends Pipeline {
     }
     private final VertexInputDescription vertexInputDescription;
 
+    /** P2-11: pre-warmed pipelines not yet bound (key = state + attachment formats); guarded by {@link #prewarmLock}, which is also held while the worker creates one and by cleanUp */
+    private final Object prewarmLock = new Object();
+    private final java.util.HashMap<dev.elemore.iroh.perf.PrewarmList.Entry, Long> prewarmed = new java.util.HashMap<>();
+    private volatile int prewarmedCount;
+
     private long vertShaderModule = 0;
     private long fragShaderModule = 0;
 
@@ -50,7 +56,7 @@ public class GraphicsPipeline extends Pipeline {
 
         if (builder.renderPass != null)
             graphicsPipelines.computeIfAbsent(PipelineState.DEFAULT,
-                    this::createGraphicsPipeline);
+                    this::createGraphicsPipeline0);
 
         createDescriptorSets(Renderer.getFramesNum());
 
@@ -69,10 +75,64 @@ public class GraphicsPipeline extends Pipeline {
     }
 
     public long getHandle(PipelineState state) {
-        return graphicsPipelines.computeIfAbsent(state, this::createGraphicsPipeline);
+        return graphicsPipelines.computeIfAbsent(state, this::createGraphicsPipeline0);
     }
 
-    private long createGraphicsPipeline(PipelineState state) {
+    /** P2-11: the miss path only (a hit is the map lookup above): a pre-warmed pipeline if the worker made one, else create, timed and counted. */
+    private long createGraphicsPipeline0(PipelineState state) {
+        final RenderPass rp = state.renderPass;
+        if (rp != null && prewarmedCount != 0) { // rp == null (PipelineState.DEFAULT): NPE below as before; the constructor path is dead in practice
+            long ready = takePrewarmed(state, rp);
+            if (ready != 0L) {
+                dev.elemore.iroh.perf.PipelineStats.prewarmHit();
+                return ready;
+            }
+        }
+        long t0 = System.nanoTime();
+        long handle = createGraphicsPipeline(state, rp.getId(), rp.colorFormat(), rp.depthFormat());
+        dev.elemore.iroh.perf.PipelineStats.created(dev.elemore.iroh.perf.PipelineStats.Kind.GRAPHICS, System.nanoTime() - t0);
+        PipelinePrewarm.record(this.name, state, rp);
+        return handle;
+    }
+
+    private long takePrewarmed(PipelineState state, RenderPass rp) {
+        var key = PipelinePrewarm.entry(this.name, state, rp);
+        synchronized (prewarmLock) {
+            Long h = prewarmed.remove(key);
+            prewarmedCount = prewarmed.size();
+            return h == null ? 0L : h;
+        }
+    }
+
+    /** P2-11 worker thread: create the pipeline for {@code e} against a compatible render pass {@code renderPass}; false = skipped or failed */
+    boolean prewarm(dev.elemore.iroh.perf.PrewarmList.Entry e, long renderPass) {
+        synchronized (prewarmLock) {
+            if (this.destroyed || prewarmed.containsKey(e))
+                return false;
+            long t0 = System.nanoTime();
+            long handle;
+            try {
+                handle = createGraphicsPipeline(PipelinePrewarm.state(e), renderPass, e.colorFormat(), e.depthFormat());
+            } catch (Throwable t) {
+                dev.elemore.iroh.perf.PipelineStats.prewarmFailed();
+                return false;
+            }
+            dev.elemore.iroh.perf.PipelineStats.createdPrewarm(System.nanoTime() - t0);
+            prewarmed.put(e, handle);
+            prewarmedCount = prewarmed.size();
+            return true;
+        }
+    }
+
+    /** live graphics pipelines (render thread: Pipeline.PIPELINES is not synchronized) */
+    static java.util.List<GraphicsPipeline> snapshot() {
+        java.util.List<GraphicsPipeline> out = new java.util.ArrayList<>();
+        for (Pipeline p : PIPELINES)
+            if (p instanceof GraphicsPipeline g && !g.destroyed) out.add(g);
+        return out;
+    }
+
+    private long createGraphicsPipeline(PipelineState state, long renderPassId, int colorFormat, int depthFormat) {
         try (MemoryStack stack = stackPush()) {
             ByteBuffer entryPoint = stack.UTF8("main");
 
@@ -206,15 +266,15 @@ public class GraphicsPipeline extends Pipeline {
             pipelineInfo.basePipelineIndex(-1);
 
             if (!Vulkan.DYNAMIC_RENDERING) {
-                pipelineInfo.renderPass(state.renderPass.getId());
+                pipelineInfo.renderPass(renderPassId);
                 pipelineInfo.subpass(0);
             }
             else {
                 //dyn-rendering
                 VkPipelineRenderingCreateInfoKHR renderingInfo = VkPipelineRenderingCreateInfoKHR.calloc(stack);
                 renderingInfo.sType(KHRDynamicRendering.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR);
-                renderingInfo.pColorAttachmentFormats(stack.ints(state.renderPass.getFramebuffer().getFormat()));
-                renderingInfo.depthAttachmentFormat(state.renderPass.getFramebuffer().getDepthFormat());
+                renderingInfo.pColorAttachmentFormats(stack.ints(colorFormat));
+                renderingInfo.depthAttachmentFormat(depthFormat);
                 pipelineInfo.pNext(renderingInfo);
             }
 
@@ -266,8 +326,13 @@ public class GraphicsPipeline extends Pipeline {
     }
 
     public void cleanUp() {
-        if (this.destroyed) return; // rc15: idempotent (shutdown destroyAll + a pending scheduled cleanUp)
-        this.destroyed = true;
+        synchronized (prewarmLock) { // P2-11: the pre-warm worker holds this lock while it uses the shader modules
+            if (this.destroyed) return; // rc15: idempotent (shutdown destroyAll + a pending scheduled cleanUp)
+            this.destroyed = true;
+            prewarmed.values().forEach(h -> vkDestroyPipeline(DeviceManager.vkDevice, h, null));
+            prewarmed.clear();
+            prewarmedCount = 0;
+        }
         vkDestroyShaderModule(DeviceManager.vkDevice, vertShaderModule, null);
         vkDestroyShaderModule(DeviceManager.vkDevice, fragShaderModule, null);
 

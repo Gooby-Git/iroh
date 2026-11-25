@@ -1,0 +1,403 @@
+#version 450
+// Iroh P2-7b (L5b): GPU culling of the world arena's opaque terrain commands (TerrainCull.java documents the frame flow).
+// One source, four entry variants chosen by a define at compile time:
+//   SCATTER         metadata updates {slot, x, y, z, w} into the per-slot metadata (staged per frame slot)
+//   HORIZON_BUILD   one invocation per section column near the camera: opaque runs -> elevation intervals per azimuth bin
+//   HORIZON_PREFIX  one invocation per azimuth bin: ring r keeps the best interval of every ring <= r
+//   CULL            one workgroup per segment (<= SEG commands of one draw): frustum, facing, screen size, horizon,
+//                   Hi-Z (P2-7c); compacted in command order (stable: the CPU order, front to back) + a draw count per
+//                   segment (T-A), or copied in place with instanceCount 0 for culled commands (T-B). Pass 1 tests Hi-Z
+//                   against the PREVIOUS frame's pyramid and flags commands culled only by it; the translucent job tests
+//                   the CURRENT pyramid (hz.w HZ_CURRENT) and flags nothing.
+//   RETEST          P2-7c: one workgroup per segment: the flagged commands against the current pyramid with the current
+//                   MVP; survivors into the second command region (counts2 + flagged count per segment)
+// Every test keeps a command unless it is certain no sample of its geometry can be visible (TerrainCullModel in the
+// tests mirrors the math; terrainCullReplay checks images and kept sets on lavapipe).
+
+#define T_FRUSTUM 1u
+#define T_HORIZON 2u
+#define T_SCREEN 4u
+#define T_FACING 8u
+#define T_HIZ 16u
+#define HZ_PREV 1u     // pass 1 may test the previous pyramid
+#define HZ_REVERSED 2u // reversed-Z depth: farthest = MIN, nearer = larger
+#define HZ_CURRENT 4u  // the CULL entry tests the current pyramid with mvp (translucent job), no flags
+
+#define BINS 512
+#define RINGS 20
+#define RING_BLOCKS 16.0
+#define PI 3.14159265358979
+#define BIN_W (2.0 * PI / float(BINS))
+#define SEG 2048u
+#define PER 8u
+#define HB_MAX 64      // bins one occluder column fills at most (a nearer column spanning more fills its first 64)
+
+layout(std140, binding = 0) uniform Params {
+    mat4 mvp;          // the terrain draw's MVP (camera-relative positions; jitter included)
+    vec4 originRel;    // xyz: frame origin section * 16 - camera
+    vec4 viewport;     // the Vulkan viewport x, y, width, height (height may be negative)
+    vec4 camFrac;      // xyz: camera - camera section * 16
+    ivec4 camSec;      // xyz: camera section; w: horizon radius in sections
+    ivec4 grid;        // x: grid width, y: grid height (sections), z: min section y
+    uvec4 ctl;         // x: technique bits, y: 1 = compact (T-A) / 0 = in place (T-B), z: segments, w: updates
+    uvec4 offs;        // host offsets in uints: x updates, y segments, z words, w commands
+    uvec4 offs2;       // out offsets in uints: x commands (counts first at 0), y counts2, z commands2, w retest flags
+    mat4 prevMvp;      // P2-7c pass 1: the MVP of the frame whose depth the pyramid holds
+    vec4 prevShift;    // xyz: camera now - camera then (camera-relative position now + shift = position then)
+    uvec4 hz;          // x, y: pyramid level-0 size, z: levels, w: HZ_* mode bits
+    vec4 hzInfo;       // x, y: depth image size (pixels), z: depth slack, w: pixel margin
+    uvec4 offs3;       // x: flagged-per-segment offset in uints
+};
+
+// two uvec4 per grid slot (SectionCullData): [2s] = flags, solid / cutout_mipped / cutout boxes; [2s+1].x = translucent box
+#ifdef SCATTER
+layout(std430, binding = 1) writeonly buffer Meta { uvec4 meta[]; };
+#else
+layout(std430, binding = 1) readonly buffer Meta { uvec4 meta[]; };
+#endif
+layout(std430, binding = 2) readonly buffer Host { uint host[]; };
+layout(std430, binding = 3) buffer Out { uint outv[]; };
+layout(std430, binding = 4) buffer Horizon { uint horizon[]; };
+layout(binding = 5) uniform sampler2D hiz; // P2-7c: the Hi-Z pyramid (HiZPyramid), texelFetch only
+
+int floorModI(int a, int b) { int m = a % b; return m < 0 ? m + b : m; }
+
+float wrapPi(float a) {
+    if (a > PI) a -= 2.0 * PI;
+    if (a < -PI) a += 2.0 * PI;
+    return a;
+}
+
+// azimuth span [a0, a1] (radians, a1 - a0 < PI) of an axis-aligned footprint that does not contain the camera
+vec2 azimuthSpan(float x0, float x1, float z0, float z1) {
+    float ac = atan(0.5 * (z0 + z1), 0.5 * (x0 + x1));
+    float d0 = wrapPi(atan(z0, x0) - ac), d1 = wrapPi(atan(z0, x1) - ac), d2 = wrapPi(atan(z1, x0) - ac), d3 = wrapPi(atan(z1, x1) - ac);
+    return vec2(ac + min(min(d0, d1), min(d2, d3)), ac + max(max(d0, d1), max(d2, d3)));
+}
+
+// horizontal distance from the camera to the nearest / farthest point of a footprint
+vec2 footprintDist(float x0, float x1, float z0, float z1) {
+    float nx = x0 > 0.0 ? x0 : (x1 < 0.0 ? -x1 : 0.0);
+    float nz = z0 > 0.0 ? z0 : (z1 < 0.0 ? -z1 : 0.0);
+    float fx = max(abs(x0), abs(x1)), fz = max(abs(z0), abs(z1));
+    return vec2(length(vec2(nx, nz)), length(vec2(fx, fz)));
+}
+
+#ifdef SCATTER
+layout(local_size_x = 64) in;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= ctl.w) return;
+    uint b = offs.x + i * 9u; // {slot, 8 words}
+    uint s = host[b];
+    meta[2u * s] = uvec4(host[b + 1u], host[b + 2u], host[b + 3u], host[b + 4u]);
+    meta[2u * s + 1u] = uvec4(host[b + 5u], host[b + 6u], host[b + 7u], host[b + 8u]);
+}
+#endif
+
+#ifdef HORIZON_BUILD
+layout(local_size_x = 64) in;
+
+// one opaque run [y0, y1) of the column: its elevation interval key (fH << 16 | 65535 - fL) into the bins inside the
+// column's azimuth span (at most HB_MAX)
+void emitRun(int y0, int y1, float dn, float df, int ring, int bStart, int bEnd) {
+    float Y0 = float((grid.z + y0 - camSec.y) * 16) - camFrac.y + 0.0625; // camera-relative, shrunk by 1/16
+    float Y1 = float((grid.z + y1 - camSec.y) * 16) - camFrac.y - 0.0625;
+    float tHigh = min(Y1 / dn, Y1 / df), tLow = max(Y0 / dn, Y0 / df);
+    float aH = atan(tHigh) - 1e-4, aL = atan(tLow) + 1e-4;
+    float fH = floor((aH / PI + 0.5) * 65535.0), fL = ceil((aL / PI + 0.5) * 65535.0);
+    if (tLow < tHigh && fH >= 0.0 && fL <= 65535.0 && fL <= fH) {
+        uint key = uint(fH) << 16 | (65535u - uint(fL));
+        int n = min(bEnd - bStart + 1, HB_MAX);
+        for (int i = 0; i < n; i++)
+            atomicMax(horizon[ring * BINS + floorModI(bStart + i, BINS)], key);
+    }
+}
+
+void main() {
+    int R = camSec.w, D = 2 * R + 1;
+    int c = int(gl_GlobalInvocationID.x);
+    int dx = c % D - R, dz = c / D - R;
+    // the camera's column and its neighbours are never occluders
+    if (c >= D * D || (abs(dx) <= 1 && abs(dz) <= 1)) return;
+    int sx = camSec.x + dx, sz = camSec.z + dz;
+    float x0 = float(dx * 16) - camFrac.x, z0 = float(dz * 16) - camFrac.z;
+    float x1 = x0 + 16.0, z1 = z0 + 16.0;
+    vec2 dist = footprintDist(x0, x1, z0, z1);
+    float dn = dist.x, df = dist.y;
+    int ring = max(int(ceil(df / RING_BLOCKS)) - 1, 0);
+    vec2 span = azimuthSpan(x0, x1, z0, z1);
+    int bStart = int(ceil((span.x + 1e-3) / BIN_W)), bEnd = int(floor((span.y - 1e-3) / BIN_W)) - 1; // bins inside the span
+    if (dn < 1.0 || ring >= RINGS || bEnd < bStart) return;
+    uint xz = (uint(sx) & 0xFFFu) << 8 | (uint(sz) & 0xFFFu) << 20;
+    int W = grid.x, H = grid.y;
+    int colBase = floorModI(sx, W), zRow = floorModI(sz, W) * H;
+    int runStart = -1;
+    for (int y = 0; y <= H; y++) {
+        bool op = false;
+        if (y < H) {
+            uint f = meta[2 * ((zRow + y) * W + colBase)].x;
+            op = (f & 3u) == 3u && (f & 0xFFFFFF00u) == xz;
+        }
+        if (op && runStart < 0) runStart = y;
+        if (!op && runStart >= 0) {
+            emitRun(runStart, y, dn, df, ring, bStart, bEnd);
+            runStart = -1;
+        }
+    }
+}
+#endif
+
+#ifdef HORIZON_PREFIX
+layout(local_size_x = 64) in;
+void main() {
+    uint b = gl_GlobalInvocationID.x;
+    if (b >= uint(BINS)) return;
+    uint run = 0u;
+    for (int r = 0; r < RINGS; r++) {
+        uint k = horizon[r * BINS + int(b)];
+        run = max(run, k);
+        horizon[r * BINS + int(b)] = run;
+    }
+}
+#endif
+
+#if defined(CULL) || defined(RETEST)
+layout(local_size_x = 256) in;
+shared uint sCount[256];
+shared uint sFlagged;
+
+bool horizonHidden(vec3 lo, vec3 hi) {
+    if (lo.x <= 0.0 && hi.x >= 0.0 && lo.z <= 0.0 && hi.z >= 0.0) return false; // above or below the camera
+    vec2 dist = footprintDist(lo.x, hi.x, lo.z, hi.z);
+    float dmin = dist.x, dmax = dist.y;
+    int ring = int(floor(dmin / RING_BLOCKS)) - 1; // every occluder with df <= (ring + 1) * 16 <= dmin
+    if (ring < 0) return false;
+    ring = min(ring, RINGS - 1);
+    float aMax = atan(hi.y, hi.y >= 0.0 ? dmin : dmax), aMin = atan(lo.y, lo.y >= 0.0 ? dmax : dmin);
+    float qMax = ceil((aMax / PI + 0.5) * 65535.0) + 1.0, qMin = floor((aMin / PI + 0.5) * 65535.0) - 1.0;
+    vec2 span = azimuthSpan(lo.x, hi.x, lo.z, hi.z);
+    int b0 = int(floor((span.x - 1e-3) / BIN_W)), b1 = int(floor((span.y + 1e-3) / BIN_W));
+    if (b1 - b0 >= 64) return false;
+    for (int b = b0; b <= b1; b++) {
+        uint key = horizon[ring * BINS + floorModI(b, BINS)];
+        float qH = float(key >> 16), qL = float(65535u - (key & 0xFFFFu));
+        if (!(qMin >= qL && qMax <= qH)) return false;
+    }
+    return true;
+}
+
+bool screenEmpty(vec3 lo, vec3 hi) {
+    vec2 mn = vec2(1e30), mx = vec2(-1e30);
+    for (int k = 0; k < 8; k++) {
+        vec3 p = vec3((k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y, (k & 4) != 0 ? hi.z : lo.z);
+        vec4 c = mvp * vec4(p, 1.0);
+        if (c.w <= 1e-3) return false; // crosses the camera plane: no estimate
+        vec2 s = viewport.xy + (c.xy / c.w * 0.5 + 0.5) * viewport.zw;
+        mn = min(mn, s);
+        mx = max(mx, s);
+    }
+    // samples at pixel centres k + 0.5; 1/16 px margin for vertex snapping
+    const float m = 0.0625;
+    return floor(mx.x + m - 0.5) < ceil(mn.x - m - 0.5) || floor(mx.y + m - 0.5) < ceil(mn.y - m - 0.5);
+}
+
+bool outsideFrustum(vec3 lo, vec3 hi) {
+    for (int i = 0; i < 4; i++) { // left, right, bottom, top (pass through the eye; behind the eye fails one of them)
+        int r = i >> 1;
+        float sgn = (i & 1) == 0 ? 1.0 : -1.0;
+        vec4 pl = vec4(mvp[0][3], mvp[1][3], mvp[2][3], mvp[3][3]) + sgn * vec4(mvp[0][r], mvp[1][r], mvp[2][r], mvp[3][r]);
+        vec3 pv = vec3(pl.x > 0.0 ? hi.x : lo.x, pl.y > 0.0 ? hi.y : lo.y, pl.z > 0.0 ? hi.z : lo.z);
+        if (dot(pl.xyz, pv) + pl.w < 0.0) return true;
+    }
+    return false;
+}
+
+// P2-7c: hidden behind the pyramid's depth? The box (camera-relative, + shift) is projected with m; its nearest NDC depth
+// is a corner's (depth is monotonic in view depth, view depth is linear over the box) and every fragment of geometry in
+// the box has at least that depth. The pixels whose centres the projected rectangle covers (+ margin) are covered by
+// at most 2 x 2 texels of the level chosen; the box is hidden when its nearest depth lies behind (+ slack) the farthest
+// depth of all of them. needInside (pass 1, last frame's view): a rectangle leaving that frame's screen is not judged.
+// Conservative everywhere else too: a box reaching the camera plane, an empty pixel set, or no level small enough.
+bool hizOccluded(vec3 lo, vec3 hi, mat4 m, vec3 shift, bool needInside) {
+    bool rev = (hz.w & HZ_REVERSED) != 0u;
+    lo += shift;
+    hi += shift;
+    vec2 mn = vec2(1e30), mx = vec2(-1e30);
+    float zn = rev ? -1e30 : 1e30;
+    for (int k = 0; k < 8; k++) {
+        vec3 p = vec3((k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y, (k & 4) != 0 ? hi.z : lo.z);
+        vec4 c = m * vec4(p, 1.0);
+        if (c.w <= 1e-3) return false;
+        vec3 n = c.xyz / c.w;
+        vec2 s = viewport.xy + (n.xy * 0.5 + 0.5) * viewport.zw;
+        mn = min(mn, s);
+        mx = max(mx, s);
+        zn = rev ? max(zn, n.z) : min(zn, n.z);
+    }
+    if (rev ? zn >= 1.0 : zn <= 0.0) return false; // reaches in front of the near plane
+    mn = clamp(mn, vec2(-1e6), vec2(1e6));
+    mx = clamp(mx, vec2(-1e6), vec2(1e6));
+    ivec2 size = ivec2(hzInfo.xy);
+    ivec2 p0 = ivec2(ceil(mn - 0.5 - hzInfo.w)), p1 = ivec2(floor(mx - 0.5 + hzInfo.w));
+    if (needInside && (p0.x < 0 || p0.y < 0 || p1.x >= size.x || p1.y >= size.y)) return false;
+    p0 = max(p0, ivec2(0));
+    p1 = min(p1, size - 1);
+    if (p0.x > p1.x || p0.y > p1.y) return false; // no pixel centre: the screen-size technique's case
+    int levels = int(hz.z), L = 0;
+    while (L < levels && ((p1.x >> (L + 1)) - (p0.x >> (L + 1)) > 1 || (p1.y >> (L + 1)) - (p0.y >> (L + 1)) > 1)) L++;
+    if (L >= levels) return false;
+    ivec2 t0 = p0 >> (L + 1), t1 = p1 >> (L + 1);
+    float far = rev ? 1e30 : -1e30;
+    for (int y = t0.y; y <= t1.y; y++)
+        for (int x = t0.x; x <= t1.x; x++) {
+            float d = texelFetch(hiz, ivec2(x, y), L).r;
+            far = rev ? min(far, d) : max(far, d);
+        }
+    return rev ? zn < far - hzInfo.z : zn > far + hzInfo.z;
+}
+
+// the command's box (camera-relative, padded by 1/16 block): the layer's CullBounds box, or the format's whole range
+void cmdBox(uint ci, uint layer, out vec3 lo, out vec3 hi, out uint facing) {
+    uint w = host[offs.z + ci];
+    uint slot = w & 0x0FFFFFFFu;
+    facing = w >> 28;
+    int fi = int(host[offs.w + ci * 5u + 4u]);
+    vec3 sec = originRel.xyz + vec3(bitfieldExtract(fi, 0, 8), bitfieldExtract(fi, 16, 8), bitfieldExtract(fi, 8, 8)) * 16.0;
+    uvec4 m = meta[2u * slot];
+    uint bw = layer == 0u ? m.y : (layer == 1u ? m.z : (layer == 2u ? m.w : meta[2u * slot + 1u].x));
+    lo = vec3(-12.0);
+    hi = vec3(20.0); // CullBounds: the compressed format's whole range
+    if ((bw & 0x40000000u) != 0u && (bw & 0x80000000u) == 0u) {
+        lo = vec3(float(bw & 31u) - 8.0, float(bw >> 5 & 31u) - 8.0, float(bw >> 10 & 31u) - 8.0);
+        hi = vec3(float(bw >> 15 & 31u) - 7.0, float(bw >> 20 & 31u) - 7.0, float(bw >> 25 & 31u) - 7.0);
+    }
+    lo = sec + lo - 0.0625;
+    hi = sec + hi + 0.0625;
+}
+
+// 0 = culled, 1 = kept, 2 = culled ONLY by Hi-Z of the previous frame (retest)
+uint verdict(uint ci, uint layer) {
+    uint tech = ctl.x;
+    vec3 lo, hi;
+    uint facing;
+    cmdBox(ci, layer, lo, hi, facing);
+    if ((tech & T_FACING) != 0u && facing < 6u) {
+        // a bucket's quads lie in planes inside the box; facing (+x) is front-facing only from the + side of its plane
+        bool keep = facing == 0u ? lo.x <= 0.0 : facing == 1u ? hi.x > 0.0 : facing == 2u ? lo.y <= 0.0
+                  : facing == 3u ? hi.y > 0.0 : facing == 4u ? lo.z <= 0.0 : hi.z > 0.0;
+        if (!keep) return 0u;
+    }
+    if ((tech & T_FRUSTUM) != 0u && outsideFrustum(lo, hi)) return 0u;
+    if ((tech & T_SCREEN) != 0u && screenEmpty(lo, hi)) return 0u;
+    if ((tech & T_HORIZON) != 0u && horizonHidden(lo, hi)) return 0u;
+    if ((tech & T_HIZ) != 0u) {
+        if ((hz.w & HZ_CURRENT) != 0u) {
+            if (hizOccluded(lo, hi, mvp, vec3(0.0), false)) return 0u;
+        } else if ((hz.w & HZ_PREV) != 0u && hizOccluded(lo, hi, prevMvp, prevShift.xyz, true)) return 2u;
+    }
+    return 1u;
+}
+
+void copyCmd(uint dstBase, uint src, uint dst, uint instances) {
+    uint a = offs.w + src * 5u, b = dstBase + dst * 5u;
+    outv[b] = host[a];
+    outv[b + 1u] = instances;
+    outv[b + 2u] = host[a + 2u];
+    outv[b + 3u] = host[a + 3u];
+    outv[b + 4u] = host[a + 4u];
+}
+
+// stable compaction of the kept bits into dstBase (segment's own range), the count into outv[countAt]
+void compact(uint first, uint base, uint vis, uint dstBase, uint countAt) {
+    uint t = gl_LocalInvocationID.x;
+    uint c = uint(bitCount(vis));
+    sCount[t] = c;
+    barrier();
+    for (uint off = 1u; off < 256u; off <<= 1) {
+        uint v = t >= off ? sCount[t - off] : 0u;
+        barrier();
+        sCount[t] += v;
+        barrier();
+    }
+    uint incl = sCount[t];
+    uint o = first + incl - c;
+    for (uint j = 0u; j < PER; j++) {
+        if ((vis >> j & 1u) != 0u) {
+            copyCmd(dstBase, first + base + j, o, 1u);
+            o++;
+        }
+    }
+    if (t == 255u) outv[countAt] = incl;
+}
+#endif
+
+#ifdef CULL
+void main() {
+    uint seg = gl_WorkGroupID.x;
+    uint first = host[offs.y + seg * 4u], count = host[offs.y + seg * 4u + 1u], layer = host[offs.y + seg * 4u + 2u];
+    uint t = gl_LocalInvocationID.x, base = t * PER;
+    bool flags = (ctl.x & T_HIZ) != 0u && (hz.w & HZ_CURRENT) == 0u;
+    uint vis = 0u, hzOnly = 0u;
+    for (uint j = 0u; j < PER; j++) {
+        uint i = base + j;
+        if (i < count) {
+            uint v = verdict(first + i, layer);
+            if (v == 1u) vis |= 1u << j;
+            if (v == 2u) hzOnly |= 1u << j;
+        }
+    }
+    if (flags)
+        for (uint j = 0u; j < PER; j++) {
+            uint i = base + j;
+            if (i < count) outv[offs2.w + first + i] = (hzOnly >> j) & 1u;
+        }
+    if (ctl.y == 0u) { // T-B: in place, instanceCount 0 = culled
+        for (uint j = 0u; j < PER; j++) {
+            uint i = base + j;
+            if (i < count) copyCmd(offs2.x, first + i, first + i, (vis >> j) & 1u);
+        }
+        return;
+    }
+    compact(first, base, vis, offs2.x, seg); // the segment's draw count (counts occupy the first uints of Out)
+}
+#endif
+
+#ifdef RETEST
+layout(push_constant) uniform PC { uint mode; } pc; // 1 = test the current pyramid, 0 = keep every flagged command
+
+void main() {
+    uint seg = gl_WorkGroupID.x;
+    uint first = host[offs.y + seg * 4u], count = host[offs.y + seg * 4u + 1u], layer = host[offs.y + seg * 4u + 2u];
+    uint t = gl_LocalInvocationID.x, base = t * PER;
+    if (t == 0u) sFlagged = 0u;
+    barrier();
+    uint vis = 0u, nf = 0u;
+    for (uint j = 0u; j < PER; j++) {
+        uint i = base + j;
+        if (i < count && outv[offs2.w + first + i] != 0u) {
+            nf++;
+            vec3 lo, hi;
+            uint facing;
+            cmdBox(first + i, layer, lo, hi, facing);
+            if (pc.mode == 0u || !hizOccluded(lo, hi, mvp, vec3(0.0), false)) vis |= 1u << j;
+        }
+    }
+    atomicAdd(sFlagged, nf);
+    if (ctl.y == 0u) { // T-B: in place
+        for (uint j = 0u; j < PER; j++) {
+            uint i = base + j;
+            if (i < count) copyCmd(offs2.z, first + i, first + i, (vis >> j) & 1u);
+        }
+        barrier();
+        if (t == 0u) {
+            outv[offs3.x + seg] = sFlagged;
+            outv[offs2.y + seg] = 0u; // no count draw on T-B
+        }
+        return;
+    }
+    compact(first, base, vis, offs2.z, offs2.y + seg);
+    barrier();
+    if (t == 0u) outv[offs3.x + seg] = sFlagged;
+}
+#endif

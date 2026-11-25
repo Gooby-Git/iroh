@@ -1,5 +1,7 @@
 package dev.elemore.iroh.rt.denoise;
 
+import dev.elemore.iroh.perf.PipelineStats;
+
 import dev.elemore.iroh.upscale.ImageRef;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
@@ -68,7 +70,9 @@ public final class TemporalAccumulationDenoiser implements Denoiser {
             long module = lb.get(0);
             VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, s).sType$Default().layout(pipelineLayout);
             ci.stage().sType$Default().stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(s.UTF8("main"));
+            long pipeT0 = System.nanoTime(); // P2-11
             int r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, ci, null, lb);
+            PipelineStats.created(PipelineStats.Kind.COMPUTE, System.nanoTime() - pipeT0);
             vkDestroyShaderModule(dev, module, null);
             vk(r, "vkCreateComputePipelines");
             pipeline = lb.get(0);

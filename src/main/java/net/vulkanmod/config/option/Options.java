@@ -153,7 +153,7 @@ public abstract class Options {
                 new OptionBlock("", concat(new Option<?>[]{resolutionOption, refreshRate},
                         rows(IrohOptions.WINDOW_MODE, IrohOptions.FRAMERATE_LIMIT, IrohOptions.VSYNC))),
                 block(IrohOptions.GUI_SCALE, IrohOptions.GAMMA),
-                block(IrohOptions.VIEW_BOBBING, IrohOptions.ATTACK_INDICATOR, IrohOptions.AUTOSAVE_INDICATOR, IrohOptions.SHOW_FPS)
+                block(IrohOptions.VIEW_BOBBING, IrohOptions.ATTACK_INDICATOR, IrohOptions.AUTOSAVE_INDICATOR)
         };
     }
 
@@ -179,6 +179,18 @@ public abstract class Options {
     }
 
     /**
+     * P2-7b: the Culling page (owner, 2026-11-25: every GPU culling technique a player option). The CPU culling rows
+     * stay on the Performance page; these need the world terrain arena on an indirect-draw device and are greyed with
+     * the reason otherwise. P2-7c: Hi-Z occlusion (opaque two-pass) and translucent Hi-Z, a block of their own.
+     */
+    public static OptionBlock[] getCullingOpts() {
+        return new OptionBlock[]{
+                block(IrohOptions.CULL_GPU_FRUSTUM, IrohOptions.CULL_GPU_FACING, IrohOptions.CULL_GPU_SCREEN_SIZE, IrohOptions.CULL_GPU_HORIZON),
+                block(IrohOptions.CULL_GPU_HIZ, IrohOptions.CULL_GPU_HIZ_TRANSLUCENT)
+        };
+    }
+
+    /**
      * The Iroh section (owner decision "Settings UI", 2026-11-21): no shader selection screen. ONE look switch (ray
      * tracing <-> Navidson; greyed until both exist), the upscaler rows (P4-1b: live, wired to the runtime switches by
      * UpscaleSettings, unavailable choices name their reason) and frame generation (greyed until Phase 8). Navidson's
@@ -199,6 +211,20 @@ public abstract class Options {
     static Component lookReason() {
         Component rt = Availability.rayTracing();
         return rt != null ? rt : Availability.shaderPacks();
+    }
+
+    /** The Telemetry tab (card TEL-1): what the overlay shows, how it looks, the toggle key and the CSV recording. */
+    public static OptionBlock[] getTelemetryOpts() {
+        return new OptionBlock[]{
+                block(IrohOptions.TEL_OVERLAY, IrohOptions.TEL_HOTKEY),
+                block(IrohOptions.TEL_FPS, IrohOptions.TEL_AVG, IrohOptions.TEL_LOW1, IrohOptions.TEL_LOW01,
+                        IrohOptions.TEL_FRAME_TIME, IrohOptions.TEL_GRAPH, IrohOptions.TEL_GEN_FPS),
+                block(IrohOptions.TEL_GPU_BUSY, IrohOptions.TEL_VRAM, IrohOptions.TEL_RAM),
+                block(IrohOptions.TEL_PING, IrohOptions.TEL_TPS, IrohOptions.TEL_CHUNKS, IrohOptions.TEL_ENTITIES,
+                        IrohOptions.TEL_RENDER_DIST, IrohOptions.TEL_FEATURES),
+                block(IrohOptions.TEL_POSITION, IrohOptions.TEL_SCALE, IrohOptions.TEL_OPACITY, IrohOptions.TEL_COLOR),
+                block(IrohOptions.TEL_RECORD)
+        };
     }
 
     public static OptionBlock[] getAdvancedOpts() {

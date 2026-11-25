@@ -60,6 +60,11 @@ public class BuilderResources {
         builderPack.clearAll();
     }
 
+    /** Upstream VulkanMod babff0c: frees the native builder memory; only after the owning thread has stopped. */
+    public void free() {
+        builderPack.freeAll();
+    }
+
     public void updateBuildStats(int buildTime) {
         this.buildCount++;
         this.totalBuildTime += buildTime;

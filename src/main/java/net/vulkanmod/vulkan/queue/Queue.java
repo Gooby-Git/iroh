@@ -53,13 +53,41 @@ public abstract class Queue {
         }
     }
 
-    /** perf/uploads: submit signalling the command buffer's semaphore (waited by the next frame submit). */
+    /**
+     * perf/uploads: submit signalling a semaphore the next frame submit waits on. P2-12: with timeline semaphores enabled
+     * (SyncMemCaps) this queue's ONE timeline semaphore is signalled to the next value (values rise in submission order: this method
+     * is synchronized per queue) and the frame waits the latest value; otherwise the command buffer's binary semaphore.
+     */
     public synchronized long submitCommandsSignalling(CommandPool.CommandBuffer commandBuffer) {
         try (MemoryStack stack = stackPush()) {
+            if (net.vulkanmod.vulkan.device.SyncMemCaps.timeline()) {
+                long sem = timelineSemaphore();
+                long value = ++this.timelineValue;
+                long fence = commandBuffer.submitCommandsTimeline(stack, queue, sem, value);
+                net.vulkanmod.vulkan.Synchronization.INSTANCE.addTimelineWait(sem, value);
+                return fence;
+            }
             long fence = commandBuffer.submitCommands(stack, queue, true);
             net.vulkanmod.vulkan.Synchronization.INSTANCE.addWaitSemaphore(commandBuffer);
             return fence;
         }
+    }
+
+    private long timelineSemaphore;
+    private long timelineValue;
+
+    private long timelineSemaphore() {
+        if (this.timelineSemaphore == 0L) {
+            try (MemoryStack stack = stackPush()) {
+                org.lwjgl.vulkan.VkSemaphoreTypeCreateInfo type = org.lwjgl.vulkan.VkSemaphoreTypeCreateInfo.calloc(stack).sType$Default()
+                        .semaphoreType(org.lwjgl.vulkan.VK12.VK_SEMAPHORE_TYPE_TIMELINE).initialValue(0L);
+                org.lwjgl.vulkan.VkSemaphoreCreateInfo info = org.lwjgl.vulkan.VkSemaphoreCreateInfo.calloc(stack).sType$Default().pNext(type.address());
+                java.nio.LongBuffer p = stack.mallocLong(1);
+                Vulkan.checkResult(vkCreateSemaphore(DeviceManager.vkDevice, info, null, p), "Failed to create upload timeline semaphore");
+                this.timelineSemaphore = p.get(0);
+            }
+        }
+        return this.timelineSemaphore;
     }
 
     public VkQueue queue() {
@@ -67,6 +95,10 @@ public abstract class Queue {
     }
 
     public void cleanUp() {
+        if (this.timelineSemaphore != 0L) {
+            vkDestroySemaphore(DeviceManager.vkDevice, this.timelineSemaphore, null);
+            this.timelineSemaphore = 0L;
+        }
         if (commandPool != null)
             commandPool.cleanUp();
     }

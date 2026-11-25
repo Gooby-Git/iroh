@@ -163,6 +163,7 @@ public abstract class MutableQuadViewImpl extends QuadViewImpl implements QuadEm
 		System.arraycopy(q.data, q.baseIndex, data, baseIndex, EncodingFormat.TOTAL_STRIDE);
 		faceNormal.set(q.faceNormal);
 		nominalFace = q.nominalFace;
+		facing = q.facing; // TERRAIN-HOLES: the geometry is marked valid, so a stale facing (the editor's previous quad) stayed
 		isGeometryInvalid = false;
 		return this;
 	}

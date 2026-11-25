@@ -61,6 +61,11 @@ public abstract class VRenderSystem {
 
     public static void initRenderer() {
         Vulkan.initVulkan(window);
+        // Upstream VulkanMod e55e432 (1.21.2 port, VRenderSystem hunk; upstream writes 1,1,1,1): start ColorModulator
+        // from vanilla's RenderSystem.shaderColor (1,1,1,1 by default) instead of the zeroed buffer, so a draw before
+        // the first setShaderColor call is not black / fully transparent.
+        float[] c = com.mojang.blaze3d.systems.RenderSystem.getShaderColor();
+        setShaderColor(c[0], c[1], c[2], c[3]);
     }
 
     public static MappedBuffer getScreenSize() {
