@@ -24,3 +24,18 @@ Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (ref
 NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
   this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
   distributed by this project.
+
+Copyright and licence
+---------------------
+New Iroh code (dev.elemore.iroh and other additions) is Copyright (C) 2026 Gooby-Git, LGPL-3.0-only.
+Licence texts: LICENSE (LGPL-3.0) and COPYING (GPL-3.0, which the LGPL builds on).
+
+FabricMC Fabric Rendering API implementation (Apache-2.0), Copyright (c) 2016-2019 FabricMC, carried by VulkanMod:
+  src/main/java/net/vulkanmod/render/chunk/build/frapi/** and src/main/java/net/vulkanmod/mixin/render/frapi/**.
+  Keep the per-file headers. Apache-2.0 is compatible one-way into LGPL-3.0.
+
+Minecraft EULA point: VulkanMod's core shader files (src/main/resources/assets/vulkanmod/shaders/core/rendertype_*) follow
+Minecraft's vanilla shader set and are inherited from upstream VulkanMod.
+
+Never committed: AMD signed DLLs (FSR 4), NVIDIA DLSS/NGX/Streamline binaries, reference/ clones (Caustica, Vitrail, vulkanite,
+Dirt-RT (GPL-3, study only), rtx-remix, NRD). Iris and Sodium source is study-only and is not present.
