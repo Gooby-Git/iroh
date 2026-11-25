@@ -41,6 +41,8 @@ iroh-native/build-fsr/
 iroh-native/build-windows/
 iroh-native/fsr/sdk-src/
 iroh-native/fsr/.sdk-cache/
+iroh-native/fsr/.sdk24-cache/
+iroh-native/fsr/sdk24-src/
 iroh-native/natives-nv/
 iroh-native/build-nrd/
 iroh-native/nrd/nrd-src/

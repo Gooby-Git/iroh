@@ -4,9 +4,19 @@
 Source: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, tag v1.1.4, commit c6efa6bf7f2027b3ec94f28578bb5965eabb9e55.
 Fetched at build time by iroh-native/fsr/fetch-sdk.sh (not vendored; content hash pinned). Used: FSR 3.1 upscaler, frame
 interpolation, optical flow, the SDK Vulkan backend, shared helpers, GLSL shaders (compiled to SPIR-V by glslang at build time).
-Modifications (iroh-native/fsr/patches/ffx-1.1.4-iroh.patch, 3 files): host/ffx_types.h makes FFX_SDK_DEFAULT_CONTEXT_SIZE
+Modifications (iroh-native/fsr/patches/ffx-1.1.4-iroh.patch, 7 files): host/ffx_types.h makes FFX_SDK_DEFAULT_CONTEXT_SIZE
 overridable (Linux wchar_t is 4 bytes); gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h and gpu/fsr1/ffx_fsr1.h carry the
-FSR 3.1.5/3.1.6 shader fixes taken from AMD's own SDK 2.4.0 sources (also MIT-listed). Label: "FSR 3.1.4 host + 3.1.6 shaders".
+FSR 3.1.5/3.1.6 shader fixes taken from AMD's own SDK 2.4.0 sources; host/ffx_fsr3upscaler.h reports version 3.1.6;
+components/fsr3upscaler/ffx_fsr3upscaler.cpp ports the SDK 2.4.0 debug-check rules (exposure, upscaleSize, camera near/far);
+shared/ffx_message.cpp honours the message callback on every platform (upstream only on Windows); backends/vk/ffx_vk.cpp
+Linux fixes. Label: "FSR 3.1.6 parity (1.1.4 base)".
+
+## AMD FidelityFX SDK v2.4.0 (MIT), source files read at build time only (not compiled in, not shipped)
+Source: same repository, tag v2.4.0, commit 7539ae8b6568ad29ed78a753404351daf3b5cca7; Kits/FidelityFX/upscalers/fsr3/include/gpu/
+fsr3upscaler/*.h (FSR 3.1.6 shaders) and Kits/FidelityFX/docs/license.md, fetched by iroh-native/fsr/fetch-sdk-2.4.0.sh (content hash
+pinned) for iroh-native/fsr/check-shader-delta.sh, which fails the build unless our patched 1.1.4 shaders equal them. The reproject
+line and the debug-check rules above were taken from these files under the same MIT licence (Copyright (C) 2026 Advanced Micro
+Devices, Inc.). Signed binaries (signedbin/) are never fetched, built in or committed.
 
 Copyright (C) 2024 Advanced Micro Devices, Inc.
 

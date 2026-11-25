@@ -25,6 +25,10 @@ public final class FsrNative {
     public static native long[] memoryBytes(long ctx);
     public static native void destroy(long ctx);
     public static native void dispatch(long ctx, ByteBuffer params);
+/** FfxFsr3UpscalerConfigureUpscaleKey (0..4, see {@link FsrTuning}); returns the value the SDK stored after its own clamp. */
+public static native float setConstant(long ctx, int key, float value);
+/** The five tuning constants as currently stored, in key order. */
+public static native float[] getConstants(long ctx);
 
     // ---- frame generation components (optical flow + frame interpolation, no swapchain proxy)
     public static native int fgStructSize();

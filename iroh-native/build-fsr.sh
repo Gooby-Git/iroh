@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds libiroh_fsr (FSR 3.1 + frame interpolation + optical flow, Vulkan backend, JNI shim) from AMD's MIT SDK v1.1.4.
+# Builds libiroh_fsr (FSR 3.1 + frame interpolation + optical flow, Vulkan backend, JNI shim) from AMD's MIT SDK v1.1.4 (+ 3.1.6 parity, see fsr/check-shader-delta.sh).
 #   ./build-fsr.sh            Linux x64 -> natives/linux-x64/libiroh_fsr.so ; Windows x64 too when mingw-w64 is installed
 #   ./build-fsr.sh --linux-only | --windows-only | --jobs N
 # Needs: git, patch, python3, cmake >= 3.23, ninja, g++, glslangValidator (glslang), a JDK 21 (jni.h), Vulkan headers,
@@ -15,6 +15,8 @@ JAVA_HOME="${IROH_JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
 for t in git patch python3 cmake ninja g++ glslangValidator; do command -v $t >/dev/null || { echo "build-fsr: missing tool: $t" >&2; exit 1; }; done
 mkdir -p "$B"
 "$F/fetch-sdk.sh" "$B/sdk-src"
+# FSR-Q1: prove the 3.1.6 shader claim against SDK v2.4.0 (fails the build on any other shader line)
+"$F/check-shader-delta.sh" "$B/sdk-src" "$B/sdk24-src"
 for e in fsr3upscaler frameinterpolation opticalflow; do
   if [ ! -f "$B/gen/$e/.done" ]; then
     python3 -I "$F/gen_permutations.py" "$B/sdk-src" "$B/gen/$e" --effect $e --jobs "$JOBS"

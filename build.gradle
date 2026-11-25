@@ -770,6 +770,23 @@ tasks.register('fsrReplay', JavaExec) {
 	}
 }
 
+// FSR-Q1: the five SetConstant tuning keys + debug checker messages on lavapipe. ./gradlew fsrConstantsTest
+// last line "# fsrconstants PASS|FAIL"
+tasks.register('fsrConstantsTest', JavaExec) {
+group = 'verification'
+description = 'FSR 3.1.6 tuning constants (ffxFsr3UpscalerSetConstant) and debug checker through the JNI shim on lavapipe'
+dependsOn 'testClasses'
+classpath = sourceSets.test.runtimeClasspath
+mainClass = 'dev.elemore.iroh.upscaletest.FsrConstantsTest'
+jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+workingDir = projectDir
+doFirst {
+if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+useLavapipe(it)
+}
+}
+
 // P4-1b: Iroh's velocity pass + jitter drive FSR as well as P4-2a's hand-made inputs (fsrReplay's synthetic scene),
 // on lavapipe. ./gradlew fsrVelocityReplay ; last line "# fsrvelocity PASS|FAIL"
 tasks.register('fsrVelocityReplay', JavaExec) {

@@ -2,6 +2,7 @@ package dev.elemore.iroh.temporal;
 
 import dev.elemore.iroh.upscale.ImageRef;
 import dev.elemore.iroh.upscale.UpscaleInputs;
+import dev.elemore.iroh.upscale.fsr.FsrTuning;
 import dev.elemore.iroh.upscale.fsr.FsrUpscaler;
 
 /**
@@ -30,6 +31,9 @@ public final class FsrSession {
     private String failure;
     private int creates;
     private final StringBuilder messages = new StringBuilder();
+    private final FsrTuning tuning = new FsrTuning();
+    private boolean tuningDirty;
+    private final java.util.Set<String> logged = new java.util.HashSet<>();
 
     public FsrSession(Backend backend) {
         this.backend = backend;
@@ -85,6 +89,7 @@ public final class FsrSession {
         dw = displayW;
         dh = displayH;
         fresh = true;
+        tuningDirty = !tuning.isDefault();   // a new context starts at the SDK defaults
         creates++;
         return up;
     }
@@ -97,10 +102,26 @@ public final class FsrSession {
             in.reset = true;
             fresh = false;
         }
+        if (tuningDirty) {
+            up.apply(tuning);
+            tuningDirty = false;
+        }
         up.dispatch(in);
         String m = up.drainMessages();
-        if (!m.isEmpty() && messages.length() < 4096)
-            messages.append(m);
+        if (!m.isEmpty()) {
+            if (messages.length() < 4096)
+                messages.append(m);
+            for (String line : m.split("\n"))   // debug checker output: each distinct message once, in Iroh's log
+                if (!line.isBlank() && logged.size() < 64 && logged.add(line))
+                    backend.log("FSR debug checker: " + line);
+        }
+    }
+
+    /** The five FSR tuning constants (SetConstant), applied to the live context at the next dispatch and to every later one. */
+    public void setTuning(FsrTuning t) {
+        for (FsrTuning.Key k : FsrTuning.Key.values())
+            tuning.set(k, t.get(k));
+        tuningDirty = true;
     }
 
     public String drainMessages() {

@@ -59,6 +59,22 @@ public final class FsrAdapter implements UpscalerAdapter {
     @Override public boolean temporal() { return true; }
     @Override public boolean wantsVelocity() { return true; }
 
+    /** -Diroh.fsr.debugChecking=true: FFX debug checker (create flag); its messages go to Iroh's log, each distinct one once. */
+    public static final String DEBUG_CHECKING_PROPERTY = "iroh.fsr.debugChecking";
+    /** -Diroh.fsr.debugView=true: SDK debug view drawn into the output (dispatch flag). */
+    public static final String DEBUG_VIEW_PROPERTY = "iroh.fsr.debugView";
+
+    /** FSR create flags: DEPTH_INFINITE | AUTO_EXPOSURE, plus DEBUG_CHECKING when the property is on. */
+    public static int fsrFlags() {
+        return FsrUpscaler.DEPTH_INFINITE | FsrUpscaler.AUTO_EXPOSURE
+                | (Boolean.getBoolean(DEBUG_CHECKING_PROPERTY) ? FsrUpscaler.DEBUG_CHECKING : 0);
+    }
+
+    /** The five SetConstant tuning values for the live context (Q3 wires the settings to this). */
+    public void setTuning(dev.elemore.iroh.upscale.fsr.FsrTuning t) {
+        session.setTuning(t);
+    }
+
     /** FSR can be used now (a failed create blocks it until the mode/size changes). */
     public boolean usable() {
         return DeviceCaps.fsrCapable() && NativeLoader.load() && !session.failed();
@@ -80,7 +96,7 @@ public final class FsrAdapter implements UpscalerAdapter {
 
     @Override
     public void dispatch(VkCommandBuffer cmd, MemoryStack stack, Inputs in) {
-        int flags = FsrUpscaler.DEPTH_INFINITE | FsrUpscaler.AUTO_EXPOSURE;
+        int flags = fsrFlags();
         int shim = DeviceCaps.fp16ShadersAllowed() ? 0 : FsrUpscaler.NO_FP16;
         FsrUpscaler up = session.ensure(flags, shim, in.renderW(), in.renderH(), in.displayW(), in.displayH());
         if (up == null) {
@@ -102,6 +118,7 @@ public final class FsrAdapter implements UpscalerAdapter {
                 ref(in.reactive()), ref(in.transparency()), ref(out),
                 new FsrSession.Numbers(in.jitterX(), in.jitterY(), in.mvScaleX(), in.mvScaleY(), in.renderW(), in.renderH(),
                         in.displayW(), in.displayH(), in.sharpness(), in.frameTimeMs(), in.cameraNear(), in.cameraFar(), in.fovY(), in.reset()));
+        u.debugView = Boolean.getBoolean(DEBUG_VIEW_PROPERTY);
         session.dispatch(u);
 
         // back to what the GUI pass expects (render pass begin moves it on from COLOR_ATTACHMENT)

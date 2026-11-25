@@ -14,6 +14,8 @@ with their source and licence, added in the same commit that copies them.
 AMD FidelityFX SDK v1.1.4 (MIT), compiled into the optional native library iroh-native/ (libiroh_fsr): see THIRD_PARTY.md
   for the licence text, the pinned commit and the modifications (iroh-native/fsr/patches/ffx-1.1.4-iroh.patch). The SDK
   source is not copied into this repository; iroh-native/fsr/fetch-sdk.sh downloads it by commit and content hash.
+  FSR 3.1.6 parity (FSR-Q1): shader and debug-check changes come from AMD FidelityFX SDK v2.4.0 (MIT, commit 7539ae8, same
+  copyright holder), fetched by iroh-native/fsr/fetch-sdk-2.4.0.sh and verified by check-shader-delta.sh; no signed binaries.
 
 Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (reference clone reference/Vitrail-Shaders, commit 7a3cdcb)
   src/main/java/dev/elemore/iroh/shaderpack/ProgramSet.java: the program fallback parent map follows

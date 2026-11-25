@@ -7,7 +7,7 @@ import java.nio.ByteBuffer;
 import java.util.EnumSet;
 
 /**
- * FSR 3.1 temporal upscaler on AMD's open Vulkan backend (FidelityFX SDK 1.1.4, MIT, patched: 3.1.4 host + 3.1.6 shaders).
+ * FSR 3.1 temporal upscaler on AMD's open Vulkan backend (FidelityFX SDK 1.1.4 base, MIT, patched to 3.1.6 parity: SDK v2.4.0 shaders + debug-check host deltas, see check-shader-delta.sh).
  * Create it with {@link #create}, which returns null-safe capabilities via {@link #probe()} when the native library is absent.
  * Thread rule: render thread only (see {@link FsrNative}).
  */
@@ -79,7 +79,24 @@ public final class FsrUpscaler implements Upscaler {
         FsrNative.dispatch(ctx, params);
     }
 
-    /** FFX runtime warnings/errors since the last call (empty string when none). */
+    /** Sets one tuning constant (clamped by the SDK); returns the stored value. */
+    public float setConstant(FsrTuning.Key key, float value) {
+        if (ctx == 0) throw new FsrException("setConstant on a closed FsrUpscaler");
+        return FsrNative.setConstant(ctx, key.id, value);
+    }
+
+    /** The five tuning constants as stored, in {@link FsrTuning.Key} order. */
+    public float[] constants() {
+        if (ctx == 0) throw new FsrException("constants on a closed FsrUpscaler");
+        return FsrNative.getConstants(ctx);
+    }
+
+    /** Applies all five values of a tuning set. */
+    public void apply(FsrTuning t) {
+        for (FsrTuning.Key k : FsrTuning.Key.values()) setConstant(k, t.get(k));
+    }
+
+    /** FFX runtime warnings/errors since the last call (empty string when none; only filled when DEBUG_CHECKING is set). */
     public String drainMessages() {
         return FsrNative.drainMessages();
     }

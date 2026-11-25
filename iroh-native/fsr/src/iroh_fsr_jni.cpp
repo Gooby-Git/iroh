@@ -13,6 +13,8 @@
 #include <FidelityFX/host/ffx_opticalflow.h>
 #include <FidelityFX/host/ffx_frameinterpolation.h>
 #include <FidelityFX/host/backends/vk/ffx_vk.h>
+#include <FidelityFX/host/ffx_message.h>
+#include "ffx_fsr3upscaler_private.h"   // FfxFsr3UpscalerContext_Private: read back the tuning constants (setConstant clamps)
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
@@ -32,7 +34,7 @@ static void free64(void* p) { free(p); }
 #endif
 
 #ifndef IROH_FSR_LABEL
-#define IROH_FSR_LABEL "FidelityFX SDK 1.1.4 (FSR 3.1.4 host + 3.1.6 shaders)"
+#define IROH_FSR_LABEL "FidelityFX SDK 1.1.4 base, FSR 3.1.6 parity (SDK v2.4.0: 3.1.6 shaders, debug-check host deltas)"
 #endif
 
 struct ImageRef {            // 32 bytes
@@ -353,6 +355,7 @@ J(jlong, create)(JNIEnv* env, jclass, jlong instance, jlong phys, jlong device, 
     cd.maxUpscaleSize = {(uint32_t)muw, (uint32_t)muh};
     cd.fpMessage = onFfxMessage;
     cd.backendInterface = c->iface;
+    ffxFsr3UpscalerSetGlobalDebugMessage(onFfxMessage, 0);   // upstream only honours cd.fpMessage via this global (patched to work on Linux)
     e = ffxFsr3UpscalerContextCreate(c->fsr, &cd);
     if (e != FFX_OK) { destroyCtx(c); throwFfx(env, "ffxFsr3UpscalerContextCreate", e); return 0; }
     c->fsrCreated = true;
@@ -440,6 +443,31 @@ J(void, dispatch)(JNIEnv* env, jclass, jlong h, jobject buf) {
     { std::lock_guard<std::mutex> l(g_msgMutex); g_messages.clear(); }
     FfxErrorCode e = ffxFsr3UpscalerContextDispatch(c->fsr, &d);
     if (e != FFX_OK) throwFfx(env, "ffxFsr3UpscalerContextDispatch", e);
+}
+
+// ---- FfxFsr3UpscalerConfigureUpscaleKey tuning constants (ffxFsr3UpscalerSetConstant). Keys 0..4:
+// FVELOCITYFACTOR [0,1] def 1, FREACTIVENESSSCALE [0,inf) def 1, FSHADINGCHANGESCALE [0,inf) def 1,
+// FACCUMULATIONADDEDPERFRAME [0,1] def 1/3, FMINDISOCCLUSIONACCUMULATION [-1,1] def -1/3. Values persist for the context's life.
+static void readConstants(Ctx* c, float out[5]) {
+    const Fsr3UpscalerConstants& k = ((FfxFsr3UpscalerContext_Private*)c->fsr)->constants;
+    out[0] = k.velocityFactor; out[1] = k.reactivenessScale; out[2] = k.shadingChangeScale;
+    out[3] = k.accumulationAddedPerFrame; out[4] = k.minDisocclusionAccumulation;
+}
+// setConstant(ctx, key, value) -> the value the SDK actually stored (after its clamp)
+J(jfloat, setConstant)(JNIEnv* env, jclass, jlong h, jint key, jfloat value) {
+    Ctx* c = (Ctx*)(uintptr_t)h;
+    if (key < 0 || key > 4) { throwFsr(env, "setConstant", "unknown configure key"); return 0; }
+    float v = value;
+    FfxErrorCode e = ffxFsr3UpscalerSetConstant(c->fsr, (FfxFsr3UpscalerConfigureKey)key, &v);
+    if (e != FFX_OK) { throwFfx(env, "ffxFsr3UpscalerSetConstant", e); return 0; }
+    float k[5]; readConstants(c, k);
+    return k[key];
+}
+J(jfloatArray, getConstants)(JNIEnv* env, jclass, jlong h) {
+    float k[5]; readConstants((Ctx*)(uintptr_t)h, k);
+    jfloatArray a = env->NewFloatArray(5);
+    env->SetFloatArrayRegion(a, 0, 5, k);
+    return a;
 }
 
 J(jint, fgStructSize)(JNIEnv*, jclass) { return (jint)sizeof(IrohFgDispatch); }

@@ -1,6 +1,6 @@
-diff -ru a/include/FidelityFX/gpu/fsr1/ffx_fsr1.h b/include/FidelityFX/gpu/fsr1/ffx_fsr1.h
---- a/include/FidelityFX/gpu/fsr1/ffx_fsr1.h
-+++ b/include/FidelityFX/gpu/fsr1/ffx_fsr1.h
+diff -ruN a/include/FidelityFX/gpu/fsr1/ffx_fsr1.h b/include/FidelityFX/gpu/fsr1/ffx_fsr1.h
+--- a/include/FidelityFX/gpu/fsr1/ffx_fsr1.h	2026-11-25 01:37:21.199440021 -0500
++++ b/include/FidelityFX/gpu/fsr1/ffx_fsr1.h	2026-11-25 01:37:21.213875120 -0500
 @@ -748,9 +748,10 @@
       // Immediate constants for peak range.
       FfxFloat32x2 peakC = FfxFloat32x2(1.0, -1.0 * 4.0);
@@ -43,9 +43,9 @@ diff -ru a/include/FidelityFX/gpu/fsr1/ffx_fsr1.h b/include/FidelityFX/gpu/fsr1/
    FfxFloat16x2 hitMaxR=(peakC.x-mx4R)*ffxReciprocalHalf(FFX_BROADCAST_FLOAT16X2(4.0)*mn4R+peakC.y);
    FfxFloat16x2 hitMaxG=(peakC.x-mx4G)*ffxReciprocalHalf(FFX_BROADCAST_FLOAT16X2(4.0)*mn4G+peakC.y);
    FfxFloat16x2 hitMaxB=(peakC.x-mx4B)*ffxReciprocalHalf(FFX_BROADCAST_FLOAT16X2(4.0)*mn4B+peakC.y);
-diff -ru a/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h b/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
---- a/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
-+++ b/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
+diff -ruN a/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h b/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
+--- a/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h	2026-11-25 01:37:21.200024508 -0500
++++ b/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h	2026-11-25 01:37:21.214465829 -0500
 @@ -64,7 +64,7 @@
  
  {
@@ -55,9 +55,21 @@ diff -ru a/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h b/in
  #else
      const FfxFloat32x4 fReprojectedHistory = HistorySample(params.fReprojectedHrUv, PreviousFrameUpscaleSize());
  #endif
-diff -ru a/include/FidelityFX/host/ffx_types.h b/include/FidelityFX/host/ffx_types.h
---- a/include/FidelityFX/host/ffx_types.h
-+++ b/include/FidelityFX/host/ffx_types.h
+diff -ruN a/include/FidelityFX/host/ffx_fsr3upscaler.h b/include/FidelityFX/host/ffx_fsr3upscaler.h
+--- a/include/FidelityFX/host/ffx_fsr3upscaler.h	2026-11-25 01:37:21.201477380 -0500
++++ b/include/FidelityFX/host/ffx_fsr3upscaler.h	2026-11-25 01:37:21.215704625 -0500
+@@ -43,7 +43,7 @@
+ /// FidelityFX Super Resolution 3 patch version.
+ ///
+ /// @ingroup ffxFsr3Upscaler
+-#define FFX_FSR3UPSCALER_VERSION_PATCH      (4)
++#define FFX_FSR3UPSCALER_VERSION_PATCH      (6)  // Iroh: 3.1.6 parity (1.1.4 host + SDK v2.4.0 host deltas + 3.1.6 shaders)
+ 
+ /// FidelityFX Super Resolution 3 context count
+ /// 
+diff -ruN a/include/FidelityFX/host/ffx_types.h b/include/FidelityFX/host/ffx_types.h
+--- a/include/FidelityFX/host/ffx_types.h	2026-11-25 01:37:21.201635950 -0500
++++ b/include/FidelityFX/host/ffx_types.h	2026-11-25 01:37:21.215871571 -0500
 @@ -77,7 +77,9 @@
  #define FFX_API __declspec(dllexport)
  #endif // #if defined (FFX_GCC)
@@ -68,9 +80,9 @@ diff -ru a/include/FidelityFX/host/ffx_types.h b/include/FidelityFX/host/ffx_typ
  
  /// Maximum supported number of simultaneously bound SRVs.
  ///
-diff -ru a/src/backends/vk/ffx_vk.cpp b/src/backends/vk/ffx_vk.cpp
---- a/src/backends/vk/ffx_vk.cpp
-+++ b/src/backends/vk/ffx_vk.cpp
+diff -ruN a/src/backends/vk/ffx_vk.cpp b/src/backends/vk/ffx_vk.cpp
+--- a/src/backends/vk/ffx_vk.cpp	2026-11-25 01:37:21.204957241 -0500
++++ b/src/backends/vk/ffx_vk.cpp	2026-11-25 01:37:21.220731265 -0500
 @@ -280,16 +280,15 @@
          vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &numExtensions, nullptr);
  
@@ -144,3 +156,135 @@ diff -ru a/src/backends/vk/ffx_vk.cpp b/src/backends/vk/ffx_vk.cpp
          backendContext->vkFunctionTable.vkGetImageMemoryRequirements = (PFN_vkGetImageMemoryRequirements)vkDeviceContext->vkDeviceProcAddr(backendContext->device, "vkGetImageMemoryRequirements");
          backendContext->vkFunctionTable.vkAllocateDescriptorSets = (PFN_vkAllocateDescriptorSets)vkDeviceContext->vkDeviceProcAddr(backendContext->device, "vkAllocateDescriptorSets");
          backendContext->vkFunctionTable.vkFreeDescriptorSets = (PFN_vkFreeDescriptorSets)vkDeviceContext->vkDeviceProcAddr(backendContext->device, "vkFreeDescriptorSets");
+diff -ruN a/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp b/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp
+--- a/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp	2026-11-25 01:37:21.207644801 -0500
++++ b/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp	2026-11-25 01:37:21.221548984 -0500
+@@ -203,12 +203,14 @@
+         FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_ERROR, L"motionVectors resource is null");
+     }
+ 
+-    if (params->exposure.resource != nullptr)
++    if (params->exposure.resource == nullptr && !(context->contextDescription.flags & FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE))
+     {
+-        if ((context->contextDescription.flags & FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE) == FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE)
+-        {
+-            FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING, L"exposure resource provided, however auto exposure flag is present");
+-        }
++        FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING, L"exposure resource is null and auto exposure flag is unset");
++    }
++
++    if (params->exposure.resource != nullptr && (context->contextDescription.flags & FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE))
++    {
++        FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING, L"exposure resource provided and auto exposure flag is set");
+     }
+ 
+     if (params->output.resource == nullptr)
+@@ -243,6 +245,11 @@
+         FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING, L"renderSize contains zero dimension");
+     }
+ 
++    if ((params->upscaleSize.width == 0) ^ (params->upscaleSize.height == 0))
++    {
++        FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING, L"upscaleSize contains one dimension that is zero; to set maxUpscaleSize, both dimensions must be zero");
++    }
++
+     if (params->sharpness < 0.0f || params->sharpness > 1.0f)
+     {
+         FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING, L"sharpness contains value outside of expected range [0.0, 1.0]");
+@@ -258,50 +265,21 @@
+         FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_ERROR, L"preExposure provided as 0.0f which is invalid");
+     }
+ 
+-    bool infiniteDepth = (context->contextDescription.flags & FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE) == FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE;
+-    bool inverseDepth = (context->contextDescription.flags & FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED) == FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED;
++    if (params->cameraNear < 0.075f)
++    {
++        FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
++            L"cameraNear value is very low which may result in depth separation artefacting");
++    }
++
++    if (params->cameraFar < 0.075f)
++    {
++        FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
++            L"cameraFar value is very low which may result in depth separation artefacting");
++    }
+ 
+-    if (inverseDepth)
++    if (params->cameraNear == params->cameraFar)
+     {
+-        if (params->cameraNear < params->cameraFar)
+-        {
+-            FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
+-                L"FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED flag is present yet cameraNear is less than cameraFar");
+-        }
+-        if (infiniteDepth)
+-        {
+-            if (params->cameraNear != FLT_MAX)
+-            {
+-                FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
+-                    L"FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE and FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED present, yet cameraNear != FLT_MAX");
+-            }
+-        }
+-        if (params->cameraFar < 0.075f)
+-        {
+-            FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
+-                L"FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED present, cameraFar value is very low which may result in depth separation artefacting");
+-        }
+-    }
+-    else
+-    {
+-        if (params->cameraNear > params->cameraFar)
+-        {
+-            FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
+-                L"cameraNear is greater than cameraFar in non-inverted-depth context");
+-        }
+-        if (infiniteDepth)
+-        {
+-            if (params->cameraFar != FLT_MAX)
+-            {
+-                FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
+-                    L"FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE present, yet cameraFar != FLT_MAX");
+-            }
+-        }
+-        if (params->cameraNear < 0.075f)
+-        {
+-            FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_WARNING,
+-                L"cameraNear value is very low which may result in depth separation artefacting");
+-        }
++        FFX_PRINT_MESSAGE(FFX_MESSAGE_TYPE_ERROR, L"cameraNear and cameraFar are equal - this is invalid");
+     }
+ 
+     if (params->cameraFovAngleVertical <= 0.0f)
+diff -ruN a/src/shared/ffx_message.cpp b/src/shared/ffx_message.cpp
+--- a/src/shared/ffx_message.cpp	2026-11-25 01:37:21.211202729 -0500
++++ b/src/shared/ffx_message.cpp	2026-11-25 01:37:21.224563814 -0500
+@@ -42,8 +42,13 @@
+ 
+ void ffxPrintMessage(uint32_t type, const wchar_t* message)
+ {
++    // Iroh: the callback is honoured on every platform (upstream drops messages on non-Windows builds)
++    if (s_messageCallback) {
++        s_messageCallback(type, message);
++        return;
++    }
+ #ifdef _WIN32
+-    if (!s_messageCallback) {
++    {
+         // Format the message string
+         wchar_t buffer[512];
+         if (type == FFX_MESSAGE_TYPE_ERROR) {
+@@ -53,12 +58,10 @@
+             swprintf_s(buffer, 512, L"FSR_API_DEBUG_WARNING: %ls\n", message);
+         }
+         OutputDebugStringW(buffer);
+-    } else {
+-        s_messageCallback(type, message);
+     }
+ #else
+     FFX_UNUSED(type);
+     FFX_UNUSED(message);
+ #endif
+     return;
+-}
+\ No newline at end of file
++}
