@@ -234,6 +234,17 @@ tasks.register('worldArenaTest', JavaExec) {
 	jvmArgs '-ea', '-Xmx2g'
 }
 
+// P2-7b (L5b): GPU terrain cull, CPU side (CullBounds, SectionCullData, cull words, tier), no device.
+// ./gradlew terrainCullTest ; last line "# terraincull PASS|FAIL n/n"
+tasks.register('terrainCullTest', JavaExec) {
+	group = 'verification'
+	description = 'P2-7b: GPU terrain cull CPU side: bounds packing/scan, section metadata mirror + dirty records, cull words layout, tier decision'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.cull.TerrainCullTest'
+	jvmArgs '-ea', '-Xmx1g'
+}
+
 // P2-10: L7 precise limiter deadline math, offline. ./gradlew frameLimiterTest ; last line "# frameLimiter PASS n/n"
 tasks.register('frameLimiterTest', JavaExec) {
 	group = 'verification'
@@ -1098,6 +1109,24 @@ tasks.register('terrainWorldReplay', JavaExec) {
 	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
 	if (project.hasProperty('tw.quick')) systemProperty 'tw.quick', 'true'
 	if (project.hasProperty('tw.jvm')) jvmArgs project.property('tw.jvm').toString().split(' ')
+	ext.syncval = true
+	doFirst { useLavapipe(it) }
+}
+
+// P2-7b (L5b): GPU terrain cull on lavapipe + validation: recorded frames of a generated section set (the P2-7a scene, every
+// section a candidate as the async walk's union would give), every combination of the four techniques on both tiers (COUNT:
+// compaction + vkCmdDrawIndexedIndirectCount; FIXED: instanceCount 0 in place + fixed-count MDI): image == the CPU path's
+// image (0 missing visible sections), kept set == the Java model's set, each technique culls something.
+// ./gradlew terrainCullReplay [-Pvalidate=gpuav] [-Ptc.quick] [-Ptc.noHorizon] ; last line "# terraincullreplay PASS|FAIL|SKIP"
+tasks.register('terrainCullReplay', JavaExec) {
+	group = 'verification'
+	description = 'P2-7b: GPU terrain cull (frustum, facing, screen size, horizon) vs the CPU path on lavapipe: images, kept sets, both tiers'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.TerrainCullReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	if (project.hasProperty('tc.quick')) systemProperty 'tc.quick', 'true'
+	if (project.hasProperty('tc.noHorizon')) systemProperty 'tc.noHorizon', 'true'
 	ext.syncval = true
 	doFirst { useLavapipe(it) }
 }

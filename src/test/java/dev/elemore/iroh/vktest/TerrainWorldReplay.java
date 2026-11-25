@@ -370,11 +370,14 @@ public final class TerrainWorldReplay {
     static Dev device(MemoryStack outer, VkPhysicalDevice phys, ByteBuffer[] code, int maxDrawOverride) {
         Dev d = new Dev();
         try (MemoryStack s = outer.push()) {
-            VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default();
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
+            VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(a12.address());
             VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(a11.address());
             vkGetPhysicalDeviceFeatures2(phys, a2);
-            VkPhysicalDeviceVulkan11Features e11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default();
+            VkPhysicalDeviceVulkan12Features e12 = VkPhysicalDeviceVulkan12Features.calloc(s).sType$Default();
+            VkPhysicalDeviceVulkan11Features e11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(e12.address());
             VkPhysicalDeviceFeatures2 e2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(e11.address());
+            IndirectDrawCaps.applyDrawCount(a12, e12); // P2-7b: production step (DeviceManager): drawIndirectCount where offered
             IndirectDrawCaps.TerrainTier t = IndirectDrawCaps.apply(a2.features(), a11, e2.features(), e11); // production device step
             d.tier = t.name();
             if (t != IndirectDrawCaps.TerrainTier.INDIRECT) return d;
@@ -497,6 +500,13 @@ public final class TerrainWorldReplay {
         return d;
     }
 
+    /**
+     * P2-7b: rasterizer culling of the replay pipelines. P2-7a draws without (NONE); terrainCullReplay sets BACK like the
+     * game's terrain render types (quads here are counter-clockwise around their facing normal in world space; the
+     * GL-style projection without a y-flipped viewport makes front faces clockwise on screen).
+     */
+    static int CULL_MODE = VK_CULL_MODE_NONE, FRONT_FACE = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
     static long pipeline(MemoryStack outer, Dev d, long vs, long fs, boolean blend) {
         try (MemoryStack s = outer.push()) {
             VkPipelineShaderStageCreateInfo.Buffer st = VkPipelineShaderStageCreateInfo.calloc(2, s);
@@ -518,8 +528,8 @@ public final class TerrainWorldReplay {
             VkGraphicsPipelineCreateInfo.Buffer gp = VkGraphicsPipelineCreateInfo.calloc(1, s).sType$Default().pStages(st).pVertexInputState(vi)
                     .pInputAssemblyState(VkPipelineInputAssemblyStateCreateInfo.calloc(s).sType$Default().topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST))
                     .pViewportState(VkPipelineViewportStateCreateInfo.calloc(s).sType$Default().viewportCount(1).pViewports(vp).scissorCount(1).pScissors(sc))
-                    .pRasterizationState(VkPipelineRasterizationStateCreateInfo.calloc(s).sType$Default().polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE)
-                            .frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE).lineWidth(1f))
+                    .pRasterizationState(VkPipelineRasterizationStateCreateInfo.calloc(s).sType$Default().polygonMode(VK_POLYGON_MODE_FILL).cullMode(CULL_MODE)
+                            .frontFace(FRONT_FACE).lineWidth(1f))
                     .pMultisampleState(VkPipelineMultisampleStateCreateInfo.calloc(s).sType$Default().rasterizationSamples(VK_SAMPLE_COUNT_1_BIT))
                     .pDepthStencilState(VkPipelineDepthStencilStateCreateInfo.calloc(s).sType$Default().depthTestEnable(true).depthWriteEnable(true)
                             .depthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL))
@@ -818,6 +828,10 @@ public final class TerrainWorldReplay {
         }
     }
 
+    /** P2-7b: when set, recordWorld issues its draws as vkCmdDrawIndexedIndirectCount with an exact host count (lavapipe workaround) */
+    static HostBuf COUNT_SHIM;
+    static long countShimOff;
+
     /** WorldRenderer.drawWorldLayer with the production TerrainCommandWriter */
     static void recordWorld(MemoryStack outer, Dev d, Frame fr, int layer, Layout lay, TerrainCommandWriter w, Counts c, boolean oldShader) {
         try (MemoryStack s = outer.push()) {
@@ -871,7 +885,12 @@ public final class TerrainWorldReplay {
                     c.indexBinds++;
                 }
                 int cnt = w.drawCount(k);
-                vkCmdDrawIndexedIndirect(cmd, d.indirect.buf, base + (long) w.drawFirst(k) * TerrainCommandWriter.STRIDE, cnt, TerrainCommandWriter.STRIDE);
+                long off = base + (long) w.drawFirst(k) * TerrainCommandWriter.STRIDE;
+                if (COUNT_SHIM != null) { // P2-7b: lavapipe keeps a count draw's count buffer for later plain indirect draws (see terrainCullReplay)
+                    MemoryUtil.memPutInt(COUNT_SHIM.ptr + countShimOff, cnt);
+                    vkCmdDrawIndexedIndirectCount(cmd, d.indirect.buf, off, COUNT_SHIM.buf, countShimOff, cnt, TerrainCommandWriter.STRIDE);
+                    countShimOff += 4;
+                } else vkCmdDrawIndexedIndirect(cmd, d.indirect.buf, off, cnt, TerrainCommandWriter.STRIDE);
                 c.commands += cnt;
                 c.draws++;
             }

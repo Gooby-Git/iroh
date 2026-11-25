@@ -343,6 +343,11 @@ public class WorldRenderer {
 
             this.sectionGrid = new SectionGrid(this.level, this.renderDistance);
             this.sectionGraph = new SectionGraph(this.level, this.sectionGrid, this.taskDispatcher);
+            // P2-7b: GPU-cull metadata for the new grid while the world arena exists on an indirect tier (filled as sections build)
+            if (this.worldArena != null && net.vulkanmod.vulkan.device.IndirectDrawCaps.cullTier() != net.vulkanmod.vulkan.device.IndirectDrawCaps.CullTier.CPU) {
+                this.cullData = new net.vulkanmod.render.chunk.cull.SectionCullData(this.sectionGrid.gridWidth, this.sectionGrid.gridHeight, this.level.getMinSection());
+                net.vulkanmod.render.chunk.cull.SectionCullData.setCurrent(this.cullData);
+            }
 
             this.onAllChangedCallbacks.forEach(Runnable::run);
 
@@ -396,6 +401,169 @@ public class WorldRenderer {
             this.worldArena = null;
         }
         net.vulkanmod.render.chunk.buffer.WorldArena.setCurrent(null);
+        // P2-7b: the cull's metadata belongs to the grid; its GPU side goes once the frames that used it are done
+        this.cullData = null;
+        net.vulkanmod.render.chunk.cull.SectionCullData.setCurrent(null);
+        var tc = this.terrainCull;
+        this.terrainCull = null;
+        this.cullPreparedSerial = Long.MIN_VALUE;
+        if (tc != null)
+            net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(tc::destroyNow);
+    }
+
+    // ---- P2-7b (L5b): GPU culling of the opaque world-arena layers -------------------------------------------------
+
+    private net.vulkanmod.render.chunk.cull.SectionCullData cullData;
+    private net.vulkanmod.render.chunk.cull.TerrainCull terrainCull;
+    private boolean terrainCullFailed;
+    private static org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties cullMemProps;
+    private final net.vulkanmod.render.chunk.buffer.TerrainCommandWriter[] cullWriters = {
+            new net.vulkanmod.render.chunk.buffer.TerrainCommandWriter(), new net.vulkanmod.render.chunk.buffer.TerrainCommandWriter(),
+            new net.vulkanmod.render.chunk.buffer.TerrainCommandWriter()};
+    private final net.vulkanmod.render.chunk.cull.TerrainCull.Frame cullFrame = new net.vulkanmod.render.chunk.cull.TerrainCull.Frame();
+    private final float[] cullKeyMvp = new float[16];
+    private long cullPreparedSerial = Long.MIN_VALUE;
+    private double cullKeyX, cullKeyY, cullKeyZ;
+    private int cullKeyTech;
+    private boolean cullPrepared;
+    private int cullDrawsLast;
+
+    /** P2-7b: the GPU culling techniques the options ask for this frame (0 = CPU path); facing needs back-face culling on */
+    static int cullTechniques() {
+        var c = Initializer.CONFIG;
+        int t = (c.cullGpuFrustum ? net.vulkanmod.render.chunk.cull.TerrainCull.T_FRUSTUM : 0)
+                | (c.cullGpuHorizon ? net.vulkanmod.render.chunk.cull.TerrainCull.T_HORIZON : 0)
+                | (c.cullGpuScreenSize ? net.vulkanmod.render.chunk.cull.TerrainCull.T_SCREEN : 0)
+                | (c.cullGpuFacing && c.backFaceCulling ? net.vulkanmod.render.chunk.cull.TerrainCull.T_FACING : 0);
+        if (t != 0 && dev.elemore.iroh.shaderpack.runtime.PackRuntime.active()) return 0; // vertex displacement is not in the boxes
+        return t;
+    }
+
+    private net.vulkanmod.render.chunk.cull.TerrainCull terrainCull() {
+        var old = this.terrainCull;
+        if (old != null && old.frames() != Renderer.getFramesNum()) { // frame queue size changed: per-slot staging no longer matches
+            this.terrainCull = null;
+            this.cullPreparedSerial = Long.MIN_VALUE;
+            net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(old::destroyNow);
+            this.cullData.markFull();
+        }
+        if (this.terrainCull == null && !this.terrainCullFailed) {
+            try {
+                net.vulkanmod.render.chunk.cull.TerrainCull.EXTERNAL = dev.elemore.iroh.memory.MemoryGuard::addExternal;
+                if (cullMemProps == null) {
+                    cullMemProps = org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties.malloc(); // once per process, never freed
+                    org.lwjgl.vulkan.VK10.vkGetPhysicalDeviceMemoryProperties(net.vulkanmod.vulkan.device.DeviceManager.physicalDevice, cullMemProps);
+                }
+                this.terrainCull = new net.vulkanmod.render.chunk.cull.TerrainCull(net.vulkanmod.vulkan.device.DeviceManager.vkDevice, cullMemProps,
+                        Renderer.getFramesNum(), net.vulkanmod.vulkan.device.IndirectDrawCaps.cullTier() == net.vulkanmod.vulkan.device.IndirectDrawCaps.CullTier.COUNT,
+                        r -> net.vulkanmod.vulkan.memory.MemoryManager.getInstance().addFrameOp(r));
+                Initializer.LOGGER.info("Iroh: GPU terrain cull ready ({})", net.vulkanmod.vulkan.device.IndirectDrawCaps.report());
+            } catch (RuntimeException e) { // never worse than the CPU path: log once, keep drawing without it
+                this.terrainCullFailed = true;
+                Initializer.LOGGER.warn("Iroh: GPU terrain cull unavailable, CPU path draws: {}", e.toString());
+            }
+        }
+        return this.terrainCull;
+    }
+
+    /**
+     * P2-7b: one opaque layer through the GPU cull. Once per frame (frame serial, camera, MVP and techniques unchanged)
+     * all three opaque layers' commands are written with cull words and the cull is recorded outside the render pass
+     * (VulkanImage.endPassRunResume); each layer then draws its pages from the cull's output. False = draw the layer
+     * through the CPU path (cull not available or not recorded).
+     */
+    private boolean drawWorldLayerCulled(net.vulkanmod.render.chunk.buffer.WorldArena wa, TerrainRenderType t, GraphicsPipeline pipeline,
+                                         double camX, double camY, double camZ, int tech) {
+        var tc = terrainCull();
+        if (tc == null)
+            return false;
+        int ox = Mth.floor(camX) >> 4, oz = Mth.floor(camZ) >> 4;
+        int oy = Mth.clamp(Mth.floor(camY) >> 4, this.level.getMinSection(), this.level.getMaxSection() - 1);
+        long serial = net.vulkanmod.vulkan.texture.VulkanImage.frameSerial();
+        long mvpPtr = VRenderSystem.getMVP().ptr;
+        boolean same = this.cullPreparedSerial == serial && this.cullKeyX == camX && this.cullKeyY == camY && this.cullKeyZ == camZ && this.cullKeyTech == tech;
+        for (int i = 0; i < 16 && same; i++) same = this.cullKeyMvp[i] == org.lwjgl.system.MemoryUtil.memGetFloat(mvpPtr + i * 4L);
+        if (!same) {
+            int maxDraws = net.vulkanmod.vulkan.device.DeviceManager.deviceProperties.limits().maxDrawIndirectCount();
+            boolean allFacings = (tech & net.vulkanmod.render.chunk.cull.TerrainCull.T_FACING) != 0;
+            for (int l = 0; l < this.cullWriters.length; l++) {
+                var w = this.cullWriters[l];
+                TerrainRenderType lt = TerrainRenderType.VALUES[l];
+                w.beginCull(ox, oy, oz, maxDraws);
+                for (Iterator<ChunkArea> it = this.sectionGraph.getChunkAreaQueue().iterator(false); it.hasNext(); ) {
+                    ChunkArea chunkArea = it.next();
+                    if (chunkArea.sectionQueue.size() > 0 && chunkArea.drawBuffers.hasWorldLayer(lt))
+                        chunkArea.drawBuffers.writeWorldCommandsCull(this.cameraPos, chunkArea.sectionQueue, lt, w, allFacings);
+                }
+                w.finish();
+            }
+            var f = this.cullFrame;
+            for (int i = 0; i < 16; i++) f.mvp[i] = this.cullKeyMvp[i] = org.lwjgl.system.MemoryUtil.memGetFloat(mvpPtr + i * 4L);
+            f.originRelX = (float) ((ox << 4) - camX);
+            f.originRelY = (float) ((oy << 4) - camY);
+            f.originRelZ = (float) ((oz << 4) - camZ);
+            int cx = Mth.floor(camX) >> 4, cy = Mth.floor(camY) >> 4, cz = Mth.floor(camZ) >> 4;
+            f.camSecX = cx; f.camSecY = cy; f.camSecZ = cz;
+            f.camFracX = (float) (camX - (cx << 4));
+            f.camFracY = (float) (camY - (cy << 4));
+            f.camFracZ = (float) (camZ - (cz << 4));
+            // screen size: the main scene target only (its world viewport is the whole target); elsewhere the test is off
+            var fb = Renderer.getInstance().getBoundFramebuffer();
+            int techFrame = tech;
+            if (fb instanceof net.vulkanmod.vulkan.framebuffer.SceneTarget) {
+                f.vpX = 0; f.vpY = 0; f.vpW = fb.getWidth(); f.vpH = fb.getHeight();
+            } else techFrame &= ~net.vulkanmod.render.chunk.cull.TerrainCull.T_SCREEN;
+            f.techniques = techFrame;
+            boolean[] ok = {false};
+            var data = this.cullData;
+            if (techFrame != 0)
+                net.vulkanmod.vulkan.texture.VulkanImage.endPassRunResume(() -> ok[0] = tc.record(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, f, data, this.cullWriters));
+            this.cullPrepared = ok[0];
+            this.cullPreparedSerial = serial;
+            this.cullKeyX = camX; this.cullKeyY = camY; this.cullKeyZ = camZ;
+            this.cullKeyTech = tech;
+        }
+        if (!this.cullPrepared)
+            return false;
+
+        int layer = t.ordinal();
+        var w = this.cullWriters[layer];
+        int draws = w.draws();
+        this.worldDrawsLast = draws;
+        this.worldCommandsLast = w.totalCommands();
+        if (draws == 0)
+            return true;
+        Renderer renderer = Renderer.getInstance();
+        org.lwjgl.vulkan.VkCommandBuffer cmd = Renderer.getCommandBuffer();
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.ByteBuffer pc = stack.malloc(12);
+            pc.putFloat(0, (float) ((ox << 4) + DrawBuffers.POS_OFFSET - camX));
+            pc.putFloat(4, (float) ((oy << 4) + DrawBuffers.POS_OFFSET - camY));
+            pc.putFloat(8, (float) ((oz << 4) + DrawBuffers.POS_OFFSET - camZ));
+            org.lwjgl.vulkan.VK10.vkCmdPushConstants(cmd, pipeline.getLayout(), org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_VERTEX_BIT, 0, pc);
+        }
+        renderer.uploadAndBindUBOs(pipeline);
+        IndexBuffer quads = Renderer.getDrawer().getQuadsIndexBuffer().getIndexBuffer();
+        Renderer.getDrawer().bindIndexBuffer(cmd, quads, quads.indexType.value); // opaque layers draw with the quad indices only
+        var vpool = wa.vertexPool(layer);
+        long boundVertex = 0;
+        int calls = 0;
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            long pBuf = stack.nmalloc(8, 8), pOff = stack.ncalloc(8, 1, 8);
+            for (int d = 0; d < draws; d++) {
+                long vb = wa.bufferId(vpool, w.drawVertexPage(d));
+                if (vb == 0 || w.drawIndexKey(d) != net.vulkanmod.render.chunk.buffer.TerrainCommandWriter.QUADS)
+                    continue; // cannot happen for opaque layers (no sorted indices; TerrainCommandWriter counts orphans first)
+                if (vb != boundVertex) {
+                    org.lwjgl.system.MemoryUtil.memPutLong(pBuf, vb);
+                    org.lwjgl.vulkan.VK10.nvkCmdBindVertexBuffers(cmd, 0, 1, pBuf, pOff);
+                    boundVertex = vb;
+                }
+                calls += tc.drawCulled(cmd, layer, d, w);
+            }
+        }
+        this.cullDrawsLast = calls;
+        return true;
     }
 
     /**
@@ -430,8 +598,14 @@ public class WorldRenderer {
     /** P2-7a: memStats / F3 line of the world arena, or null when the per-area path draws */
     public String worldArenaStats() {
         var w = this.worldArena;
-        return w == null ? null : w.stats() + ", last layer draws " + this.worldDrawsLast + ", commands " + this.worldCommandsLast
+        String s = w == null ? null : w.stats() + ", last layer draws " + this.worldDrawsLast + ", commands " + this.worldCommandsLast
                 + (this.worldWriter.outOfRange + this.worldWriter.orphans > 0 ? ", skipped " + this.worldWriter.outOfRange + "/" + this.worldWriter.orphans : "");
+        var tc = this.terrainCull;
+        if (s != null && tc != null && this.cullPrepared) // P2-7b: GPU cull of the last frame (kept = read back two frames later, COUNT tier)
+            s += ", gpu cull tech " + this.cullKeyTech + " " + (tc.compact() ? "count" : "fixed") + ": " + tc.segments() + " segments, " + this.cullDrawsLast
+                    + " indirect calls (last layer), candidates " + tc.commands()
+                    + (tc.keptLast >= 0 ? ", kept " + tc.keptLast + "/" + tc.candidatesLast : "");
+        return s;
     }
 
     private int worldDrawsLast, worldCommandsLast;
@@ -444,6 +618,11 @@ public class WorldRenderer {
      */
     private void drawWorldLayer(net.vulkanmod.render.chunk.buffer.WorldArena wa, TerrainRenderType t, GraphicsPipeline pipeline,
                                 double camX, double camY, double camZ, int currentFrame) {
+        if (this.cullData != null && t.ordinal() < net.vulkanmod.render.chunk.cull.SectionCullData.OPAQUE_LAYERS) { // P2-7b
+            int tech = cullTechniques();
+            if (tech != 0 && this.drawWorldLayerCulled(wa, t, pipeline, camX, camY, camZ, tech))
+                return;
+        }
         var w = this.worldWriter;
         boolean isTranslucent = t == TerrainRenderType.TRANSLUCENT;
         int ox = Mth.floor(camX) >> 4, oz = Mth.floor(camZ) >> 4;
@@ -920,6 +1099,7 @@ public class WorldRenderer {
             Arrays.stream(indirectBuffers).forEach(Buffer::scheduleFree);
         this.retireWorldArena(); // P2-7a
         this.worldWriter.free();
+        for (var cw : this.cullWriters) cw.free(); // P2-7b
     }
 
 }

@@ -331,7 +331,7 @@ public class RenderSection {
         if (this.chunkArea == null)
             return;
         if (this.chunkArea.getDrawBuffers().worldMode()) { // P2-7a: the layer's arena ranges (vertex + sorted index) go back
-            this.chunkArea.getDrawBuffers().resetLayerWorld(this.inAreaIndex, renderType);
+            this.chunkArea.getDrawBuffers().resetLayerWorld(this.inAreaIndex, this.gridIndex, renderType); // P2-7b: + GPU-cull box
             return;
         }
         DrawBuffers drawBuffers = this.chunkArea.getDrawBuffers();
@@ -445,7 +445,7 @@ public class RenderSection {
 
         if (this.chunkArea.getDrawBuffers().worldMode()) {
             // P2-7a: no area release reclaims world-arena ranges, so a moved / cleared section frees its own
-            this.chunkArea.getDrawBuffers().resetSectionWorld(this.inAreaIndex);
+            this.chunkArea.getDrawBuffers().resetSectionWorld(this.inAreaIndex, this.gridIndex); // P2-7b: + GPU-cull metadata
             return;
         }
         for (TerrainRenderType renderType : TerrainRenderType.VALUES)

@@ -47,6 +47,13 @@ public final class TerrainCommandWriter {
     // the layer's commands in arrival order; runs of equal key (index key << 8 | vertex page)
     private long cmd;
     private int cap, n;
+    /**
+     * P2-7b (GPU cull): one 32-bit word per command in the same order, section-grid slot | facing << 28
+     * (terrain_cull.comp); written by {@link #addAreaCull}, laid out by {@link #copyWordsTo} like the commands.
+     */
+    private long words;
+    private boolean cull;
+    public static final int WORD_FACING_SHIFT = 28, WORD_SLOT_MASK = (1 << 28) - 1;
     private int[] runStart = new int[64], runKey = new int[64];
     private int runs, lastKey;
     // unordered with several keys: destination of each run in the grouped layout (stable by key)
@@ -77,6 +84,13 @@ public final class TerrainCommandWriter {
         this.oz = originZ;
         // maxDrawIndirectCount is a uint32 (RADV, lavapipe: 0xFFFFFFFF, i.e. -1 as an int): <= 0 means no practical limit
         this.maxDraws = maxDrawCount <= 0 ? Integer.MAX_VALUE : maxDrawCount;
+        this.cull = false;
+    }
+
+    /** P2-7b: {@link #begin} for a layer the GPU cull reads: commands come with cull words ({@link #addAreaCull} only) */
+    public void beginCull(int originX, int originY, int originZ, int maxDrawCount) {
+        begin(false, originX, originY, originZ, maxDrawCount);
+        this.cull = true;
     }
 
     /** firstInstance for the section at section coordinates (x, y, z), or -1 when it does not fit */
@@ -176,6 +190,40 @@ public final class TerrainCommandWriter {
         this.n = k;
     }
 
+    /**
+     * P2-7b: {@link #addArea} plus each command's cull word (section-grid slot {@code slot[j]} | facing << 28) for the
+     * GPU cull. Unordered layers only ({@link #beginCull}).
+     */
+    public void addAreaCull(long layerParams, int count, int[] sec, int[] mask, int[] fi, int[] slot, byte[] iPage, int iPageBase) {
+        if (this.n + count * PARAM_FACINGS > this.cap) grow(this.n + count * PARAM_FACINGS);
+        int k = this.n, lastKey = this.lastKey;
+        final long cmd = this.cmd, words = this.words;
+        for (int j = 0; j < count; j++) {
+            final int s = sec[j], m = mask[j], firstInstance = fi[j], sl = slot[j] & WORD_SLOT_MASK;
+            final byte ip = iPage[iPageBase + s];
+            final int ik = (ip < 0 ? QUADS : ip) << 8;
+            long p = layerParams + (long) s * (PARAM_FACINGS * PARAM_STRIDE);
+            for (int i = 0; i < PARAM_FACINGS; i++, p += PARAM_STRIDE) {
+                if ((m & 1 << i) == 0) continue;
+                int indexCount = MemoryUtil.memGetInt(p);
+                if (indexCount <= 0) continue;
+                int page = MemoryUtil.memGetInt(p + PARAM_PAGE_OFFSET) - 1;
+                if (page < 0) { this.orphans++; continue; }
+                long q = cmd + (long) k * STRIDE;
+                MemoryUtil.memPutInt(q, indexCount);
+                MemoryUtil.memPutInt(q + 4, 1);
+                MemoryUtil.memPutInt(q + 8, MemoryUtil.memGetInt(p + 4));
+                MemoryUtil.memPutInt(q + 12, MemoryUtil.memGetInt(p + 8));
+                MemoryUtil.memPutInt(q + 16, firstInstance);
+                MemoryUtil.memPutInt(words + (long) k * 4, sl | i << WORD_FACING_SHIFT);
+                int key = ik | page;
+                if (key != lastKey) lastKey = newRun(k, key);
+                k++;
+            }
+        }
+        this.n = k;
+    }
+
     /** big-endian hosts: the same with 4-byte accesses */
     private void addSectionPortable(long params, int mask, int indexKey, int firstInstance) {
         long p = params;
@@ -216,7 +264,8 @@ public final class TerrainCommandWriter {
     private void grow(int need) {
         int c = Math.max(need, Math.max(4096, this.cap * 2));
         this.cmd = this.cmd == 0 ? MemoryUtil.nmemAlloc((long) c * STRIDE) : MemoryUtil.nmemRealloc(this.cmd, (long) c * STRIDE);
-        if (this.cmd == 0) throw new OutOfMemoryError("terrain command scratch " + c);
+        this.words = this.words == 0 ? MemoryUtil.nmemAlloc((long) c * 4) : MemoryUtil.nmemRealloc(this.words, (long) c * 4);
+        if (this.cmd == 0 || this.words == 0) throw new OutOfMemoryError("terrain command scratch " + c);
         this.cap = c;
     }
 
@@ -294,6 +343,23 @@ public final class TerrainCommandWriter {
         }
     }
 
+    /** P2-7b: the cull words of {@link #copyTo}'s layout (4 bytes per command) */
+    public void copyWordsTo(long dst) {
+        if (this.n == 0) return;
+        if (!this.grouped) {
+            MemoryUtil.memCopy(this.words, dst, (long) this.n * 4);
+            return;
+        }
+        for (int r = 0; r < this.runs; r++) {
+            int len = runEnd(r) - this.runStart[r];
+            MemoryUtil.memCopy(this.words + (long) this.runStart[r] * 4, dst + (long) this.runDst[r] * 4, (long) len * 4);
+        }
+    }
+
+    public boolean cullWords() {
+        return this.cull;
+    }
+
     private void addDraws(int first, int count, int key) {
         while (count > 0) {
             int c = Math.min(count, this.maxDraws);
@@ -354,8 +420,9 @@ public final class TerrainCommandWriter {
     /** native scratch back to the allocator (renderer close / tests) */
     public void free() {
         if (this.cmd != 0) MemoryUtil.nmemFree(this.cmd);
+        if (this.words != 0) MemoryUtil.nmemFree(this.words);
         if (this.sorted != 0) MemoryUtil.nmemFree(this.sorted);
-        this.cmd = this.sorted = 0;
+        this.cmd = this.words = this.sorted = 0;
         this.cap = this.sortedCap = this.n = this.draws = this.runs = 0;
     }
 }

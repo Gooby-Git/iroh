@@ -10,7 +10,9 @@ WT=$(readlink -f "${1:-.}"); FILTER=${2:-.}; cd "$WT"
 export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}; export PATH=$JAVA_HOME/bin:$PATH
 OUT=$WT/build/vkval-extra; mkdir -p "$OUT"
 ALLOW=$WT/tools/vkval-gpuav-allowlist.txt
-TASKS=("terrainIndirectRepro" "terrainWorldReplay -Ptw.quick" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "pipelinePrewarmRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "packFullVkRepro" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
+# P2-7b: terrainCullReplay twice: shader-instrumented without the horizon combinations (lavapipe SIGSEGVs in the instrumented
+# horizon build shader, RQ-B-gpuav-lvp pattern), and every combination with instrumentation off (indirect buffer content checks)
+TASKS=("terrainIndirectRepro" "terrainWorldReplay -Ptw.quick" "terrainCullReplay -Ptc.quick -Ptc.noHorizon" "terrainCullReplay -Ptc.quick -PvkvalSet.gpuav_shader_instrumentation=false" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "pipelinePrewarmRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "packFullVkRepro" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
 have() { grep -q "register('$1'" build.gradle; }
 allowed() { # task id -> 0 when allowlisted
   [ -f "$ALLOW" ] && grep -v '^#' "$ALLOW" | awk -F' [|] ' -v t="$1" -v id="$2" '$1==id && ($2=="*" || $2=="task="t) {f=1} END {exit !f}'

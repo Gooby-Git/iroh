@@ -182,6 +182,22 @@ public final class IrohOptions {
         return o;
     }
 
+    /**
+     * P2-7b: why the GPU culling techniques cannot run here (greyed with this reason), or null. Live: device tier, the
+     * world-arena switch (the arena only exists while it is on; read at the last chunk reload), a shader pack (vertex
+     * displacement is not in the boxes).
+     */
+    static Component gpuCullUnavailable() {
+        var tier = net.vulkanmod.vulkan.device.IndirectDrawCaps.cullTier();
+        if (tier == net.vulkanmod.vulkan.device.IndirectDrawCaps.CullTier.CPU)
+            return Component.translatable("iroh.options.cullGpu.noIndirect");
+        if (!dev.elemore.iroh.perf.PerfSwitches.terrainMdiOn)
+            return Component.translatable("iroh.options.cullGpu.needsArena");
+        if (dev.elemore.iroh.shaderpack.runtime.PackRuntime.active())
+            return Component.translatable("iroh.options.cullGpu.shaderPack");
+        return null;
+    }
+
     private static Opt<Boolean> bool(String id, Category c, boolean def, Function<Config, Boolean> g, BiConsumer<Config, Boolean> s) {
         Opt<Boolean> o = new Opt<>(id, Boolean.class, def, c);
         o.getter = () -> g.apply(config);
@@ -255,6 +271,8 @@ public final class IrohOptions {
     public static final Opt<Boolean> LEAF_CULLING;
     public static final Opt<Integer> LEAF_CULLING_DEPTH;
     public static final Opt<Integer> LEAF_CULLING_REJECTION;
+    /** P2-7b: GPU terrain culling techniques (Culling page) */
+    public static final Opt<Boolean> CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING;
     public static final Opt<DeferMode> CHUNK_BUILD_DEFER_MODE;
     public static final Opt<String> SHADER_PACK;
     public static final Opt<Boolean> SHADERS_ENABLED;
@@ -374,6 +392,20 @@ public final class IrohOptions {
         LEAF_CULLING_REJECTION = integer("leafCullingRejection", Category.QUALITY, 0, c -> c.leafCullingRejection, (c, v) -> c.leafCullingRejection = v);
         LEAF_CULLING_REJECTION.range(0, 100, 5).reload(Reload.RELOAD_CHUNKS)
                 .label(v -> Component.literal(v + "%"));
+
+        // P2-7b: GPU culling, every technique its own switch, default off (DECISIONS "GPU culling techniques as player options")
+        CULL_GPU_FRUSTUM = bool("cullGpuFrustum", Category.PERFORMANCE, false, c -> c.cullGpuFrustum, (c, v) -> c.cullGpuFrustum = v);
+        CULL_GPU_HORIZON = bool("cullGpuHorizon", Category.PERFORMANCE, false, c -> c.cullGpuHorizon, (c, v) -> c.cullGpuHorizon = v);
+        CULL_GPU_SCREEN_SIZE = bool("cullGpuScreenSize", Category.PERFORMANCE, false, c -> c.cullGpuScreenSize, (c, v) -> c.cullGpuScreenSize = v);
+        CULL_GPU_FACING = bool("cullGpuFacing", Category.PERFORMANCE, false, c -> c.cullGpuFacing, (c, v) -> c.cullGpuFacing = v);
+        for (Opt<Boolean> o : List.of(CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING)) {
+            o.unavailable(IrohOptions::gpuCullUnavailable);
+            o.note("iroh.options.cullGpu.note");
+        }
+        CULL_GPU_FACING.unavailable(() -> {
+            Component r = gpuCullUnavailable();
+            return r != null || config.backFaceCulling ? r : Component.translatable("iroh.options.cullGpu.needsBackface");
+        });
 
         CHUNK_BUILD_DEFER_MODE = enumOpt("chunkBuildDeferMode", Category.PERFORMANCE, DeferMode.class, DeferMode.ALWAYS,
                 c -> parse(DeferMode.class, c.chunkBuildDeferMode, DeferMode.ALWAYS), (c, v) -> c.chunkBuildDeferMode = v.name());

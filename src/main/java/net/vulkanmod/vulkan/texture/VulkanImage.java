@@ -69,6 +69,11 @@ public class VulkanImage {
     private static long frameSerial;
 
     /** Renderer: a new frame command buffer was begun (frame start, or resumed after flushCmds). */
+    /** P2-7b: the frame command buffer serial (changes at every frame command buffer begin, also after flushCmds) */
+    public static long frameSerial() {
+        return frameSerial;
+    }
+
     public static void nextFrameSerial() {
         frameSerial++;
     }

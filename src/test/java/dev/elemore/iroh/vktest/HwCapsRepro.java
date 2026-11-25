@@ -140,6 +140,8 @@ public final class HwCapsRepro {
             a11.pNext(a12.address());
             vkGetPhysicalDeviceFeatures2(phys, a2);
             if (maskFirstInstance) a2.features().drawIndirectFirstInstance(false);
+            IndirectDrawCaps.applyDrawCount(a12, e12); // P2-7b: DeviceManager order (drawIndirectCount, then the terrain tier)
+            lastEnabledDrawCount = e12.drawIndirectCount();
             IndirectDrawCaps.apply(a2.features(), a11, e2.features(), e11); // P2-3: DeviceManager order (before DeviceCaps)
             lastEnabledMdi = e2.features().multiDrawIndirect();
             lastEnabledFirstInstance = e2.features().drawIndirectFirstInstance();
@@ -175,13 +177,17 @@ public final class HwCapsRepro {
      * fallback (T-C). Checked on the real device, on the same device with firstInstance masked (no profile lacks it), and on the
      * pure decision table. Returns the tier-line fragment.
      */
+    static boolean lastEnabledDrawCount;
+
     static String terrainTier(MemoryStack s, VkPhysicalDevice phys) {
-        boolean rawMdi, rawSdp, rawFi;
+        boolean rawMdi, rawSdp, rawFi, rawDc;
         try (MemoryStack f = s.push()) {
-            VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(f).sType$Default();
+            VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(f).sType$Default();
+            VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(f).sType$Default().pNext(a12.address());
             VkPhysicalDeviceFeatures2 a2 = VkPhysicalDeviceFeatures2.calloc(f).sType$Default().pNext(a11.address());
             vkGetPhysicalDeviceFeatures2(phys, a2);
             rawMdi = a2.features().multiDrawIndirect(); rawSdp = a11.shaderDrawParameters(); rawFi = a2.features().drawIndirectFirstInstance();
+            rawDc = a12.drawIndirectCount();
         }
         // the device as created by the last production create(..) call (the upscale device)
         IndirectDrawCaps.TerrainTier t = IndirectDrawCaps.tier();
@@ -192,6 +198,12 @@ public final class HwCapsRepro {
         check(!lastEnabledFirstInstance || rawFi, "drawIndirectFirstInstance enabled but not offered");
         check(!lastEnabledMdi || (rawMdi && rawSdp), "multiDrawIndirect enabled but not offered");
         String real = t == IndirectDrawCaps.TerrainTier.INDIRECT ? "indirect" : "direct";
+        // P2-7b: GPU terrain-cull tier from the same device: COUNT (T-A) / FIXED (T-B) / CPU (T-C)
+        IndirectDrawCaps.CullTier ct = IndirectDrawCaps.cullTier();
+        IndirectDrawCaps.CullTier ctExpect = IndirectDrawCaps.decideCull(expect, rawDc);
+        check(ct == ctExpect, "cull tier " + ct + " != raw " + ctExpect + " (drawIndirectCount=" + rawDc + ")");
+        check(lastEnabledDrawCount == rawDc, "drawIndirectCount enabled=" + lastEnabledDrawCount + " offered=" + rawDc);
+        String cull = switch (ct) { case COUNT -> "count(T-A)"; case FIXED -> "fixed(T-B)"; case CPU -> "cpu(T-C)"; };
         // fallback: the same device without drawIndirectFirstInstance must choose direct draws and create cleanly
         create(s, false, true);
         check(IndirectDrawCaps.tier() == IndirectDrawCaps.TerrainTier.DIRECT, "masked firstInstance: tier " + IndirectDrawCaps.tier() + " (expected DIRECT)");
@@ -204,7 +216,11 @@ public final class HwCapsRepro {
         }
         create(s, false); // leave the real decision behind
         check(IndirectDrawCaps.tier() == t, "terrain tier not restored");
-        return " terrainDraw=" + real + (t == IndirectDrawCaps.TerrainTier.INDIRECT ? "(firstInstance)" : "(T-C fallback)") + " terrainFallback=direct";
+        for (IndirectDrawCaps.TerrainTier tt : IndirectDrawCaps.TerrainTier.values())
+            for (boolean dc : new boolean[]{false, true})
+                check(IndirectDrawCaps.decideCull(tt, dc) == (tt != IndirectDrawCaps.TerrainTier.INDIRECT ? IndirectDrawCaps.CullTier.CPU
+                        : dc ? IndirectDrawCaps.CullTier.COUNT : IndirectDrawCaps.CullTier.FIXED), "decideCull(" + tt + ", " + dc + ")");
+        return " terrainDraw=" + real + (t == IndirectDrawCaps.TerrainTier.INDIRECT ? "(firstInstance)" : "(T-C fallback)") + " terrainFallback=direct terrainCull=" + cull;
     }
 
     static SyncMemCaps.Decision lastSyncMem;

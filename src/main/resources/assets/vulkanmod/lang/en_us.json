@@ -164,5 +164,19 @@
   "iroh.reason.needsNvidia": "needs an NVIDIA GPU",
   "iroh.reason.upscalerOff": "set an Upscaler first",
   "iroh.reason.packWins": "off while the shader pack runs (the pack gets its own upscaler later)",
-  "iroh.reason.fsrOnly": "FSR only"
+  "iroh.reason.fsrOnly": "FSR only",
+  "iroh.pages.culling": "Culling",
+  "iroh.options.cullGpuFrustum": "GPU frustum culling",
+  "iroh.options.cullGpuFrustum.tooltip": "The graphics card drops chunk sections outside the current view before drawing them. Helps most when turning quickly, when the section list still holds sections from the previous frame.",
+  "iroh.options.cullGpuFacing": "GPU face-direction culling",
+  "iroh.options.cullGpuFacing.tooltip": "The graphics card skips groups of block faces that point away from the camera, using each section's real geometry bounds. Replaces the same test on the processor.",
+  "iroh.options.cullGpuScreenSize": "GPU small-section culling",
+  "iroh.options.cullGpuScreenSize.tooltip": "The graphics card skips sections too small on screen to cover a single pixel. Nothing visible is removed.",
+  "iroh.options.cullGpuHorizon": "GPU horizon culling",
+  "iroh.options.cullGpuHorizon.tooltip": "The graphics card skips sections hidden below the solid ground and hills near the camera (above-ground views of hilly terrain gain most).",
+  "iroh.options.cullGpu.note": "Off by default until tested in game. Needs the world terrain arena and a graphics card with indirect drawing; changes apply on the next frame.",
+  "iroh.options.cullGpu.noIndirect": "Not available: this graphics card draws terrain directly (no multi-draw indirect)",
+  "iroh.options.cullGpu.needsArena": "Not available yet: needs the world terrain arena (iroh.terrain.mdi)",
+  "iroh.options.cullGpu.shaderPack": "Off while a shader pack is active",
+  "iroh.options.cullGpu.needsBackface": "Needs Backface Culling on (Performance page)"
 }
