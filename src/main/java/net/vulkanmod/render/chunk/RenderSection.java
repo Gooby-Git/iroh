@@ -330,6 +330,10 @@ public class RenderSection {
     public void resetDrawParameters(TerrainRenderType renderType) {
         if (this.chunkArea == null)
             return;
+        if (this.chunkArea.getDrawBuffers().worldMode()) { // P2-7a: the layer's arena ranges (vertex + sorted index) go back
+            this.chunkArea.getDrawBuffers().resetLayerWorld(this.inAreaIndex, renderType);
+            return;
+        }
         DrawBuffers drawBuffers = this.chunkArea.getDrawBuffers();
         long ptr0 = DrawParametersBuffer.getParamsPtr(drawBuffers.getDrawParamsPtr(), this.inAreaIndex, renderType.ordinal(), 0);
         net.vulkanmod.render.chunk.buffer.SectionSegments.freeLayer(drawBuffers.getAreaBuffer(renderType),
@@ -439,6 +443,11 @@ public class RenderSection {
         if (this.chunkArea == null)
             return;
 
+        if (this.chunkArea.getDrawBuffers().worldMode()) {
+            // P2-7a: no area release reclaims world-arena ranges, so a moved / cleared section frees its own
+            this.chunkArea.getDrawBuffers().resetSectionWorld(this.inAreaIndex);
+            return;
+        }
         for (TerrainRenderType renderType : TerrainRenderType.VALUES)
             this.resetDrawParameters(renderType);
     }

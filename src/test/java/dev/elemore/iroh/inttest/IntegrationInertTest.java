@@ -50,7 +50,7 @@ public final class IntegrationInertTest {
         PINNED.put("Framebuffer.beginRenderPass", "");
         PINNED.put("DefaultMainPass.begin", "");
         PINNED.put("DefaultMainPass.rebindMainTarget", "");
-        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog)");
+        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog); P2-7a: this.worldArena x1 (plain field, null unless iroh.terrain.mdi was on at the last allChanged; the audit does not list instance fields)");
         PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1 (plain static)");
         PINNED.put("Pipeline.needsUpdate", "TemporalFrame.MIP_ON x1 per image descriptor (plain static; IN_WORLD only read when MIP_ON)");
         PINNED.put("GlState.viewport", "TemporalFrame.IN_WORLD x1 (plain static)");
@@ -106,9 +106,10 @@ public final class IntegrationInertTest {
         boolean perfOff = true;
         for (String k : List.of(PerfSwitches.TASKS_BUDGET, PerfSwitches.GRAPH_CACHE, PerfSwitches.CLONE_CACHE, PerfSwitches.REBUILD_BUDGET,
                 PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL,
-                PerfSwitches.AREA_ARENA, PerfSwitches.INTAKE_BUDGET, PerfSwitches.BULK_DIRTY))
+                PerfSwitches.AREA_ARENA, PerfSwitches.INTAKE_BUDGET, PerfSwitches.BULK_DIRTY, PerfSwitches.TERRAIN_MDI)) // P2-7a
             perfOff &= !PerfSwitches.on(k);
         check("every perf switch off", perfOff);
+        check("P2-7a: no world terrain arena with iroh.terrain.mdi off (per-area buffers and draws)", net.vulkanmod.render.chunk.buffer.WorldArena.current() == null);
         check("api 4 not installed offline", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
         // INT-2 (RQ-INT1-a): what Renderer init does in game creates NOTHING until a mod calls api 4
         dev.elemore.iroh.gpu.game.GpuLifecycle.install(3, 1920, 1080);
@@ -124,7 +125,7 @@ public final class IntegrationInertTest {
         check("fog capture not armed (no FogState per frame) until a mod asks", !dev.elemore.iroh.apiimpl.Sections.fogWanted());
         check("per-frame guards are plain flags and all off", !PerfSwitches.tasksBudgetOn && !PerfSwitches.graphCacheOn
                 && !PerfSwitches.cloneCacheOn && !PerfSwitches.rebuildBudgetOn && !UpscaleSwitches.modeSet
-                && !PerfSwitches.areaArenaOn && !PerfSwitches.intakeBudgetOn && !PerfSwitches.bulkDirtyOn);
+                && !PerfSwitches.areaArenaOn && !PerfSwitches.intakeBudgetOn && !PerfSwitches.bulkDirtyOn && !PerfSwitches.terrainMdiOn);
 
         // --- one registry ---
         check("IrohDebug.set refused without -Dproctor=1 / -Diroh.debug=true", IrohDebug.set(UpscaleSwitches.MODE, "quality").startsWith("refused"));

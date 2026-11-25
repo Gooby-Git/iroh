@@ -51,7 +51,7 @@ public abstract class ShaderLoadUtil {
         // Iroh (rc7, td-242adb) diagnostics: -Diroh.debug.terrainFogView=distance draws terrain as grey = vertexDistance / 4
         // (white at 4 blocks); =fog draws grey = the fog factor linear_fog applies. Pair with the same output from a
         // core-shader pack on OpenGL (rendertype_solid / cutout_mipped / cutout) to compare the two renderers' values.
-        if (FOG_VIEW != null && type == SPIRVUtils.ShaderKind.FRAGMENT_SHADER && "terrain".equals(configName)) {
+        if (FOG_VIEW != null && type == SPIRVUtils.ShaderKind.FRAGMENT_SHADER && ("terrain".equals(configName) || "terrain_world".equals(configName))) { // P2-7a: world-arena terrain too
             String out = FOG_VIEW.equals("fog")
                     ? "fragColor = vec4(vec3(vertexDistance <= FogStart ? 0.0 : (vertexDistance < FogEnd ? smoothstep(FogStart, FogEnd, vertexDistance) : 1.0)), 1.0);"
                     : "fragColor = vec4(vec3(vertexDistance / 4.0), 1.0);";

@@ -36,7 +36,9 @@ public class IndirectBuffer extends Buffer {
         int size = byteBuffer.remaining();
 
         if (size > this.bufferSize - this.usedBytes) {
-            resizeBuffer((long) (this.bufferSize * 1.5f));
+            // P2-7a: at least the copy itself (the 1.5x rule alone overflowed a copy larger than half the buffer; the
+            // per-area path never copied more than 512 sections x 7 commands, the world path copies a page's worth)
+            resizeBuffer(Math.max((long) (this.bufferSize * 1.5f), (long) size * 2));
             this.usedBytes = 0;
         }
 
@@ -58,6 +60,23 @@ public class IndirectBuffer extends Buffer {
 
         offset = usedBytes;
         usedBytes += size;
+    }
+
+    /**
+     * P2-7a: reserve {@code size} bytes of this frame's HOST_MEM indirect buffer and return their mapped address, so a
+     * caller writes commands in place ({@link #getOffset()} is their offset, as after {@link #recordCopyCmd}); 0 when
+     * the buffer is not host-mapped (then use recordCopyCmd).
+     */
+    public long reserveMapped(int size) {
+        if (!this.type.mappable() || this.dataPtr == 0)
+            return 0;
+        if (size > this.bufferSize - this.usedBytes) {
+            resizeBuffer(Math.max((long) (this.bufferSize * 1.5f), (long) size * 2));
+            this.usedBytes = 0;
+        }
+        offset = usedBytes;
+        usedBytes += size;
+        return this.dataPtr + offset;
     }
 
     public void submitUploads() {

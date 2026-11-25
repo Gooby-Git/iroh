@@ -223,6 +223,17 @@ tasks.register('graphAsyncTest', JavaExec) {
 	jvmArgs '-ea', '-Xmx2g'
 }
 
+// P2-7a (L5a): world terrain arena (pages, deferred frees, reclaim) and the MDI command writer (buckets, runs, firstInstance
+// encoding, splits), plus the intake cost vs per-area AreaBuffer. ./gradlew worldArenaTest ; last line "# worldarena PASS n/n".
+tasks.register('worldArenaTest', JavaExec) {
+	group = 'verification'
+	description = 'P2-7a: WorldArena allocator + TerrainCommandWriter unit tests and intake cost (no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.buffer.WorldArenaTest'
+	jvmArgs '-ea', '-Xmx2g'
+}
+
 // P2-10: L7 precise limiter deadline math, offline. ./gradlew frameLimiterTest ; last line "# frameLimiter PASS n/n"
 tasks.register('frameLimiterTest', JavaExec) {
 	group = 'verification'
@@ -1068,6 +1079,25 @@ tasks.register('terrainIndirectRepro', JavaExec) {
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.vktest.TerrainIndirectRepro'
 	jvmArgs '-Xmx1g', '-Djava.awt.headless=true'
+	ext.syncval = true
+	doFirst { useLavapipe(it) }
+}
+
+// P2-7a (L5a): the terrain of a generated section set drawn by the per-area path (per-area buffers, bind + push + UBO bind +
+// MDI per area, production terrain program) and by the world arena (production WorldArena pages + TerrainCommandWriter,
+// terrain_world program, one bind + MDI per page) on lavapipe + validation: images must be identical (opaque, alpha-tested,
+// blended + sorted 16-bit indices; one page and many small pages; draw splits), then the CPU record cost per frame (draw calls,
+// binds, ns) of both paths on RD24 and RD32 section sets. -Pvalidate=gpuav for the indirect-content checks.
+// ./gradlew terrainWorldReplay [-Pvalidate=gpuav] [-Ptw.quick] ; last line "# terrainworld PASS|FAIL|SKIP"
+tasks.register('terrainWorldReplay', JavaExec) {
+	group = 'verification'
+	description = 'P2-7a: world-arena MDI terrain vs the per-area path on lavapipe (pixel-identical images, validation, record cost RD24/RD32)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.TerrainWorldReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	if (project.hasProperty('tw.quick')) systemProperty 'tw.quick', 'true'
+	if (project.hasProperty('tw.jvm')) jvmArgs project.property('tw.jvm').toString().split(' ')
 	ext.syncval = true
 	doFirst { useLavapipe(it) }
 }
