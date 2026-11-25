@@ -173,8 +173,7 @@ public abstract class DeviceManager {
             // api 4 (card V-M1): drawIndirectCount when the device has it (Vulkan 1.2 core; Iroh's instance is 1.2)
             VkPhysicalDeviceVulkan12Features deviceVulkan12Features = VkPhysicalDeviceVulkan12Features.calloc(stack);
             deviceVulkan12Features.sType$Default();
-            drawIndirectCountEnabled = device.availableFeatures12.drawIndirectCount();
-            deviceVulkan12Features.drawIndirectCount(drawIndirectCountEnabled);
+            drawIndirectCountEnabled = IndirectDrawCaps.applyDrawCount(device.availableFeatures12, deviceVulkan12Features); // P2-7b: also the GPU cull tier
 
             VkPhysicalDeviceFeatures2 deviceFeatures = VkPhysicalDeviceFeatures2.calloc(stack);
             deviceFeatures.sType$Default();

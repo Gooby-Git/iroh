@@ -30,6 +30,17 @@ public class Config {
 
     public boolean backFaceCulling = true;
 
+    // ---- P2-7b: GPU terrain culling techniques (Culling page). Each its own option, all off by default until an in-game
+    // A/B shows a gain with 0 missing sections; active only with the world terrain arena on an indirect-draw device.
+    /** compute frustum test per command against the frame's MVP (sections the async walk kept from the last frame) */
+    public boolean cullGpuFrustum = false;
+    /** compute horizon test: hidden below opaque section columns near the camera */
+    public boolean cullGpuHorizon = false;
+    /** compute screen-size test: sections whose box covers no pixel sample */
+    public boolean cullGpuScreenSize = false;
+    /** compute facing test: per-facing buckets against the section's geometry box (replaces the CPU facing mask) */
+    public boolean cullGpuFacing = false;
+
     // ---- options the pack relied on (Sodium / Sodium Extra / Iris / Cull Fewer Leaves), see IrohOptions ----
     /** DEFAULT follows the vanilla Graphics setting, FAST / FANCY override it. */
     public String leavesQuality = "DEFAULT";

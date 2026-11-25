@@ -209,6 +209,8 @@ public class DrawBuffers {
             DrawParametersBuffer.setFirstIndex(paramPtr, firstIndex);
             DrawParametersBuffer.setVertexOffset(paramPtr, vertexOffset);
         }
+        var cull = net.vulkanmod.render.chunk.cull.SectionCullData.current(); // P2-7b: the layer's box for the GPU cull
+        if (cull != null) cull.layerBounds(section.gridIndex, rt, buffer.cullBounds);
 
         buffer.release();
     }
@@ -258,6 +260,13 @@ public class DrawBuffers {
         resetLayerWorld(inAreaIndex, renderType.ordinal());
     }
 
+    /** P2-7b: {@link #resetLayerWorld(int, TerrainRenderType)} that also clears the layer's GPU-cull box (grid slot) */
+    public void resetLayerWorld(int inAreaIndex, int gridIndex, TerrainRenderType renderType) {
+        resetLayerWorld(inAreaIndex, renderType.ordinal());
+        var cull = net.vulkanmod.render.chunk.cull.SectionCullData.current();
+        if (cull != null) cull.layerBounds(gridIndex, renderType.ordinal(), 0);
+    }
+
     private void resetLayerWorld(int inAreaIndex, int rt) {
         WorldArena w = this.world;
         int ii = rt * DrawParametersBuffer.SECTIONS + inAreaIndex;
@@ -275,6 +284,13 @@ public class DrawBuffers {
     public void resetSectionWorld(int inAreaIndex) {
         for (int rt = 0; rt < TerrainRenderType.VALUES.length; rt++)
             resetLayerWorld(inAreaIndex, rt);
+    }
+
+    /** P2-7b: {@link #resetSectionWorld(int)} that also clears the slot's GPU-cull metadata */
+    public void resetSectionWorld(int inAreaIndex, int gridIndex) {
+        resetSectionWorld(inAreaIndex);
+        var cull = net.vulkanmod.render.chunk.cull.SectionCullData.current();
+        if (cull != null) cull.sectionReset(gridIndex);
     }
 
     /** P2-7a: per-section firstInstance of the area being written (with {@link #sectionIndices} / {@link #masks}) */
@@ -303,6 +319,34 @@ public class DrawBuffers {
         }
         long base = this.drawParamsPtr + ((long) rt * DrawParametersBuffer.SECTIONS * DrawParametersBuffer.FACINGS) * DrawParametersBuffer.STRIDE;
         writer.addArea(base, count, idx, masks, fis, this.iPage, rt * DrawParametersBuffer.SECTIONS);
+    }
+
+    /** P2-7b: grid slot of each section of the area being written */
+    private final int[] worldSlot = new int[512];
+
+    /**
+     * P2-7b: {@link #writeWorldCommands} for a layer the GPU cull reads (TerrainCommandWriter.beginCull): the same
+     * sections and order, each command with its cull word. {@code allFacings}: every non-empty facing bucket (the GPU
+     * facing test replaces the CPU mask), else the CPU path's mask.
+     */
+    public void writeWorldCommandsCull(Vec3 cameraPos, StaticQueue<RenderSection> queue, TerrainRenderType terrainRenderType, TerrainCommandWriter writer, boolean allFacings) {
+        boolean backFaceCulling = Initializer.CONFIG.backFaceCulling;
+        int rt = terrainRenderType.ordinal();
+        double cx = cameraPos.x, cy = cameraPos.y, cz = cameraPos.z;
+        final int[] idx = this.sectionIndices, masks = this.masks, fis = this.worldFi, slots = this.worldSlot;
+        int count = 0;
+        for (var iterator = queue.iterator(false); iterator.hasNext(); ) {
+            final RenderSection section = iterator.next();
+            int fi = writer.encode(section.xOffset >> 4, section.yOffset >> 4, section.zOffset >> 4);
+            if (fi < 0)
+                continue;
+            idx[count] = section.inAreaIndex;
+            masks[count] = !backFaceCulling ? 1 << 6 : allFacings ? 0x7F : QuadFacing.facingMask(cx, cy, cz, section.xOffset, section.yOffset, section.zOffset);
+            slots[count] = section.gridIndex;
+            fis[count++] = fi;
+        }
+        long base = this.drawParamsPtr + ((long) rt * DrawParametersBuffer.SECTIONS * DrawParametersBuffer.FACINGS) * DrawParametersBuffer.STRIDE;
+        writer.addAreaCull(base, count, idx, masks, fis, slots, this.iPage, rt * DrawParametersBuffer.SECTIONS);
     }
 
     private AreaBuffer getAreaBufferOrAlloc(TerrainRenderType renderType) {

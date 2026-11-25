@@ -12,6 +12,11 @@ public class UploadBuffer {
     public final int indexCount;
     public final boolean autoIndices;
     public final boolean indexOnly;
+    /**
+     * P2-7b: the layer's geometry box (CullBounds, 0 = none) for the GPU cull's metadata; scanned here on the worker from
+     * the builder's heap buffers (never from write-combined staging) only while a SectionCullData exists.
+     */
+    public final int cullBounds;
     private final ByteBuffer[] vertexBuffers;
     private final ByteBuffer indexBuffer;
     /** perf/uploads: which buffers live in ring staging (written here, on the worker) instead of the native heap. */
@@ -46,14 +51,21 @@ public class UploadBuffer {
         this.indexOnly = drawState.indexOnly();
 
         boolean[] staged = new boolean[QuadFacing.COUNT + 1];
+        int bounds = 0;
         if (!this.indexOnly) {
             this.vertexBuffers = new ByteBuffer[QuadFacing.COUNT];
+            // only the compressed 16-byte terrain vertex is scanned (CullBounds decodes int16 / 2048 + 4)
+            boolean scan = net.vulkanmod.render.chunk.cull.SectionCullData.current() != null 
+                    && net.vulkanmod.render.vertex.CustomVertexFormat.compressedLayout(net.vulkanmod.render.PipelineManager.terrainVertexFormat);
 
             for (int i = 0; i < QuadFacing.COUNT; i++) {
                 var bufferBuilder = terrainBuilder.getBufferBuilder(i);
 
                 if (bufferBuilder.getVertices() > 0) {
-                    this.vertexBuffers[i] = stageOrClone(bufferBuilder.getBuffer(), staged, i);
+                    ByteBuffer src = bufferBuilder.getBuffer();
+                    if (scan && src.remaining() == bufferBuilder.getVertices() * net.vulkanmod.render.chunk.cull.CullBounds.VERTEX_STRIDE) // compressed format only
+                        bounds = net.vulkanmod.render.chunk.cull.CullBounds.union(bounds, net.vulkanmod.render.chunk.cull.CullBounds.scan(new ByteBuffer[]{src}));
+                    this.vertexBuffers[i] = stageOrClone(src, staged, i);
                 }
             }
         }
@@ -61,6 +73,7 @@ public class UploadBuffer {
             this.vertexBuffers = null;
         }
         this.vertexStaged = staged;
+        this.cullBounds = bounds;
 
         if (!drawState.sequentialIndex()) {
             this.indexBuffer = stageOrClone(terrainBuilder.getIndexBuffer(), staged, QuadFacing.COUNT);

@@ -64,6 +64,8 @@ public final class IntegrationInertTest {
         PINNED.put("TaskDispatcher.doSectionUpdate / RenderSection.reset", "Sections.any x1 (CopyOnWriteArrayList.isEmpty: one volatile read) per section");
         PINNED.put("TaskDispatcher.updateSections0", "IntakeBudget.enabled x1 = PerfSwitches.intakeBudgetOn (one volatile read per intake), SlowFrames.ON");
         PINNED.put("BulkDirtyM.*", "PerfSwitches.bulkDirtyOn x1 (one volatile read per setSectionDirtyWithNeighbors call)");
+        PINNED.put("CompileResult.updateSection / UploadBuffer.*", "P2-7b: SectionCullData.current x1 (one volatile read per compile result applied / per worker upload result; null unless the world arena exists on a GPU-cull tier)");
+        PINNED.put("WorldRenderer.drawWorldLayer", "P2-7b: SectionCullData.OPAQUE_LAYERS (static final) after this.cullData != null (plain field, null without the world arena on a GPU-cull tier); only reached with the world arena");
         PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
     }
 
@@ -111,6 +113,11 @@ public final class IntegrationInertTest {
         check("every perf switch off", perfOff);
         check("P2-7a: no world terrain arena with iroh.terrain.mdi off (per-area buffers and draws)", net.vulkanmod.render.chunk.buffer.WorldArena.current() == null);
         check("api 4 not installed offline", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
+        // P2-7b: every GPU culling technique is a player option, off by default; no metadata mirror without the world arena
+        net.vulkanmod.config.Config dc = new net.vulkanmod.config.Config();
+        check("P2-7b: GPU culling options (frustum, horizon, screen size, facing) all off by default",
+                !dc.cullGpuFrustum && !dc.cullGpuHorizon && !dc.cullGpuScreenSize && !dc.cullGpuFacing);
+        check("P2-7b: no GPU-cull metadata (SectionCullData) without the world arena", net.vulkanmod.render.chunk.cull.SectionCullData.current() == null);
         // INT-2 (RQ-INT1-a): what Renderer init does in game creates NOTHING until a mod calls api 4
         dev.elemore.iroh.gpu.game.GpuLifecycle.install(3, 1920, 1080);
         for (int i = 0; i < 1000; i++) {
@@ -164,6 +171,9 @@ public final class IntegrationInertTest {
         expect.put("TaskDispatcher.updateSections0", "{IntakeBudget.enabled=1, SlowFrames.ON=2, SlowFrames.count=3}"); // P2-4
         expect.put("BulkDirtyM.*", "{PerfSwitches.bulkDirtyOn=1}"); // P2-4
         expect.put("RenderSection.reset", "{Sections.any=1, Sections.reset=1}");
+        expect.put("CompileResult.updateSection", "{SectionCullData.current=1}"); // P2-7b
+        expect.put("UploadBuffer.*", "{SectionCullData.current=1}"); // P2-7b
+        expect.put("WorldRenderer.drawWorldLayer", "{SectionCullData.OPAQUE_LAYERS=1}"); // P2-7b
         // every other hot path, exactly as audited (INT-2): any new guard or hook fails until reviewed and re-pinned
         expect.put("Renderer.bindGraphicsPipeline", "{}");
         expect.put("Renderer.preInitFrame", "{SlowFrames.ON=2, SlowFrames.enter=1, SlowFrames.exit=1}");

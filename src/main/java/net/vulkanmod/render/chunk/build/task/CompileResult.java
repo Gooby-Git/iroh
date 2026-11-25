@@ -43,5 +43,9 @@ public class CompileResult {
         this.renderSection.setVisibility(((VisibilitySetExtended)visibilitySet).getVisibility());
         this.renderSection.setCompletelyEmpty(compiledSection.isCompletelyEmpty);
         this.renderSection.setContainsBlockEntities(!blockEntities.isEmpty());
+        var cull = net.vulkanmod.render.chunk.cull.SectionCullData.current(); // P2-7b: compiled + opaque flags for the GPU cull
+        if (cull != null)
+            cull.sectionCompiled(this.renderSection.gridIndex, this.renderSection.xOffset() >> 4, this.renderSection.zOffset() >> 4,
+                    this.renderSection.getVisibility(), compiledSection.isCompletelyEmpty);
     }
 }
