@@ -31,6 +31,7 @@ public final class FsrMetrics {
     static final float LO = 0.12f, HI = 0.88f;
     static boolean force16;
     static float rcasArg;
+    static String rcasSweep;
 
     // ---------------------------------------------------------------- scene: a diagonal edge, optional 1 px fence lines
     static float signX = -1, signY = -1;   // scene sampling sign (-1 = the shipped / SDK convention, see FsrReplay.JSX)
@@ -252,6 +253,7 @@ public final class FsrMetrics {
                 for (int q = 0; q < rs.length; q++) { sweepRatios[q] = Float.parseFloat(rs[q]); sweepNames[q] = "ratio " + rs[q]; }
             }
             else if (a.startsWith("--rcas=")) rcasArg = Float.parseFloat(a.substring(7));
+            else if (a.startsWith("--rcassweep=")) rcasSweep = a.substring(12);
         }
         StringBuilder rep = new StringBuilder();
         try {
@@ -265,6 +267,7 @@ public final class FsrMetrics {
         FsrReplay.rcas = rcasArg;
         System.out.println("device: " + deviceName + "  native: " + FsrNative.version() + (rcasArg > 0 ? "  RCAS " + rcasArg : ""));
         try {
+            if (rcasSweep != null) { runRcasSweep(rcasSweep); System.out.println("# fsrmetrics PASS (rcas sweep)"); System.exit(0); }
             if (sweep != null || combo != null) { runSweep(sweep, combo); System.out.println("# fsrmetrics PASS (sweep)"); System.exit(0); }
             run(dump);
         } catch (Throwable t) {
@@ -408,5 +411,34 @@ public final class FsrMetrics {
             Ghost g = ghost(true, false, e.getValue()), gf = ghost(true, true, e.getValue());
             System.out.printf(Locale.ROOT, "%-42s  %s  %s  %s  %s  %s  %3.0f   %3.0f%n", e.getKey(), f(g.excessAt(0)), f(g.excessAt(1)), f(g.excessAt(2)), f(gf.excessAt(0)), f(gf.excessAt(1)), g.trailPx, gf.trailPx);
         }
+    }
+
+    static long nanCount(float[][] outs) {
+        long n = 0;
+        for (float[] o : outs) for (float v : o) if (Float.isNaN(v) || Float.isInfinite(v) || v < -0.001f) n++;
+        return n;
+    }
+
+    /**
+     * FSR-Q4: --rcassweep=0,0.1,0.2,.. per mode (--ratio narrows): RCAS strength vs edge RMSE, sharpness (gradient energy vs the
+     * SSAA reference), overshoot (ringing % of the step, luminance beyond the plateaus within 2..5 px of the edge), edge-band
+     * flicker (frames 12..19), fence-line flicker, and the count of NaN / negative output samples (the "clamp negative colours" question).
+     */
+    static void runRcasSweep(String spec) {
+        String[] vs = spec.split(",");
+        for (int m = 0; m < sweepRatios.length; m++) {
+            System.out.println("\n== RCAS sweep, " + sweepNames[m] + " (ratio " + sweepRatios[m] + ")");
+            System.out.println("rcas   edgeRMSE  vsOff   sharp  peakGrad  overshoot%  edgeFlick  fenceLine  fenceWhole  badSamples");
+            double base = 0;
+            for (String v : vs) {
+                float rc = Float.parseFloat(v);
+                FsrReplay.rcas = rc;
+                Edge ed = staticEdge(sweepRatios[m], null);
+                Stab s = stability(sweepRatios[m], null);
+                if (rc == 0f) base = ed.fin;
+                System.out.printf(Locale.ROOT, "%.2f   %s    %.3f   %.3f   %.3f     %5.2f      %s     %s     %s     %d%n", rc, f(ed.fin), base > 0 ? ed.fin / base : 1.0, ed.sharp, ed.peak, ed.over, f(ed.flick), f(s.line), f(s.whole), nanCount(new float[][]{ed.last}));
+            }
+        }
+        FsrReplay.rcas = rcasArg;
     }
 }

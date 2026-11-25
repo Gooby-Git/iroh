@@ -400,7 +400,7 @@ public final class TemporalRuntime {
         float sharp;
         try {
             String sv = DebugSwitches.getOr(UpscaleSwitches.SHARPNESS, "off");
-            sharp = sv.equals("off") ? 0f : Float.parseFloat(sv);
+            sharp = sv.equals("off") ? 0f : sv.equals("auto") ? dev.elemore.iroh.upscale.Rcas.forRatio((float) displayColor.width / rw) : Float.parseFloat(sv);
         } catch (NumberFormatException e) {
             sharp = 0f;
         }
