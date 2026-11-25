@@ -10,7 +10,7 @@
  "iroh.options.lod.transitionMs": "Fade-in time",
  "iroh.options.lod.transitionMs.tooltip": "How long a loaded chunk fades in over the distant terrain it replaces.",
  "iroh.options.lod.landmarks": "Landmarks",
- "iroh.options.lod.landmarks.tooltip": "Keeps landmarks (Citadels and listed places) at a higher detail level from far away.",
+ "iroh.options.lod.landmarks.tooltip": "Keeps landmarks (places mods or the config list register) at a higher detail level from far away.",
  "iroh.options.lod.brightness": "Brightness",
  "iroh.options.lod.brightness.tooltip": "Brightness of distant terrain. Used when no shader pack is active.",
  "iroh.options.lod.saturation": "Saturation",

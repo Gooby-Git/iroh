@@ -92,7 +92,7 @@ public final class LodMigration {
             c.serverStructureRange = num(s, "structureRange", c.serverStructureRange, 0, LodConfig.STRUCTURE_RANGE_MAX, "lod.server.structureRange", log);
             c.serverShareSeedTerrain = bool(s, "shareSeedTerrain", c.serverShareSeedTerrain, "lod.server.shareSeedTerrain", log);
             c.serverSharePlayerPositions = bool(s, "sharePlayerPositions", c.serverSharePlayerPositions, "lod.server.sharePlayerPositions", log);
-            if (s.has("citadelLandmarks")) log.add("lod: dropped citadelLandmarks (the citadels provider owns it)");
+            if (s.has("citadelLandmarks")) log.add("lod: dropped citadelLandmarks (landmark providers register through the API)");
             JsonElement lm = s.get("landmarks");
             Path out = dir.resolve(SERVER_FILE);
             if (lm != null && lm.isJsonArray() && !Files.exists(out)) {

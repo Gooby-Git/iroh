@@ -457,3 +457,6 @@ Running in parallel with Phase 2 and RT without file conflicts:
   and the Java seed path (which calls Minecraft's own classes) is used, about 40x slower for L2-L4 columns.
 - Q5 (from IROH-PORT, still open): approve the two Navidson edits (`vista_water` reads depthtex1; mountain fog
   `|| defined VISTA`).
+
+## Amendment 2026-11-25 (owner): broad shader-pack support for LODs
+Iroh is meant to become a general performance mod. VL-9 (shader-pack path) must implement the Distant Horizons-style LOD program set and uniforms as Iris exposes them to packs (dh_terrain, dh_water, dh_shadow; dh near/far plane, render distance, projection, LOD depth textures), so any DH-aware pack renders Iroh LODs unchanged; Navidson rides the same path; packs without DH support get Iroh's own LOD shading composited with correct depth and fog. DH/Voxy code study-only (interface names for interoperability only). VL-12 adds an LOD shader zoo: Navidson + 3 popular DH-aware packs + 1 non-DH pack. No hard dependency on Elemore mods (vanilla check).
