@@ -24,3 +24,14 @@ Vitrail-Shaders (LGPL-3.0-only), https://github.com/avpbynf/Vitrail-Shaders (ref
 NVIDIA NRD v4.18.0 (NVIDIA RTX SDKs licence, proprietary): only built locally on request (iroh-native/build-nrd.sh) and never bundled in
   this repository or the default jar. See THIRD_PARTY.md for what a redistributor of the built component must add. No NVIDIA source is
   distributed by this project.
+
+Vista's native crate (owner code, relicensed LGPL-3.0-only into Iroh by its owner), iroh-native/lod (crate iroh-lod, VL-1):
+  src/*.rs: section codec, hashes, hidden-cell pass, downsampling, pack-file store, thread priority. Each file carries an
+  SPDX header.
+  Crates linked: jni 0.21 (MIT OR Apache-2.0), libdeflater 1.22 with libdeflate (Apache-2.0 for the binding, MIT for libdeflate),
+  lz4_flex 0.11 (MIT), and their own dependencies (see iroh-native/lod/Cargo.lock).
+  PRIVATE, pending a clean-room rewrite: iroh-native/lod/src/seed/ (noise.rs, density.rs, jmath.rs, column.rs, profile.rs,
+  jni_seed.rs), compiled only with the `seed` cargo feature. noise.rs, density.rs, jmath.rs and column.rs are Rust ports of
+  Minecraft's noise / density-function / Mth code (and density.rs of Larion's density function types, Apache-2.0,
+  com.badgerson.larion.density_function_types). They are NOT part of the public Iroh repository's default artifacts: the public
+  build (build-lod.sh without --seed; build-windows.sh always) contains none of them and the Java side uses its own seed path.

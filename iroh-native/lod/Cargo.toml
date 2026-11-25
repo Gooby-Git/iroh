@@ -1,0 +1,33 @@
+[package]
+name = "iroh-lod"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-only"
+description = "Iroh's LOD native backend: section codec, store, downsampling, thread priority; seed worldgen behind a private feature"
+
+[lib]
+name = "iroh_lod"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Seed worldgen (src/seed/**): Minecraft-derived Rust ports, PRIVATE, pending a clean-room rewrite. Never in public builds.
+seed = []
+
+[dependencies]
+jni = { version = "0.21.1", default-features = false }
+libdeflater = "1.22"
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode"] }
+
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"   # every JNI entry catches panics and turns them into Java exceptions
+debug = false
+strip = true
+
+[profile.test]
+opt-level = 2

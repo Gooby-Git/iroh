@@ -9,3 +9,27 @@ tasks.register('lodConfigTest', JavaExec) {
 	jvmArgs '-Djava.awt.headless=true'
 	workingDir = projectDir
 }
+
+// VL-1: native LOD library. ./gradlew lodNative [-PlodArgs=--seed] builds it; ./gradlew lodNativeTest runs the Java side
+// against it (last line "# lodnative PASS n/n"). Windows: iroh-native/build-windows.sh (lod step).
+tasks.register('lodNative', Exec) {
+	group = 'build'
+	description = 'Build libiroh_lod (iroh-native/lod, Rust) with iroh-native/build-lod.sh'
+	workingDir = projectDir
+	def a = ['./iroh-native/build-lod.sh']
+	if (project.hasProperty('lodArgs')) a.addAll(project.property('lodArgs').toString().split(' ') as List)
+	commandLine a
+}
+tasks.register('lodNativeTest', JavaExec) {
+	group = 'verification'
+	description = 'libiroh_lod through the real loader: ABI 4, no seed in the public build, store round trip, cascade, priority'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.lod.nat.LodNativeTest'
+	workingDir = projectDir
+	doFirst {
+		def lib = file('iroh-native/natives/linux-x64/libiroh_lod.so')
+		if (!lib.exists()) throw new GradleException('libiroh_lod.so missing: run ./gradlew lodNative')
+		systemProperty 'iroh.lod.native', lib.absolutePath
+	}
+}

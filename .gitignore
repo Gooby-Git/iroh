@@ -46,3 +46,6 @@ iroh-native/build-nrd/
 iroh-native/nrd/nrd-src/
 iroh-native/nrd/.nrd-cache/
 hs_err_pid*.log
+iroh-native/natives-private/
+iroh-native/build-lod/
+iroh-native/lod/src/seed/
