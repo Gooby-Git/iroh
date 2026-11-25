@@ -43,6 +43,26 @@ public class DrawBuffers {
     final int[] sectionIndices = new int[512];
     final int[] masks = new int[512];
 
+    /**
+     * P2-7a (iroh.terrain.mdi): the world arena this area's sections live in (captured when the section grid was built;
+     * null = VulkanMod's per-area buffers). With it the draw parameters keep their meaning (element offsets, counts) but
+     * point into arena pages, and the entry's baseInstance slot holds its vertex PAGE + 1 (0 = owns nothing, the value
+     * resetParameters writes): the world path computes firstInstance per frame, and the command writer then reads one
+     * 16-byte entry per facing (TerrainCommandWriter.addSection). {@link #iPage} = page of each (layer, section)'s sorted
+     * indices, {@link WorldArena#NONE} = none.
+     */
+    private final WorldArena world;
+    private final byte[] iPage;
+    /** P2-7a: the page this area's last upload of each layer (and of sorted indices) went to: tried first (WorldArena.upload) */
+    private final byte[] prefPage = new byte[TerrainRenderType.VALUES.length + 1];
+
+    static {
+        if (DrawParametersBuffer.STRIDE != TerrainCommandWriter.PARAM_STRIDE || DrawParametersBuffer.FACINGS != TerrainCommandWriter.PARAM_FACINGS
+                || DrawParametersBuffer.INDEX_COUNT_OFFSET != 0 || DrawParametersBuffer.FIRST_INDEX_OFFSET != 4 || DrawParametersBuffer.VERTEX_OFFSET_OFFSET != 8
+                || DrawParametersBuffer.BASE_INSTANCE_OFFSET != TerrainCommandWriter.PARAM_PAGE_OFFSET)
+            throw new IllegalStateException("P2-7a: TerrainCommandWriter reads the DrawParametersBuffer layout; keep them equal");
+    }
+
     //Need ugly minHeight Parameter to fix custom world heights (exceeding 384 Blocks in total)
     public DrawBuffers(int index, Vector3i origin, int minHeight) {
         this.index = index;
@@ -50,9 +70,27 @@ public class DrawBuffers {
         this.minHeight = minHeight;
 
         this.drawParamsPtr = DrawParametersBuffer.allocateBuffer();
+
+        this.world = WorldArena.current();
+        if (this.world != null) {
+            this.iPage = new byte[DrawParametersBuffer.SECTIONS * TerrainRenderType.VALUES.length];
+            java.util.Arrays.fill(this.iPage, WorldArena.NONE);
+            java.util.Arrays.fill(this.prefPage, WorldArena.NONE);
+        } else {
+            this.iPage = null;
+        }
+    }
+
+    /** P2-7a: this area's sections live in the world arena (draw with {@link #writeWorldCommands}) */
+    public boolean worldMode() {
+        return this.world != null;
     }
 
     public void upload(RenderSection section, UploadBuffer buffer, TerrainRenderType renderType) {
+        if (this.world != null) {
+            uploadWorld(section, buffer, renderType);
+            return;
+        }
         var vertexBuffers = buffer.getVertexBuffers();
 
         if (buffer.indexOnly) {
@@ -110,6 +148,161 @@ public class DrawBuffers {
         }
 
         buffer.release();
+    }
+
+    /**
+     * P2-7a: {@link #upload} into the world arena, the same parameter updates (facing kept with indexCount 0 when its
+     * bucket is empty, quad index capacity, sorted index only for the UNDEFINED facing). Old ranges are freed after the
+     * frames in flight. Differences: a size-0 range owns nothing (NONE) and a sorted-index result for a layer that has no
+     * vertex data any more is dropped (the per-area path stored it in a buffer nobody draws).
+     */
+    private void uploadWorld(RenderSection section, UploadBuffer buffer, TerrainRenderType renderType) {
+        WorldArena w = this.world;
+        int rt = renderType.ordinal();
+        int ii = rt * DrawParametersBuffer.SECTIONS + section.inAreaIndex;
+        if (buffer.indexOnly) {
+            long paramsPtr = DrawParametersBuffer.getParamsPtr(this.drawParamsPtr, section.inAreaIndex, rt, QuadFacing.UNDEFINED.ordinal());
+            if (DrawParametersBuffer.getIndexCount(paramsPtr) > 0)
+                DrawParametersBuffer.setFirstIndex(paramsPtr, uploadIndex(w, ii, buffer.getIndexBuffer()));
+            buffer.release();
+            return;
+        }
+
+        var vertexBuffers = buffer.getVertexBuffers();
+        WorldArena.Pool pool = w.vertexPool(rt);
+        int total = 0;
+        for (var vb : vertexBuffers) if (vb != null) total += vb.remaining();
+        if (total > 0) // the whole section layer in one page (WorldArena.Pool.pageFor), the area's page first
+            this.prefPage[rt] = (byte) pool.pageFor(total, this.prefPage[rt]);
+        for (int i = 0; i < QuadFacing.COUNT; i++) {
+            long paramPtr = DrawParametersBuffer.getParamsPtr(this.drawParamsPtr, section.inAreaIndex, rt, i);
+
+            int vertexOffset = DrawParametersBuffer.getVertexOffset(paramPtr);
+            int firstIndex = 0;
+            int indexCount = 0;
+            int vertexCount = 0;
+
+            var vertexBuffer = vertexBuffers[i];
+            if (vertexBuffer != null) {
+                w.freeLater(pool, vPage(paramPtr), vertexOffset * VERTEX_SIZE);
+                setVPage(paramPtr, rt, WorldArena.NONE);
+                vertexOffset = -1;
+                if (vertexBuffer.remaining() > 0) {
+                    long a = w.upload(pool, vertexBuffer, this.prefPage[rt]);
+                    setVPage(paramPtr, rt, this.prefPage[rt] = (byte) WorldArena.page(a));
+                    vertexOffset = WorldArena.offset(a) / VERTEX_SIZE;
+                }
+
+                vertexCount = vertexBuffer.limit() / VERTEX_SIZE;
+                indexCount = vertexCount * 6 / 4;
+            }
+
+            if (i == QuadFacing.UNDEFINED.ordinal() && !buffer.autoIndices) {
+                firstIndex = uploadIndex(w, ii, buffer.getIndexBuffer());
+            } else {
+                if (i == QuadFacing.UNDEFINED.ordinal())
+                    freeIndex(w, ii); // now drawn through the auto quad indices
+                Renderer.getDrawer().getQuadsIndexBuffer().checkCapacity(vertexCount);
+            }
+
+            DrawParametersBuffer.setIndexCount(paramPtr, indexCount);
+            DrawParametersBuffer.setFirstIndex(paramPtr, firstIndex);
+            DrawParametersBuffer.setVertexOffset(paramPtr, vertexOffset);
+        }
+
+        buffer.release();
+    }
+
+    /** P2-7a: vertex ranges this area owns per layer: the world draw skips an area without the layer (as the per-area path skips an area without its buffer) */
+    private final int[] layerRanges = new int[TerrainRenderType.VALUES.length];
+
+    /** world mode: the vertex page of a parameter entry (NONE = owns nothing) */
+    private static int vPage(long paramPtr) {
+        return DrawParametersBuffer.getBaseInstance(paramPtr) - 1;
+    }
+
+    private void setVPage(long paramPtr, int rt, int page) {
+        int old = vPage(paramPtr);
+        if (old == page) return;
+        if (old == WorldArena.NONE) this.layerRanges[rt]++;
+        else if (page == WorldArena.NONE) this.layerRanges[rt]--;
+        DrawParametersBuffer.setBaseInstance(paramPtr, page + 1);
+    }
+
+    /** P2-7a: whether this area has vertex data of the layer in the world arena */
+    public boolean hasWorldLayer(TerrainRenderType renderType) {
+        return this.layerRanges[renderType.ordinal()] > 0;
+    }
+
+    /** sorted indices of (layer, section) {@code ii} into the arena's index pool; returns firstIndex */
+    private int uploadIndex(WorldArena w, int ii, ByteBuffer indices) {
+        freeIndex(w, ii);
+        if (indices == null || indices.remaining() == 0)
+            return 0;
+        int pi = this.prefPage.length - 1;
+        long a = w.upload(w.indexPool(), indices, this.prefPage[pi]);
+        this.iPage[ii] = this.prefPage[pi] = (byte) WorldArena.page(a);
+        return WorldArena.offset(a) / INDEX_SIZE;
+    }
+
+    private void freeIndex(WorldArena w, int ii) {
+        byte p = this.iPage[ii];
+        if (p == WorldArena.NONE) return;
+        long paramsPtr = DrawParametersBuffer.getParamsPtr(this.drawParamsPtr, ii % DrawParametersBuffer.SECTIONS, ii / DrawParametersBuffer.SECTIONS, QuadFacing.UNDEFINED.ordinal());
+        w.freeLater(w.indexPool(), p, DrawParametersBuffer.getFirstIndex(paramsPtr) * INDEX_SIZE);
+        this.iPage[ii] = WorldArena.NONE;
+    }
+
+    /** P2-7a: free one layer of a section (RenderSection.resetDrawParameters(type)) and reset its parameters */
+    public void resetLayerWorld(int inAreaIndex, TerrainRenderType renderType) {
+        resetLayerWorld(inAreaIndex, renderType.ordinal());
+    }
+
+    private void resetLayerWorld(int inAreaIndex, int rt) {
+        WorldArena w = this.world;
+        int ii = rt * DrawParametersBuffer.SECTIONS + inAreaIndex;
+        freeIndex(w, ii); // before the parameters (it reads firstIndex)
+        WorldArena.Pool pool = w.vertexPool(rt);
+        for (int i = 0; i < QuadFacing.COUNT; i++) {
+            long ptr = DrawParametersBuffer.getParamsPtr(this.drawParamsPtr, inAreaIndex, rt, i);
+            w.freeLater(pool, vPage(ptr), DrawParametersBuffer.getVertexOffset(ptr) * VERTEX_SIZE);
+            setVPage(ptr, rt, WorldArena.NONE);
+            DrawParametersBuffer.resetParameters(ptr);
+        }
+    }
+
+    /** P2-7a: free every layer of a section (RenderSection.reset: the section moved or was cleared) */
+    public void resetSectionWorld(int inAreaIndex) {
+        for (int rt = 0; rt < TerrainRenderType.VALUES.length; rt++)
+            resetLayerWorld(inAreaIndex, rt);
+    }
+
+    /** P2-7a: per-section firstInstance of the area being written (with {@link #sectionIndices} / {@link #masks}) */
+    private final int[] worldFi = new int[512];
+
+    /**
+     * P2-7a: this area's part of a layer's world draw: the same sections, order, facing masks and skips as
+     * {@link #buildDrawBatchesIndirect}, gathered first and then written by one TerrainCommandWriter.addArea call (one
+     * command per non-empty facing bucket).
+     */
+    public void writeWorldCommands(Vec3 cameraPos, StaticQueue<RenderSection> queue, TerrainRenderType terrainRenderType, TerrainCommandWriter writer) {
+        boolean isTranslucent = terrainRenderType == TerrainRenderType.TRANSLUCENT;
+        boolean backFaceCulling = Initializer.CONFIG.backFaceCulling && !isTranslucent;
+        int rt = terrainRenderType.ordinal();
+        double cx = cameraPos.x, cy = cameraPos.y, cz = cameraPos.z;
+        final int[] idx = this.sectionIndices, masks = this.masks, fis = this.worldFi;
+        int count = 0;
+        for (var iterator = queue.iterator(isTranslucent); iterator.hasNext(); ) {
+            final RenderSection section = iterator.next();
+            int fi = writer.encode(section.xOffset >> 4, section.yOffset >> 4, section.zOffset >> 4);
+            if (fi < 0)
+                continue;
+            idx[count] = section.inAreaIndex;
+            masks[count] = backFaceCulling ? QuadFacing.facingMask(cx, cy, cz, section.xOffset, section.yOffset, section.zOffset) : 1 << 6;
+            fis[count++] = fi;
+        }
+        long base = this.drawParamsPtr + ((long) rt * DrawParametersBuffer.SECTIONS * DrawParametersBuffer.FACINGS) * DrawParametersBuffer.STRIDE;
+        writer.addArea(base, count, idx, masks, fis, this.iPage, rt * DrawParametersBuffer.SECTIONS);
     }
 
     private AreaBuffer getAreaBufferOrAlloc(TerrainRenderType renderType) {
@@ -418,6 +611,14 @@ public class DrawBuffers {
     }
 
     public void releaseBuffers() {
+        if (this.world != null) { // P2-7a: give back what the area's sections still own, parameters reset (nothing stale to draw)
+            if (!this.world.isDead()) {
+                for (int rt = 0; rt < TerrainRenderType.VALUES.length; rt++)
+                    for (int sec = 0; sec < DrawParametersBuffer.SECTIONS; sec++)
+                        if (ownsAny(rt, sec)) resetLayerWorld(sec, rt);
+            }
+            return;
+        }
         if (!this.allocated)
             return;
 
@@ -435,6 +636,14 @@ public class DrawBuffers {
         this.releaseBuffers();
 
         DrawParametersBuffer.freeBuffer(this.drawParamsPtr);
+    }
+
+    private boolean ownsAny(int rt, int sec) {
+        int ii = rt * DrawParametersBuffer.SECTIONS + sec;
+        if (this.iPage[ii] != WorldArena.NONE) return true;
+        for (int i = 0; i < QuadFacing.COUNT; i++)
+            if (vPage(DrawParametersBuffer.getParamsPtr(this.drawParamsPtr, sec, rt, i)) != WorldArena.NONE) return true;
+        return false;
     }
 
     public boolean isAllocated() {

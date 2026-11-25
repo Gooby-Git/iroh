@@ -85,6 +85,11 @@ public class WorldRenderer {
 
     IndirectBuffer[] indirectBuffers;
 
+    /** P2-7a (iroh.terrain.mdi): the current grid's world terrain arena (null = per-area buffers), decided at allChanged */
+    private net.vulkanmod.render.chunk.buffer.WorldArena worldArena;
+    private final net.vulkanmod.render.chunk.buffer.TerrainCommandWriter worldWriter = new net.vulkanmod.render.chunk.buffer.TerrainCommandWriter();
+    private String worldArenaDecision = "";
+
     public RenderRegionBuilder renderRegionCache;
 
     private final List<Runnable> onAllChangedCallbacks = new ObjectArrayList<>();
@@ -324,9 +329,12 @@ public class WorldRenderer {
             this.graphNeedsUpdate = true;
 
             this.renderDistance = this.minecraft.options.getEffectiveRenderDistance();
+            this.retireWorldArena(); // P2-7a: first, so the old grid's areas only reset their parameters
             if (this.sectionGrid != null) {
                 this.sectionGrid.freeAllBuffers();
             }
+            this.worldArena = this.decideWorldArena();
+            net.vulkanmod.render.chunk.buffer.WorldArena.setCurrent(this.worldArena); // the new grid's DrawBuffers capture it
 
             this.taskDispatcher.clearBatchQueue();
             synchronized (this.globalBlockEntities) {
@@ -362,6 +370,7 @@ public class WorldRenderer {
             dev.elemore.iroh.memory.MemoryGuard.worldStarted(); // rc9: growth rules warm up from here
             this.allChanged();
         } else {
+            this.retireWorldArena(); // P2-7a
             if (this.sectionGrid != null) {
                 this.sectionGrid.freeAllBuffers();
                 this.sectionGrid = null;
@@ -379,6 +388,130 @@ public class WorldRenderer {
             this.graphNeedsUpdate = true;
         }
 
+    }
+
+    private void retireWorldArena() {
+        if (this.worldArena != null) {
+            this.worldArena.retireAll();
+            this.worldArena = null;
+        }
+        net.vulkanmod.render.chunk.buffer.WorldArena.setCurrent(null);
+    }
+
+    /**
+     * P2-7a: world-arena terrain for the next grid when the switch is on AND the device draws terrain indirectly with
+     * firstInstance (tier INDIRECT; T-C devices keep the per-area direct draws) AND the default compressed-vertex terrain
+     * program draws (no pack FULL mode, no foreign terrain shader) AND every section offset fits terrain_world.vsh's
+     * 8 signed bits (render distance <= 126, world height <= 127 sections). Logged when the decision changes.
+     */
+    private net.vulkanmod.render.chunk.buffer.WorldArena decideWorldArena() {
+        String why;
+        if (!dev.elemore.iroh.perf.PerfSwitches.terrainMdiOn) why = null;
+        else if (net.vulkanmod.vulkan.device.IndirectDrawCaps.tier() != net.vulkanmod.vulkan.device.IndirectDrawCaps.TerrainTier.INDIRECT)
+            why = "device draws terrain directly (" + net.vulkanmod.vulkan.device.IndirectDrawCaps.report() + ")";
+        else if (!PipelineManager.terrainWorldAvailable()) why = "terrain_world pipelines unavailable (pack FULL mode or another terrain shader)";
+        else if (this.level.getSectionsCount() > 127 || this.renderDistance > 126)
+            why = "section offsets exceed 8 bits (height " + this.level.getSectionsCount() + " sections, render distance " + this.renderDistance + ")";
+        else why = "";
+        String line = why == null ? "" : why.isEmpty() ? "on: one vertex bind + multi-draw-indirect per page and layer"
+                : "off (switch on, but " + why + "): per-area draws";
+        if (!line.equals(this.worldArenaDecision)) {
+            this.worldArenaDecision = line;
+            if (!line.isEmpty()) Initializer.LOGGER.info("Iroh: terrain mdi {}", line);
+        }
+        if (why == null || !why.isEmpty()) return null;
+        return net.vulkanmod.render.chunk.buffer.WorldArena.forGame(net.vulkanmod.render.chunk.buffer.WorldArenaGameOps.INSTANCE,
+                TerrainRenderType.VALUES.length, DrawBuffers.VERTEX_SIZE);
+    }
+
+    /** P2-7a: memStats / F3 line of the world arena, or null when the per-area path draws */
+    public String worldArenaStats() {
+        var w = this.worldArena;
+        return w == null ? null : w.stats() + ", last layer draws " + this.worldDrawsLast + ", commands " + this.worldCommandsLast
+                + (this.worldWriter.outOfRange + this.worldWriter.orphans > 0 ? ", skipped " + this.worldWriter.outOfRange + "/" + this.worldWriter.orphans : "");
+    }
+
+    private int worldDrawsLast, worldCommandsLast;
+
+    /**
+     * P2-7a: one layer from the world arena. Same visible areas, sections, order and facing masks as the per-area loop
+     * (TerrainCommandWriter documents the order rule), but the pipeline (terrain_world), UBOs, push constant (frame
+     * origin) and quad index buffer are bound ONCE, then per draw (one per vertex page, or per page run when the layer
+     * blends) a vertex bind, a command copy into the frame's indirect buffer and one vkCmdDrawIndexedIndirect.
+     */
+    private void drawWorldLayer(net.vulkanmod.render.chunk.buffer.WorldArena wa, TerrainRenderType t, GraphicsPipeline pipeline,
+                                double camX, double camY, double camZ, int currentFrame) {
+        var w = this.worldWriter;
+        boolean isTranslucent = t == TerrainRenderType.TRANSLUCENT;
+        int ox = Mth.floor(camX) >> 4, oz = Mth.floor(camZ) >> 4;
+        int oy = Mth.clamp(Mth.floor(camY) >> 4, this.level.getMinSection(), this.level.getMaxSection() - 1);
+        w.begin(isTranslucent || t == TerrainRenderType.TRIPWIRE, ox, oy, oz,
+                net.vulkanmod.vulkan.device.DeviceManager.deviceProperties.limits().maxDrawIndirectCount());
+        for (Iterator<ChunkArea> iterator = this.sectionGraph.getChunkAreaQueue().iterator(isTranslucent); iterator.hasNext(); ) {
+            ChunkArea chunkArea = iterator.next();
+            if (chunkArea.sectionQueue.size() > 0 && chunkArea.drawBuffers.hasWorldLayer(t)) // = the per-area getAreaBuffer(t) != null skip
+                chunkArea.drawBuffers.writeWorldCommands(this.cameraPos, chunkArea.sectionQueue, t, w);
+        }
+        w.finish();
+        int draws = w.draws();
+        this.worldDrawsLast = draws;
+        this.worldCommandsLast = w.totalCommands();
+        if (draws == 0)
+            return;
+
+        Renderer renderer = Renderer.getInstance();
+        org.lwjgl.vulkan.VkCommandBuffer cmd = Renderer.getCommandBuffer();
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.ByteBuffer pc = stack.malloc(12); // = DrawBuffers.updateChunkAreaOrigin with the frame origin as the "area"
+            pc.putFloat(0, (float) ((ox << 4) + DrawBuffers.POS_OFFSET - camX));
+            pc.putFloat(4, (float) ((oy << 4) + DrawBuffers.POS_OFFSET - camY));
+            pc.putFloat(8, (float) ((oz << 4) + DrawBuffers.POS_OFFSET - camZ));
+            org.lwjgl.vulkan.VK10.vkCmdPushConstants(cmd, pipeline.getLayout(), org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_VERTEX_BIT, 0, pc);
+        }
+        renderer.uploadAndBindUBOs(pipeline);
+
+        IndirectBuffer ib = this.indirectBuffers[currentFrame];
+        final int stride = net.vulkanmod.render.chunk.buffer.TerrainCommandWriter.STRIDE;
+        // all of the layer's commands written once, in place, into the frame's mapped indirect buffer
+        long mapped = ib.reserveMapped(w.totalCommands() * stride);
+        long base = ib.getOffset();
+        if (mapped != 0) w.copyTo(mapped);
+        IndexBuffer quads = Renderer.getDrawer().getQuadsIndexBuffer().getIndexBuffer();
+        var vpool = wa.vertexPool(t.ordinal());
+        var ipool = wa.indexPool();
+        long boundVertex = 0;
+        int boundIndexKey = net.vulkanmod.render.chunk.buffer.TerrainCommandWriter.QUADS; // bound at layer start
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            long pBuf = stack.nmalloc(8, 8), pOff = stack.ncalloc(8, 1, 8);
+            for (int d = 0; d < draws; d++) {
+                long vb = wa.bufferId(vpool, w.drawVertexPage(d));
+                int key = w.drawIndexKey(d);
+                long ibuf = key == net.vulkanmod.render.chunk.buffer.TerrainCommandWriter.QUADS ? quads.getId() : wa.bufferId(ipool, key);
+                if (vb == 0 || ibuf == 0)
+                    continue; // a page id without a page: cannot happen (TerrainCommandWriter counts orphans first)
+                if (vb != boundVertex) {
+                    org.lwjgl.system.MemoryUtil.memPutLong(pBuf, vb);
+                    org.lwjgl.vulkan.VK10.nvkCmdBindVertexBuffers(cmd, 0, 1, pBuf, pOff);
+                    boundVertex = vb;
+                }
+                if (key != boundIndexKey) {
+                    if (key == net.vulkanmod.render.chunk.buffer.TerrainCommandWriter.QUADS)
+                        Renderer.getDrawer().bindIndexBuffer(cmd, quads, quads.indexType.value);
+                    else // R-P213BC: sorted translucent indices are always 16-bit
+                        org.lwjgl.vulkan.VK10.vkCmdBindIndexBuffer(cmd, ibuf, 0, org.lwjgl.vulkan.VK10.VK_INDEX_TYPE_UINT16);
+                    boundIndexKey = key;
+                }
+                int n = w.drawCount(d);
+                long off;
+                if (mapped != 0) {
+                    off = base + (long) w.drawFirst(d) * stride;
+                } else { // indirect buffer not host-mapped: copy this draw's commands through the staging path
+                    ib.recordCopyCmd(org.lwjgl.system.MemoryUtil.memByteBuffer(w.drawCommands(d), n * stride));
+                    off = ib.getOffset();
+                }
+                org.lwjgl.vulkan.VK10.vkCmdDrawIndexedIndirect(cmd, ib.getId(), off, n, stride);
+            }
+        }
     }
 
     public void addOnAllChangedCallback(Runnable runnable) {
@@ -569,7 +702,8 @@ public class WorldRenderer {
         VRenderSystem.setPrimitiveTopologyGL(GL11.GL_TRIANGLES);
 
         Renderer renderer = Renderer.getInstance();
-        GraphicsPipeline pipeline = PipelineManager.getTerrainShader(terrainRenderType);
+        var worldArena = this.worldArena; // P2-7a: world-arena terrain (null = per-area buffers)
+        GraphicsPipeline pipeline = worldArena != null ? PipelineManager.getTerrainWorldShader(terrainRenderType) : PipelineManager.getTerrainShader(terrainRenderType);
         renderer.bindGraphicsPipeline(pipeline);
 
         VTextureSelector.bindShaderTextures(pipeline);
@@ -582,7 +716,9 @@ public class WorldRenderer {
         if (allowedRenderTypes.contains(terrainRenderType)) {
             terrainRenderType.setCutoutUniform();
 
-            for (Iterator<ChunkArea> iterator = this.sectionGraph.getChunkAreaQueue().iterator(isTranslucent); iterator.hasNext(); ) {
+            if (worldArena != null)
+                this.drawWorldLayer(worldArena, terrainRenderType, pipeline, camX, camY, camZ, currentFrame);
+            else for (Iterator<ChunkArea> iterator = this.sectionGraph.getChunkAreaQueue().iterator(isTranslucent); iterator.hasNext(); ) {
                 ChunkArea chunkArea = iterator.next();
                 var queue = chunkArea.sectionQueue;
                 DrawBuffers drawBuffers = chunkArea.drawBuffers;
@@ -609,7 +745,7 @@ public class WorldRenderer {
         }
 
         //Need to reset push constants in case the pipeline will still be used for rendering
-        if (!indirectDraw) {
+        if (!indirectDraw && worldArena == null) {
             VRenderSystem.setModelOffset(0, 0, 0);
             renderer.pushConstants(pipeline);
         }
@@ -779,6 +915,8 @@ public class WorldRenderer {
     public void cleanUp() {
         if (indirectBuffers != null)
             Arrays.stream(indirectBuffers).forEach(Buffer::scheduleFree);
+        this.retireWorldArena(); // P2-7a
+        this.worldWriter.free();
     }
 
 }

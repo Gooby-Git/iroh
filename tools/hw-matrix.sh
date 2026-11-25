@@ -12,7 +12,7 @@ export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/t
 LAYER_DIR=${VK_PROFILES_LAYER_DIR:-$HOME/.local/share/vulkan/explicit_layer.d}
 [ -f "$LAYER_DIR/VkLayer_khronos_profiles.json" ] || { echo "profiles layer missing in $LAYER_DIR"; exit 2; }
 # task list: "gradle args" ; tasks absent from the worktree are skipped
-TASKS=("float16Repro" "attachLayoutRepro" "freshTexRepro" "vkStackRepro -PstackKb=48" "packThreadRepro" "packReplay" "rtDeviceChainRepro" "rtReplay" "hwCapsRepro" "terrainIndirectRepro")
+TASKS=("float16Repro" "attachLayoutRepro" "freshTexRepro" "vkStackRepro -PstackKb=48" "packThreadRepro" "packReplay" "rtDeviceChainRepro" "rtReplay" "hwCapsRepro" "terrainIndirectRepro" "terrainWorldReplay -Ptw.quick")
 have() { grep -q "register('$1'" "$WT/build.gradle"; }
 
 run_cell() { # profile(or BASE) task-args -> prints "VERDICT|harness|valerr|note"

@@ -320,6 +320,10 @@ public class RenderSection {
     }
 
     public void resetDrawParameters(TerrainRenderType renderType) {
+        if (this.chunkArea.getDrawBuffers().worldMode()) { // P2-7a: the layer's arena ranges (vertex + sorted index) go back
+            this.chunkArea.getDrawBuffers().resetLayerWorld(this.inAreaIndex, renderType);
+            return;
+        }
         for (int i = 0; i < QuadFacing.COUNT; ++i) {
             DrawBuffers drawBuffers = this.chunkArea.getDrawBuffers();
             long ptr = DrawParametersBuffer.getParamsPtr(drawBuffers.getDrawParamsPtr(), this.inAreaIndex, renderType.ordinal(), i);
@@ -442,6 +446,11 @@ public class RenderSection {
         if (this.chunkArea == null)
             return;
 
+        if (this.chunkArea.getDrawBuffers().worldMode()) {
+            // P2-7a: no area release reclaims world-arena ranges, so a moved / cleared section frees its own
+            this.chunkArea.getDrawBuffers().resetSectionWorld(this.inAreaIndex);
+            return;
+        }
         long basePtr = this.chunkArea.getDrawBuffers().getDrawParamsPtr();
         for (TerrainRenderType renderType : TerrainRenderType.VALUES) {
             for (QuadFacing facing : QuadFacing.VALUES) {
