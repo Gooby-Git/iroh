@@ -156,6 +156,7 @@ public abstract class Pipeline {
     }
 
     public static void destroyPipelineCache() {
+        PipelinePrewarm.shutdown(); // P2-11: stop the worker (it uses the cache and the device), save the pre-warm list
         savePipelineCache();
         Initializer.LOGGER.info("SPIR-V cache: {} hits, {} misses", SPIRVUtils.getCacheHits(), SPIRVUtils.getCacheMisses());
         vkDestroyPipelineCache(DEVICE, PIPELINE_CACHE, null);

@@ -190,6 +190,10 @@ public abstract class DeviceManager {
             // terrain is drawn directly (IndirectDrawCaps.useTerrainIndirect), whatever the indirectDraw option says.
             IndirectDrawCaps.apply(device.availableFeatures.features(), device.availableFeatures11, deviceFeatures.features(), deviceVulkan11Features);
             net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", IndirectDrawCaps.report());
+            try { // P2-11: capability report only; the GPL pipeline path is not implemented
+                dev.elemore.iroh.temporal.DeviceCaps.probeGpl(net.vulkanmod.vulkan.util.VkEnum.deviceExtensions(device.physicalDevice));
+                net.vulkanmod.Initializer.LOGGER.info("Iroh: {}", dev.elemore.iroh.temporal.DeviceCaps.gplReport());
+            } catch (RuntimeException e) { net.vulkanmod.Initializer.LOGGER.warn("Iroh: GPL probe failed: {}", e.toString()); }
 
             // PACK-FULL (VUID-RuntimeSpirv-NonWritable-06341): shader-pack vertex/fragment image stores (Navidson voxel_img)
             String packFeatures = dev.elemore.iroh.shaderpack.runtime.PackDeviceFeatures.apply(device.availableFeatures.features(), deviceFeatures.features());
