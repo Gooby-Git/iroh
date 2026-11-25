@@ -34,7 +34,22 @@ public class Config {
     /** DEFAULT follows the vanilla Graphics setting, FAST / FANCY override it. */
     public String leavesQuality = "DEFAULT";
     public boolean enableVignette = true;
-    public boolean showFps = false;
+    // ---- Telemetry tab (card TEL-1; replaces the old showFps flag, which iroh.json migrates, see IrohOptions) ----
+    /** Master switch of the on-screen overlay. */
+    public boolean telemetryOverlay = false;
+    public boolean telFps = true, telAvg = true, telLow1 = true, telLow01 = false, telFrameTime = false, telGraph = false;
+    public boolean telGpuBusy = false, telVram = false, telRam = false, telPing = false, telTps = false, telChunks = false;
+    public boolean telEntities = false, telRenderDist = false, telFeatures = false, telGenFps = false;
+    /** TOP_LEFT / TOP_RIGHT / BOTTOM_LEFT / BOTTOM_RIGHT */
+    public String telPosition = "TOP_LEFT";
+    /** WHITE / GREEN / CYAN / YELLOW / ORANGE / PINK */
+    public String telColor = "WHITE";
+    /** F9 / F7 / F12 / PAUSE / SCROLL_LOCK / INSERT / HOME / END / NONE */
+    public String telHotkey = "F9";
+    /** 50..200 percent */
+    public int telScale = 100;
+    /** 10..100 percent */
+    public int telOpacity = 100;
     /** -1 terrain fog off, 0 vanilla, n > 0 chunks (not verified, treated as vanilla). */
     public int fogDistanceChunks = 0;
     /** Iroh leaf culling (Cull Fewer Leaves behaviour) on/off. Off unless migrated from cull-fewer-leaves.toml. */

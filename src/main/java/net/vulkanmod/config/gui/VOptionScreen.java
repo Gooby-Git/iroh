@@ -56,6 +56,7 @@ public class VOptionScreen extends Screen {
         this.optionPages.add(new OptionPage(Component.translatable("iroh.pages.quality").getString(), Options.getQualityOpts()));
         this.optionPages.add(new OptionPage(Component.translatable("iroh.pages.performance").getString(), Options.getPerformanceOpts()));
         this.optionPages.add(new OptionPage(Component.translatable("iroh.pages.shaders").getString(), Options.getShadersOpts()));
+        this.optionPages.add(new OptionPage(Component.translatable("iroh.pages.telemetry").getString(), Options.getTelemetryOpts()));
         this.optionPages.add(new OptionPage(Component.translatable("iroh.pages.advanced").getString(), Options.getAdvancedOpts()));
         this.optionPages.add(new OptionPage(Component.translatable("iroh.pages.about").getString(), Options.getAboutOpts()));
     }

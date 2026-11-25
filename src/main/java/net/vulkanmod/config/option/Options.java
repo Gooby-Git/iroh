@@ -153,7 +153,7 @@ public abstract class Options {
                 new OptionBlock("", concat(new Option<?>[]{resolutionOption, refreshRate},
                         rows(IrohOptions.WINDOW_MODE, IrohOptions.FRAMERATE_LIMIT, IrohOptions.VSYNC))),
                 block(IrohOptions.GUI_SCALE, IrohOptions.GAMMA),
-                block(IrohOptions.VIEW_BOBBING, IrohOptions.ATTACK_INDICATOR, IrohOptions.AUTOSAVE_INDICATOR, IrohOptions.SHOW_FPS)
+                block(IrohOptions.VIEW_BOBBING, IrohOptions.ATTACK_INDICATOR, IrohOptions.AUTOSAVE_INDICATOR)
         };
     }
 
@@ -199,6 +199,20 @@ public abstract class Options {
     static Component lookReason() {
         Component rt = Availability.rayTracing();
         return rt != null ? rt : Availability.shaderPacks();
+    }
+
+    /** The Telemetry tab (card TEL-1): what the overlay shows, how it looks, the toggle key and the CSV recording. */
+    public static OptionBlock[] getTelemetryOpts() {
+        return new OptionBlock[]{
+                block(IrohOptions.TEL_OVERLAY, IrohOptions.TEL_HOTKEY),
+                block(IrohOptions.TEL_FPS, IrohOptions.TEL_AVG, IrohOptions.TEL_LOW1, IrohOptions.TEL_LOW01,
+                        IrohOptions.TEL_FRAME_TIME, IrohOptions.TEL_GRAPH, IrohOptions.TEL_GEN_FPS),
+                block(IrohOptions.TEL_GPU_BUSY, IrohOptions.TEL_VRAM, IrohOptions.TEL_RAM),
+                block(IrohOptions.TEL_PING, IrohOptions.TEL_TPS, IrohOptions.TEL_CHUNKS, IrohOptions.TEL_ENTITIES,
+                        IrohOptions.TEL_RENDER_DIST, IrohOptions.TEL_FEATURES),
+                block(IrohOptions.TEL_POSITION, IrohOptions.TEL_SCALE, IrohOptions.TEL_OPACITY, IrohOptions.TEL_COLOR),
+                block(IrohOptions.TEL_RECORD)
+        };
     }
 
     public static OptionBlock[] getAdvancedOpts() {

@@ -1,7 +1,7 @@
 package net.vulkanmod.mixin.render;
 
 import dev.elemore.iroh.config.IrohOptions;
-import dev.elemore.iroh.ui.FpsOverlay;
+import dev.elemore.iroh.telemetry.TelemetryOverlay;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiGraphics;
@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * HUD options the pack took from Sodium / Sodium Extra: the vignette switch and the FPS counter.
+ * HUD options the pack took from Sodium / Sodium Extra: the vignette switch and the Telemetry overlay (card TEL-1; was the FPS counter).
  * Priority 1500 so pack mods' injectors at the default 1000 run first (SKILL.md mixin rules).
  */
 @Mixin(value = Gui.class, priority = 1500)
@@ -29,7 +29,7 @@ public abstract class IrohHudM {
     }
 
     @Inject(method = "render", at = @At("RETURN"))
-    private void iroh$fps(GuiGraphics guiGraphics, DeltaTracker deltaTracker, CallbackInfo ci) {
-        FpsOverlay.render(guiGraphics, this.debugOverlay.showDebugScreen());
+    private void iroh$telemetry(GuiGraphics guiGraphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        TelemetryOverlay.render(guiGraphics, this.debugOverlay.showDebugScreen());
     }
 }

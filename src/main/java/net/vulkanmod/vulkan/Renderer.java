@@ -403,6 +403,9 @@ public class Renderer {
         // Iroh (P1-13a): GPU timestamps start outside the render pass
         if (dev.elemore.iroh.apiimpl.FrameProfiler.ON)
             dev.elemore.iroh.apiimpl.FrameProfiler.frameStart(commandBuffer, currentFrame);
+        // Iroh (TEL-1): Telemetry overlay GPU frame time + render-thread start stamp (one plain static test when off)
+        if (dev.elemore.iroh.telemetry.TelemetryGpu.ON)
+            dev.elemore.iroh.telemetry.TelemetryGpu.frameStart(commandBuffer, currentFrame);
         // Iroh (td-4a9be3): a new frame command buffer; uses recorded in the previous one have executed or will
         // execute before anything recorded from now on (see VulkanImage.uploadOwned / frameUse).
         net.vulkanmod.vulkan.texture.VulkanImage.nextFrameSerial();
@@ -434,6 +437,7 @@ public class Renderer {
 
         // Iroh (rc3r2, td-7937f0): mainPass.end ends the command buffer; from here on nothing may record into it, even if
         // the submit below throws (device lost / out of date during a world teardown).
+        if (dev.elemore.iroh.telemetry.TelemetryGpu.ON) dev.elemore.iroh.telemetry.TelemetryGpu.frameEnd(currentCmdBuffer); // TEL-1
         try {
             mainPass.end(currentCmdBuffer);
         } finally {

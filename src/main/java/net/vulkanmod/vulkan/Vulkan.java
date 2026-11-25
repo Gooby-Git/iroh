@@ -181,6 +181,7 @@ public class Vulkan {
         // -Diroh.profile timestamp pool: both were never destroyed (vkDestroyDevice leak report in pack full mode)
         dev.elemore.iroh.shaderpack.runtime.PackRuntime.shutdown();
         dev.elemore.iroh.apiimpl.FrameProfiler.shutdown();
+        dev.elemore.iroh.telemetry.TelemetryGpu.shutdown(); // TEL-1
         Renderer.getInstance().cleanUpResources();
 
         // rc15 (td-05108a): objects the owners never closed, before the frame ops and leftovers below run

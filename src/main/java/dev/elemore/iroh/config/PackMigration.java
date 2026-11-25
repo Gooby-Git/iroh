@@ -81,7 +81,7 @@ public final class PackMigration {
         JsonObject j = readJson(f, log);
         if (j == null) return;
         JsonElement e = path(j, "extra_settings", "show_fps");
-        if (e != null) { c.showFps = e.getAsBoolean(); log.add("sodium-extra show_fps -> showFps " + c.showFps); }
+        if (e != null) { IrohOptions.migrateShowFps(c, e.getAsBoolean(), log); log.add("(from sodium-extra show_fps)"); }
         e = path(j, "render_settings", "fog_settings", "atmospheric", "distance_chunks");
         if (e != null) {
             int n = e.getAsInt();

@@ -1204,3 +1204,15 @@ tasks.register('packFullVkRepro', JavaExec) {
 		useLavapipe(it)
 	}
 }
+
+// TEL-1: Telemetry overlay model (formatting, rolling stats, lines, CSV writer, allocation proof), headless.
+// ./gradlew telemetryTest ; last line "# telemetry PASS n/n"
+tasks.register('telemetryTest', JavaExec) {
+	group = 'verification'
+	description = 'Telemetry overlay: formatting, avg / 1% / 0.1% lows, overlay lines, CSV recorder, zero allocation per frame'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.telemetry.TelemetryTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}

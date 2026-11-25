@@ -40,6 +40,7 @@
 
     "profiling.GuiMixin",
     "profiling.KeyboardHandlerM",
+    "profiling.TelemetryKeyM",
     "profiling.LevelRendererMixin",
     "profiling.slow.SlowFramesMinecraftM",
     "profiling.slow.SlowFramesGameRendererM",
