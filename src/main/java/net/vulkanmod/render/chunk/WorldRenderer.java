@@ -587,7 +587,9 @@ public class WorldRenderer {
                 var queue = chunkArea.sectionQueue;
                 DrawBuffers drawBuffers = chunkArea.drawBuffers;
 
-                renderer.uploadAndBindUBOs(pipeline);
+                // Upstream VulkanMod 5a80b35 (1.21.11 port, WorldRenderer hunk): the base also uploaded and bound the
+                // UBOs here, for every area and layer, drawn or not; each call writes the pipeline's UBOs into the frame
+                // uniform ring and binds a descriptor set. Only areas that draw need it (the call below).
                 if (drawBuffers.getAreaBuffer(terrainRenderType) != null && queue.size() > 0) {
 
                     drawBuffers.bindBuffers(Renderer.getCommandBuffer(), pipeline, terrainRenderType, camX, camY, camZ);
@@ -632,12 +634,16 @@ public class WorldRenderer {
 
             Iterator<RenderSection> iterator = this.sectionGraph.getSectionQueue().iterator(false);
 
+            // Upstream VulkanMod 45b97c3 ("Mitigate translucency sorting issue"): the base counted every visited section,
+            // empty air included, so only the nearest 15 sections of any kind were resorted and translucent sections a
+            // few sections away (water seen from above, glass) kept a stale order. Upstream counts non-empty sections up
+            // to 200; Iroh follows vanilla 1.21.1 (LevelRenderer.renderSectionLayer): count only the sections that got a
+            // sort task, at most 15, nearest first.
             while (iterator.hasNext() && j < 15) {
                 RenderSection section = iterator.next();
 
-                section.resortTransparency(this.taskDispatcher);
-
-                ++j;
+                if (section.resortTransparency(this.taskDispatcher))
+                    ++j;
             }
             if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.SORTED, j);
         }
@@ -732,6 +738,18 @@ public class WorldRenderer {
         this.sectionGrid.setDirty(x, y, z, flag);
 
         this.renderRegionCache.remove(x, z);
+    }
+
+    /**
+     * P2-4 (iroh.chunk.bulkDirty): LevelRenderer.setSectionDirtyWithNeighbors as one call: the same 27 sections marked
+     * and the same 9 region-cache columns dropped as 27 {@link #setSectionDirty} calls (each dropped once, not 3 times).
+     */
+    public void setSectionDirtyWithNeighbors(int x, int y, int z) {
+        if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.count(dev.elemore.iroh.diag.SlowFrames.Counter.DIRTY_MARKS, 27);
+        this.sectionGrid.setDirtyNeighbours(x, y, z);
+        for (int dz = -1; dz <= 1; dz++)
+            for (int dx = -1; dx <= 1; dx++)
+                this.renderRegionCache.remove(x + dx, z + dz);
     }
 
     public SectionGrid getSectionGrid() {

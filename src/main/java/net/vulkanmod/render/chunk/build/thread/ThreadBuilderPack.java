@@ -38,4 +38,9 @@ public class ThreadBuilderPack {
         this.builders.values().forEach(TerrainBuilder::clear);
     }
 
+    /** Upstream VulkanMod babff0c: frees every builder's native memory (the pack is dropped afterwards). */
+    public void freeAll() {
+        this.builders.values().forEach(TerrainBuilder::free);
+    }
+
 }

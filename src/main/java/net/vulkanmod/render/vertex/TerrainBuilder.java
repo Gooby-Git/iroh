@@ -17,7 +17,6 @@ public class TerrainBuilder {
     protected long indexBufferPtr;
 
     private int indexBufferCapacity;
-    protected long bufferPtr;
 
     private final VertexFormat format;
 
@@ -64,9 +63,11 @@ public class TerrainBuilder {
     }
 
     private void resizeIndexBuffer(int i) {
-        this.bufferPtr = ALLOCATOR.realloc(this.bufferPtr, i);
+        // Upstream VulkanMod babff0c: the base reallocated an unused `bufferPtr` field here, so the index buffer kept its
+        // old size while the capacity grew (sorted indices then overran it) and the new block leaked.
+        this.indexBufferPtr = ALLOCATOR.realloc(this.indexBufferPtr, i);
         LOGGER.debug("Needed to grow index buffer: Old size {} bytes, new size {} bytes.", this.indexBufferCapacity, i);
-        if (this.bufferPtr == 0L) {
+        if (this.indexBufferPtr == 0L) {
             throw new OutOfMemoryError("Failed to resize buffer from " + this.indexBufferCapacity + " bytes to " + i + " bytes");
         } else {
             this.indexBufferCapacity = i;
@@ -117,11 +118,14 @@ public class TerrainBuilder {
 
         int indexCount = vertexCount / 4 * 6;
 
-        VertexFormat.IndexType indexType = VertexFormat.IndexType.least(indexCount);
+        // R-P213BC (RQ-P213-c): the sorted index data is 16-bit (DrawBuffers' index AreaBuffer, the bind and getIndexBuffer()
+        // all use 2 bytes). What limits a 16-bit index is the largest VERTEX number, not the index count: the base picked
+        // IndexType.least(indexCount) = INT from 10923 quads on, wrote 4-byte data, uploaded half of it and drew it as
+        // 16-bit. Past 16384 quads no 16-bit index can name every vertex: such a section stays unsorted (sequential).
+        VertexFormat.IndexType indexType = VertexFormat.IndexType.SHORT;
         boolean sequentialIndexing;
 
-        // TODO sorting
-        if (this.needsSorting) {
+        if (this.needsSorting && canSort(vertexCount)) {
             int indexBufferSize = indexCount * indexType.bytes;
             this.ensureIndexCapacity(indexBufferSize);
 
@@ -135,7 +139,25 @@ public class TerrainBuilder {
         return new DrawState(this.format.getVertexSize(), indexCount, indexType, this.indexOnly, sequentialIndexing);
     }
 
-    // TODO hardcoded index type size
+    /** Most vertices a translucent section can have and still be sorted with 16-bit indices (16384 quads). */
+    public static final int MAX_SORTED_VERTICES = 1 << 16;
+
+    public static boolean canSort(int vertexCount) {
+        return vertexCount <= MAX_SORTED_VERTICES;
+    }
+
+    private static long lastUnsortedWarn;
+
+    public static void warnUnsorted(int vertexCount) {
+        long now = System.nanoTime();
+        if (lastUnsortedWarn == 0L || now - lastUnsortedWarn > 60_000_000_000L) {
+            lastUnsortedWarn = now;
+            LOGGER.warn("Translucent section with {} quads (> {}) is drawn unsorted: 16-bit indices cannot address it",
+                    vertexCount / 4, MAX_SORTED_VERTICES / 4);
+        }
+    }
+
+    /** The sorted index data is always 16-bit (see {@link #endDrawing}). */
     public ByteBuffer getIndexBuffer() {
         int indexCount = this.quadSorter.getVertexCount() * 6 / 4;
 
@@ -160,6 +182,17 @@ public class TerrainBuilder {
 
         for (TerrainBufferBuilder bufferBuilder : this.bufferBuilders) {
             bufferBuilder.clear();
+        }
+    }
+
+    /** Upstream VulkanMod babff0c: frees the native index and vertex blocks. The builder must not be used afterwards. */
+    public void free() {
+        ALLOCATOR.free(this.indexBufferPtr);
+        this.indexBufferPtr = 0L;
+        this.indexBufferCapacity = 0;
+
+        for (TerrainBufferBuilder bufferBuilder : this.bufferBuilders) {
+            bufferBuilder.free();
         }
     }
 

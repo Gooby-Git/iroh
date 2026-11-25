@@ -49,6 +49,7 @@ public final class MemoryGuard {
         long now = System.nanoTime();
         if (now - lastSample < 1_000_000_000L) return;
         lastSample = now;
+        dev.elemore.iroh.perf.AreaArena.frameTick(); // P2-4: collect finished prefetches (also done at every take)
         sampleNow();
         // rc9: rate rules
         var events = GROWTH.sample(now, BUDGET.irohUsage(), net.vulkanmod.vulkan.memory.MemoryManager.ownerCounts());
@@ -106,6 +107,7 @@ public final class MemoryGuard {
 
     /** rc9: a world started rendering (growth rules start their warm-up). */
     public static void worldStarted() {
+        dev.elemore.iroh.perf.AreaArena.worldStarted(); // P2-4
         GROWTH.worldStarted(System.nanoTime());
         growthEscalated = false;
     }
@@ -157,6 +159,7 @@ public final class MemoryGuard {
     static void trim() {
         var ring = net.vulkanmod.vulkan.memory.buffer.StagingBuffer.ring();
         if (ring != null) ring.trimPool();
+        dev.elemore.iroh.perf.AreaArena.trim(); // P2-4: pooled area buffers
     }
 
     private static void leaveWorldNow() {
@@ -180,6 +183,7 @@ public final class MemoryGuard {
 
     /** World unloaded: memory released, sampling starts over. */
     public static void worldUnloaded() {
+        dev.elemore.iroh.perf.AreaArena.worldUnloaded(); // P2-4: after WorldRenderer released the area buffers
         if (BUDGET.state() == MemoryBudget.State.OUT_OF_MEMORY)
             LOGGER.info("Iroh: world closed after the out-of-memory; graphics memory checks resume");
         BUDGET.reset();

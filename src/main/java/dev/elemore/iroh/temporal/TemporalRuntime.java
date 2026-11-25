@@ -350,7 +350,8 @@ public final class TemporalRuntime {
             OUTS[0] = velocityImage; OUTS[1] = mergedDepth; OUTS[2] = reactive; OUTS[3] = transparency; // INT-2: no per-frame array
             for (VulkanImage out : OUTS)
                 VulkanImage.transitionLayout(stack, cmd, out, out.getCurrentLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, cs, VK_ACCESS_SHADER_WRITE_BIT);
+                        VulkanImage.stagesOfLayout(out.getCurrentLayout()), VulkanImage.writeAccessOfLayout(out.getCurrentLayout()), // P2-12 (RQ-APP1-a)
+                        cs, VK_ACCESS_SHADER_WRITE_BIT);
 
             VelocityPass.Frame f = TemporalFrame.params;
             f.endDepthView = worldDepth.getImageView();

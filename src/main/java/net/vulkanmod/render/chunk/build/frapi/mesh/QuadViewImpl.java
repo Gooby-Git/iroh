@@ -330,8 +330,21 @@ public class QuadViewImpl implements QuadView, ModelQuadView {
 		return packedFaceNormal();
 	}
 
+	/**
+	 * The per-facing bucket the mesher puts this quad in (BlockRenderer.bufferQuad), derived from the CURRENT positions.
+	 * TERRAIN-HOLES: it returned the cached field without {@link #computeGeometry()}. Iroh's shade hook (Polaris slope
+	 * lighting) lifts a sagged quad flat for the light calculation, which computes the geometry (lightFace()) on the lifted
+	 * positions, then puts the real positions back (pos() marks the geometry invalid): the cached facing was the FLAT
+	 * one, so a tilted slope top went to the Y_POS bucket instead of UNDEFINED and QuadFacing.facingMask dropped it for
+	 * every camera below the section's floor (see-through slopes on hills above the eye's section).
+	 */
 	@Override
 	public QuadFacing getQuadFacing() {
+		if (!LEGACY_FACING)
+			computeGeometry();
 		return this.facing;
 	}
+
+	/** -Diroh.mesh.legacyFacing=true: the pre-fix cached facing, ONLY to reproduce TERRAIN-HOLES in game (A/B). */
+	private static final boolean LEGACY_FACING = Boolean.getBoolean("iroh.mesh.legacyFacing");
 }

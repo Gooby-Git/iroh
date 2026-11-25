@@ -41,7 +41,8 @@ public final class HotPathAudit {
         // INT-2: per-frame / per-update paths of the perf switches and api 4
         HOT.put("net/vulkanmod/render/chunk/graph/SectionGraph.java", new String[]{"update", "scheduleRebuilds0"});
         HOT.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java", new String[]{"beginBatch"});
-        HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate"});
+        HOT.put("net/vulkanmod/render/chunk/build/task/TaskDispatcher.java", new String[]{"adaptBuilders", "doSectionUpdate", "updateSections0"});
+        HOT.put("net/vulkanmod/mixin/chunk/BulkDirtyM.java", new String[]{"*"}); // P2-4
         HOT.put("net/vulkanmod/render/chunk/RenderSection.java", new String[]{"reset"});
     }
 
@@ -53,6 +54,8 @@ public final class HotPathAudit {
     public static final Map<String, String> CALLEE_GUARD = new LinkedHashMap<>();
     static {
         CALLEE_GUARD.put("dev/elemore/iroh/perf/TaskBudget.java#enabled", "PerfSwitches.tasksBudgetOn");
+        CALLEE_GUARD.put("dev/elemore/iroh/perf/IntakeBudget.java#enabled", "PerfSwitches.intakeBudgetOn");
+        CALLEE_GUARD.put("dev/elemore/iroh/perf/AreaArena.java#on", "PerfSwitches.areaArenaOn");
         CALLEE_GUARD.put("net/vulkanmod/render/chunk/graph/SectionGraph.java#cacheEnabled", "PerfSwitches.graphCacheOn");
         CALLEE_GUARD.put("net/vulkanmod/render/chunk/graph/SectionGraph.java#rebuildBudget", "PerfSwitches.rebuildBudgetOn");
         CALLEE_GUARD.put("net/vulkanmod/render/chunk/build/RenderRegionBuilder.java#beginBatch", "clones.isEmpty()");
@@ -99,7 +102,7 @@ public final class HotPathAudit {
 
     /** feature guards and hook calls: the things that run when everything is off */
     static final Pattern GUARD = Pattern.compile(
-            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
+            "(?:dev\\.elemore\\.iroh\\.[\\w.]+\\.)?(Sections|SlowFrames|SlowStacks|TemporalFrame|PackRuntime|Substitution|TaskBudget|IntakeBudget|AreaArena|PerfSwitches|DebugSwitches|UpscaleSwitches|FrameHooks|GpuLifecycle|TemporalRuntime|FrameProfiler|EmuStats|SectionGraph|ThreadPolicy)"
                     + "\\s*\\.\\s*(\\w+)");
 
     public static Map<String, List<String>> audit(Path src) throws Exception {

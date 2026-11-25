@@ -1,5 +1,7 @@
 package dev.elemore.iroh.temporal;
 
+import dev.elemore.iroh.perf.PipelineStats;
+
 import net.vulkanmod.vulkan.shader.SPIRVUtils;
 import org.joml.Matrix4dc;
 import org.lwjgl.PointerBuffer;
@@ -145,7 +147,9 @@ public final class VelocityPass {
                     .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
             VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, stack);
             ci.get(0).sType$Default().stage(stage).layout(pipelineLayout);
+            long pipeT0 = System.nanoTime(); // P2-11
             check(vkCreateComputePipelines(device, VK_NULL_HANDLE, ci, null, pl), "compute pipeline " + name);
+            PipelineStats.created(PipelineStats.Kind.COMPUTE, System.nanoTime() - pipeT0);
             return pl.get(0);
         } finally {
             vkDestroyShaderModule(device, module, null);

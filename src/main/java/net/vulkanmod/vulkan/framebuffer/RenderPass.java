@@ -39,6 +39,8 @@ public class RenderPass {
     }
 
     final int attachmentCount;
+    /** P2-11: which subpass dependency createRenderPass wrote (0 none, 1 PRESENT_SRC external -> 0, 2 SHADER_READ_ONLY 0 -> external); dependencies take part in render pass compatibility */
+    private final int dependencyKind;
     AttachmentInfo colorAttachmentInfo;
     AttachmentInfo depthAttachmentInfo;
 
@@ -54,6 +56,9 @@ public class RenderPass {
             count++;
 
         this.attachmentCount = count;
+        this.dependencyKind = colorAttachmentInfo == null ? 0
+                : colorAttachmentInfo.finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ? 1
+                : colorAttachmentInfo.finalLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? 2 : 0;
 
         if (!Vulkan.DYNAMIC_RENDERING) {
             this.id = createRenderPass(0);
@@ -301,6 +306,19 @@ public class RenderPass {
 
     public long getId() {
         return id;
+    }
+
+    /** P2-11: colour / depth attachment formats (0 = none); render-pass compatibility is decided by these (plus sample count 1) */
+    public int colorFormat() {
+        return colorAttachmentInfo != null ? colorAttachmentInfo.format : 0;
+    }
+
+    public int depthFormat() {
+        return depthAttachmentInfo != null ? depthAttachmentInfo.format : 0;
+    }
+
+    public int dependencyKind() {
+        return dependencyKind;
     }
 
     public static class AttachmentInfo {
