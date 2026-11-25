@@ -421,6 +421,17 @@ public final class StreamingTest {
         for (int k = 0; k < 4; k++) ti.nextFrame();
         check("translucent index free only when owned: auto-index section frees nothing (" + q1 + ", Y kept " + yKept + "), Y frees its own (" + q2 + ", freed " + ys.isFree() + ")",
                 q1 == 0 && yKept && q2 == 1 && ys.isFree() && idx.segmentErrors().isEmpty());
+        // upload path: a sorted upload after a sequential one names oldOffset 0 it does not own: must not free it
+        FakeOps tu = new FakeOps(false);
+        AreaBuffer idx2 = new AreaBuffer(AreaBuffer.Usage.INDEX, 4096, 2, tu);
+        AreaBuffer.Segment owner0 = idx2.upload(ib, -1, yUndef);   // Y owns index offset 0
+        AreaBuffer.Segment xs = idx2.upload(ib, 0, xUndef);        // X was sequential: firstIndex 0, indexCount > 0
+        for (int k = 0; k < 4; k++) tu.nextFrame();
+        boolean y0Kept = !owner0.isFree() && owner0.getOffset() == 0;
+        idx2.upload(ib, xs.getOffset() / 2, xUndef);               // X's own old segment is freed as before
+        for (int k = 0; k < 4; k++) tu.nextFrame();
+        check("upload frees the old segment only when its slot owns it (Y's offset 0 kept " + y0Kept + ", X's own freed " + xs.isFree() + ")",
+                y0Kept && xs.isFree() && idx2.segmentErrors().isEmpty());
         MemoryUtil.memFree(ib);
         MemoryUtil.nmemFree(slots);
 

@@ -102,9 +102,11 @@ public class AreaBuffer {
 
     public Segment upload(ByteBuffer byteBuffer, int oldOffset, long paramsPtr) {
         // Free old segment
-        if (oldOffset != -1) {
-            // Need to delay segment freeing since it might be still used by prev frames in flight
-//            this.setSegmentFree(oldOffset);
+        // Need to delay segment freeing since it might be still used by prev frames in flight.
+        // TERRAIN-HOLES: only a segment this slot owns (paramsPtr 0 = offline callers without slots). The draw parameters
+        // can name a segment the slot does not own: sequential translucent indices keep firstIndex 0 with no index
+        // segment, so the next sorted upload freed index offset 0 of another section (RQ-HOLES-a).
+        if (oldOffset != -1 && (paramsPtr == 0L || ownerAt(oldOffset) == paramsPtr)) {
             this.ops.deferSegmentFree(this, oldOffset);
         }
 

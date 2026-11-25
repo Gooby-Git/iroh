@@ -34,7 +34,7 @@ public final class SectionSegments {
                 else if (vertex.freeOwnedDeferred(vertexOffset, ptr))
                     n++;
             }
-            if (index != null && !LEGACY_LAYER_FREE && i == facings - 1 && DrawParametersBuffer.getIndexCount(ptr) > 0
+            if (index != null && !LEGACY_LAYER_FREE && i == facings - 1
                     && index.freeOwnedDeferred(DrawParametersBuffer.getFirstIndex(ptr), ptr))
                 n++;
         }
