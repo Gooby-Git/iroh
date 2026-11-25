@@ -400,7 +400,8 @@ public class WorldRenderer {
 
     /**
      * P2-7a: world-arena terrain for the next grid when the switch is on AND the device draws terrain indirectly with
-     * firstInstance (tier INDIRECT; T-C devices keep the per-area direct draws) AND the default compressed-vertex terrain
+     * firstInstance (tier INDIRECT; T-C devices keep the per-area direct draws; the user's indirectDraw option is not
+     * consulted: the explicit switch wins and the path is valid on the tier) AND not pack FULL mode AND the default compressed-vertex terrain
      * program draws (no pack FULL mode, no foreign terrain shader) AND every section offset fits terrain_world.vsh's
      * 8 signed bits (render distance <= 126, world height <= 127 sections). Logged when the decision changes.
      */
@@ -409,7 +410,9 @@ public class WorldRenderer {
         if (!dev.elemore.iroh.perf.PerfSwitches.terrainMdiOn) why = null;
         else if (net.vulkanmod.vulkan.device.IndirectDrawCaps.tier() != net.vulkanmod.vulkan.device.IndirectDrawCaps.TerrainTier.INDIRECT)
             why = "device draws terrain directly (" + net.vulkanmod.vulkan.device.IndirectDrawCaps.report() + ")";
-        else if (!PipelineManager.terrainWorldAvailable()) why = "terrain_world pipelines unavailable (pack FULL mode or another terrain shader)";
+        else if (dev.elemore.iroh.shaderpack.runtime.PackStartup.FULL) // collectPackTerrain reads per-area buffers (restart-only mode)
+            why = "pack FULL mode draws terrain from the per-area buffers";
+        else if (!PipelineManager.terrainWorldAvailable()) why = "terrain_world pipelines unavailable (non-compressed vertex format or another terrain shader)";
         else if (this.level.getSectionsCount() > 127 || this.renderDistance > 126)
             why = "section offsets exceed 8 bits (height " + this.level.getSectionsCount() + " sections, render distance " + this.renderDistance + ")";
         else why = "";

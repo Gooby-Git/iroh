@@ -254,8 +254,6 @@ public final class WorldArena {
             if (slot < 0) throw new IllegalStateException("terrain arena: more than " + MAX_PAGES + " pages in one pool");
             long size = Math.max(this.nextPageSize, roundUp(Math.max(bytes, 1), this.align));
             if (size > Integer.MAX_VALUE) throw new IllegalStateException("terrain arena page too large: " + size);
-            // near the slot limit pages get larger (never expected: 120 x 64 MiB per layer)
-            if (slot >= MAX_PAGES / 2) size = Math.min(Integer.MAX_VALUE / this.align * this.align, size * 4);
             Object buffer = this.arena.ops.allocate(this.index, size);
             this.pages[slot] = new Page(buffer, (int) size);
             this.top = Math.max(this.top, slot + 1);

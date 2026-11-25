@@ -8,8 +8,9 @@ import org.lwjgl.system.MemoryUtil;
  * contiguous command range each, so the render thread issues one bind + one vkCmdDrawIndexedIndirect per page instead
  * of a bind + push constant + UBO bind + vkCmdDrawIndexedIndirect per chunk area.
  *
- * <p>Writing is one sequential pass into one scratch (two 8-byte loads and three stores per command; a key change only
- * opens a run), then {@link #finish} groups. Order. Unordered layers (opaque, alpha-tested): the runs are grouped by key
+ * <p>Writing is one sequential pass into one scratch (two 8-byte parameter loads and five 4-byte stores per command, as
+ * cheap as DrawBuffers.buildDrawBatchesIndirect's loop on identical data, WorldArenaTest "command writing"; a key change
+ * only opens a run), then {@link #finish} lays out the draws and {@link #copyTo} writes them in place. Order. Unordered layers (opaque, alpha-tested): the runs are grouped by key
  * (vertex page, index source) with one copy per run, skipped when the layer uses one key; inside a key the per-area
  * path's order is kept, across pages the depth test decides (ties only on exactly coplanar faces of different
  * sections). Ordered layers (translucent, tripwire: blended) keep the exact command order of the per-area path (areas
@@ -18,7 +19,7 @@ import org.lwjgl.system.MemoryUtil;
  *
  * <p>firstInstance = the section's position relative to a per-frame origin section, 8 signed bits per axis in SECTION
  * units (x | z << 8 | y << 16), decoded by terrain_world.vsh (x16 blocks). The per-area path encodes block offsets
- * inside the 8x8x8-section area instead. Range: +-127 sections around the origin (render distance up to 126, world
+ * inside the 8x8x8-section area instead. Range: -128..127 sections around the origin (render distance up to 126, world
  * height up to 2032 blocks); sections outside are skipped and counted ({@link #outOfRange}).
  *
  * <p>Pure Java + LWJGL MemoryUtil (offline: WorldArenaTest, TerrainWorldReplay); render thread in game.
@@ -96,9 +97,8 @@ public final class TerrainCommandWriter {
     /**
      * The section's facings of one layer: {@code params} = its 7 DrawParametersBuffer entries (vertex page + 1 at +12),
      * {@code mask} = facing buckets to draw (bit i = facing i), {@code indexKey} = index page of its sorted indices or
-     * {@link #QUADS}. Same skips as DrawBuffers.buildDrawBatchesIndirect. Two 8-byte loads and three stores per command
-     * (the per-area loop: four loads, five stores): {indexCount, firstIndex} and {vertexOffset, page} are adjacent in the
-     * entry, {firstIndex, vertexOffset} adjacent in the command.
+     * {@link #QUADS}. Same skips as DrawBuffers.buildDrawBatchesIndirect. Two 8-byte loads per command ({indexCount,
+     * firstIndex} and {vertexOffset, page} are adjacent in the entry). Game code calls {@link #addArea}.
      */
     public void addSection(long params, int mask, int indexKey, int firstInstance) {
         if (!LE) {
@@ -106,7 +106,7 @@ public final class TerrainCommandWriter {
             return;
         }
         if (this.n + PARAM_FACINGS > this.cap) grow(this.n + PARAM_FACINGS);
-        // locals only in the loop (raw native stores may alias fields for the JIT); kept small so the JIT inlines it
+        // writer state in locals for the loop; small enough for the JIT to inline
         int k = this.n, lastKey = this.lastKey;
         long q = this.cmd + (long) k * STRIDE;
         final int ik = indexKey << 8;
@@ -118,7 +118,7 @@ public final class TerrainCommandWriter {
             long b = MemoryUtil.memGetLong(p + 8);      // vertexOffset | (page + 1) << 32
             int page = (int) (b >>> 32) - 1;
             if (page < 0) { this.orphans++; continue; }
-            // 4-byte stores: a 20-byte record puts 8-byte stores across cache lines (measured 2x slower, WorldArenaTest)
+            // 4-byte stores: records are 20 bytes, so 8-byte stores would be misaligned and sometimes straddle cache lines
             MemoryUtil.memPutInt(q, (int) a);
             MemoryUtil.memPutInt(q + 4, 1);
             MemoryUtil.memPutInt(q + 8, (int) (a >>> 32));
