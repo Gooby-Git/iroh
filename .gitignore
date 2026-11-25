@@ -50,3 +50,4 @@ hs_err_pid*.log
 # RT-1: world captures hold Mojang textures: never in git (all capture files end .ircap)
 *.ircap
 iroh-captures/
+/build-keep/
