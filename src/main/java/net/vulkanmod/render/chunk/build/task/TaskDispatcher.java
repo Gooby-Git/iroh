@@ -388,6 +388,10 @@ public class TaskDispatcher {
 
     private void doSectionUpdate(CompileResult compileResult) {
         RenderSection section = compileResult.renderSection;
+        if (compileResult.originStale()) { // RQ-HOLES-b: relocated while the build ran; the mesh is for the old position
+            releaseAll(compileResult);
+            return;
+        }
         ChunkArea renderArea = section.getChunkArea();
         DrawBuffers drawBuffers = renderArea.getDrawBuffers();
 

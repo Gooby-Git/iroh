@@ -31,8 +31,14 @@ public abstract class ChunkTask {
             l.countDown();
     }
 
+    /** RQ-HOLES-b: the section origin when the task was created (render thread); a relocation afterwards makes the result stale. */
+    protected final int originX, originY, originZ;
+
     ChunkTask(RenderSection renderSection) {
         this.section = renderSection;
+        this.originX = renderSection == null ? 0 : renderSection.xOffset();
+        this.originY = renderSection == null ? 0 : renderSection.yOffset();
+        this.originZ = renderSection == null ? 0 : renderSection.zOffset();
     }
 
     public abstract String name();

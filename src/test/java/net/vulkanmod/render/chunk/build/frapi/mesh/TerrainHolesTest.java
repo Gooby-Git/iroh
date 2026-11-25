@@ -116,6 +116,15 @@ public final class TerrainHolesTest {
         side.lightFace();
         check("untouched east face: bucket X_POS", side.getQuadFacing() == QuadFacing.X_POS);
 
+        // ---- 4. RQ-HOLES-b: a result built for a section's old position is not uploaded after the section was relocated
+        var sec = new net.vulkanmod.render.chunk.RenderSection(0, 0, 64, 0);
+        var res = net.vulkanmod.render.chunk.build.task.CompileResult.forOrigin(sec, true, 0, 64, 0);
+        check("HOLES-b: result of an unmoved section is current", !res.originStale());
+        sec.setOrigin(256, 64, 0); // SectionGrid.moveSection: the slot now stands at the far edge
+        check("HOLES-b: result built before the relocation is stale (dropped, not uploaded into the new slot)", res.originStale());
+        var res2 = net.vulkanmod.render.chunk.build.task.CompileResult.forOrigin(sec, true, 256, 64, 0);
+        check("HOLES-b: result built after the relocation is current", !res2.originStale());
+
         System.out.println("# terrainholes " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         if (fail != 0) System.exit(1);
     }
