@@ -171,3 +171,6 @@ Expected sharpness / accuracy gain per effort, best first: Q2 (enables measuring
 1. Q4 default sharpness 0.2 at Native AA and Q5 pixel-art mip default are hypotheses (U); the owner chooses from the screenshot pairs.
 2. Q10 changes the depth convention for every mod and the shader-pack path; it only runs if the Q9 spike shows a real gain.
 3. Q17: "frame generation 3.1.7" is the swapchain proxy component in SDK terms; Iroh does not use a swapchain proxy. Confirm that interpolation 3.1.6 is enough.
+
+## Amendment 2026-11-25 (owner paste)
+Q17 gains: upscaling and frame generation as independent toggles (incl. Native AA + FG); latency via VK_AMD_anti_lag (AMD, verify RADV support) and VK_NV_low_latency2 (NVIDIA), only when offered. TEL-1 shows rendered vs generated FPS. Signed AMD DLLs and the AMD proxy swapchain are not used (Linux support; own swapchain).
