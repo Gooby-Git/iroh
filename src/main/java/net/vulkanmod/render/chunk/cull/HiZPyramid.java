@@ -53,7 +53,10 @@ public final class HiZPyramid {
     private long generation;
     /** frame serial of the last {@link #build} (the pyramid then holds that frame's depth) */
     public long builtSerial = Long.MIN_VALUE;
+    /** counts completed builds: a record trusts only a build counted after it (review P2-7c #1) */
+    public long builds;
 
+    private Object depthOwner;
     private long depthImage, depthViewHandle;
     private int depthFormat;
 
@@ -169,9 +172,12 @@ public final class HiZPyramid {
         return this.reversed;
     }
 
-    /** the depth-only view of {@code image} (cached; the old view goes after the frames in flight when the image changes) */
-    public long depthView(long image, int format) {
-        if (image == this.depthImage && format == this.depthFormat && this.depthViewHandle != 0) return this.depthViewHandle;
+    /**
+     * the depth-only view of {@code image} (cached per {@code owner} object AND handle: a recreated image may reuse a handle
+     * value, its owner object is new; the old view goes after the frames in flight when the image changes)
+     */
+    public long depthView(Object owner, long image, int format) {
+        if (owner == this.depthOwner && image == this.depthImage && format == this.depthFormat && this.depthViewHandle != 0) return this.depthViewHandle;
         long old = this.depthViewHandle;
         VkDevice d = this.device;
         if (old != 0) this.deferred.later(() -> vkDestroyImageView(d, old, null));
@@ -182,6 +188,7 @@ public final class HiZPyramid {
             check(vkCreateImageView(this.device, vi, null, lb), "hiz depth view");
             this.depthViewHandle = lb.get(0);
         }
+        this.depthOwner = owner;
         this.depthImage = image;
         this.depthFormat = format;
         return this.depthViewHandle;
@@ -269,10 +276,12 @@ public final class HiZPyramid {
     /**
      * Records the pyramid of the depth seen through {@code depthView} (a depth-only view of a {@code w} x {@code h}
      * image resting in {@code depthLayout}). {@link #ensure} must have been called for this size in this frame before
-     * anything bound the pyramid. Outside a render pass.
+     * anything bound the pyramid. Outside a render pass. Returns false and records nothing when the slot's descriptor sets,
+     * already bound this frame, describe another depth view or layout (they cannot be rewritten until the slot's fence).
      */
-    public void build(VkCommandBuffer cmd, int slot, long serial, long depthView, int depthLayout, int w, int h) {
-        if (w != this.srcW || h != this.srcH) throw new IllegalStateException("hiz: build " + w + "x" + h + " on a pyramid made for " + this.srcW + "x" + this.srcH);
+    public boolean build(VkCommandBuffer cmd, int slot, long serial, long depthView, int depthLayout, int w, int h) {
+        if (w != this.srcW || h != this.srcH) return false;
+        if (this.slotSerial[slot] == serial && (this.slotDepthView != depthView || this.slotDepthLayout != depthLayout)) return false;
         prepare(cmd);
         try (MemoryStack s = MemoryStack.stackPush()) {
             long[] set = this.sets[slot];
@@ -290,8 +299,7 @@ public final class HiZPyramid {
                 }
                 vkUpdateDescriptorSets(this.device, wr, null);
                 this.slotDepthView = depthView;
-            } else if (this.slotDepthView != depthView) {
-                throw new IllegalStateException("hiz: depth view changed inside a frame");
+                this.slotDepthLayout = depthLayout;
             }
             // earlier reads of the pyramid (the cull) and earlier builds finish before this one writes
             VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)
@@ -314,9 +322,12 @@ public final class HiZPyramid {
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, mb, null, null);
         }
         this.builtSerial = serial;
+        this.builds++;
+        return true;
     }
 
     private long slotDepthView;
+    private int slotDepthLayout;
 
     public long fullView() { return this.fullView; }
     public long sampler() { return this.nearest; }
@@ -355,6 +366,7 @@ public final class HiZPyramid {
         destroyImage(false);
         if (this.depthViewHandle != 0) vkDestroyImageView(this.device, this.depthViewHandle, null);
         this.depthViewHandle = 0;
+        this.depthOwner = null;
         for (long p : new long[]{this.pFetch, this.pMinmax}) if (p != VK_NULL_HANDLE) vkDestroyPipeline(this.device, p, null);
         vkDestroySampler(this.device, this.nearest, null);
         if (this.reduceSampler != VK_NULL_HANDLE) vkDestroySampler(this.device, this.reduceSampler, null);

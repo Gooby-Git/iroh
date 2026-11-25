@@ -189,6 +189,15 @@ public final class HiZCullReplay {
                 toRead ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT : frag, 0, null, null, ib);
     }
 
+    /** a depth target never drawn this command buffer: UNDEFINED -> read-only (contents irrelevant to the check that uses it) */
+    static void depthToReadFromUndefined(MemoryStack s, VkCommandBuffer cmd, Target t) {
+        VkImageMemoryBarrier.Buffer ib = VkImageMemoryBarrier.calloc(1, s).sType$Default().srcAccessMask(0).dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+                .oldLayout(VK_IMAGE_LAYOUT_UNDEFINED).newLayout(READ_LAYOUT)
+                .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).image(t.depthImg);
+        ib.subresourceRange().aspectMask(t.aspect()).levelCount(1).layerCount(1);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, null, null, ib);
+    }
+
     // ------------------------------------------------------------------------------------------------ paths
 
     record Path(String name, List<Cam> cams) {}
@@ -354,7 +363,7 @@ public final class HiZCullReplay {
         String sha;
         byte[] px;
         final Set<String> drawn1 = new HashSet<>(), drawn2 = new HashSet<>(), flagged = new HashSet<>(), trans = new HashSet<>();
-        boolean recorded, retested, transRecorded;
+        boolean recorded, retested, transRecorded, pyramidBuilt;
         int candidates, transCandidates;
         float[][] pyramid; // levels, read back after the retest's build (check frames)
         float[] depth;
@@ -515,9 +524,10 @@ public final class HiZCullReplay {
             // WorldRenderer.afterOpaqueLayers: pass break, pyramid of pass 1's depth, retest, pass 2
             if (tc.retestPending()) {
                 depthToRead(s, cmd, t, true);
-                tc.buildPyramid(cmd, 0, serial, t.depthImg, t.format, READ_LAYOUT, W, H);
-                if (readPyramid) copyPyramid(s, c, cmd, tc.hiz(), t);
-                r.retested = tc.recordRetest(cmd, 0, serial);
+                boolean built = tc.buildPyramid(cmd, 0, serial, t, t.depthImg, t.format, READ_LAYOUT, W, H);
+                if (readPyramid && built) copyPyramid(s, c, cmd, tc.hiz(), t);
+                r.retested = tc.recordRetest(cmd, 0, serial, built);
+                r.pyramidBuilt = built;
                 depthToRead(s, cmd, t, false);
                 beginPass(s, cmd, t, false);
                 if (!skipPass2)
@@ -531,10 +541,10 @@ public final class HiZCullReplay {
             // translucent: WorldRenderer.drawTranslucentCulled (pyramid of the depth now, translucent cull) or the CPU path
             if (r.tw != null && r.tw.draws() > 0) {
                 depthToRead(s, cmd, t, true);
-                tc.buildPyramid(cmd, 0, serial, t.depthImg, t.format, READ_LAYOUT, W, H);
+                boolean built = tc.buildPyramid(cmd, 0, serial, t, t.depthImg, t.format, READ_LAYOUT, W, H);
                 TerrainCull.Frame tf = copyFrame(cf);
                 tf.techniques = (cf.techniques & (TerrainCull.T_FRUSTUM | TerrainCull.T_SCREEN)) | TerrainCull.T_HIZ;
-                r.transRecorded = tc.recordTranslucent(cmd, 0, serial, tf, c.data, r.tw);
+                r.transRecorded = tc.recordTranslucent(cmd, 0, serial, tf, c.data, r.tw, built);
                 depthToRead(s, cmd, t, false);
             }
             beginPass(s, cmd, t, false);
@@ -560,7 +570,7 @@ public final class HiZCullReplay {
             r.sha = HexFormat.of().formatHex(sha(r.px));
             if (r.recorded) readOpaque(tc, r);
             if (r.transRecorded) readTranslucent(tc, r);
-            if (readPyramid && r.retested) readBackPyramid(c, tc.hiz(), t, r);
+            if (readPyramid && r.retested && r.pyramidBuilt) readBackPyramid(c, tc.hiz(), t, r);
         }
         return r;
     }
@@ -859,6 +869,37 @@ public final class HiZCullReplay {
             tc.destroyNow();
             report(cfg, tot);
             add(grand, tot);
+        }
+        // review P2-7c #1: a retest after a SECOND record of the same frame, without a build after that record, must not trust
+        // the pyramid (built from the first record's depth): keep-all mode
+        {
+            TerrainCull tc = new TerrainCull(d.dev, d.mp, 1, countDev, c.deferred::add, minmaxDev, false);
+            Cam cam = paths.get(0).cams.get(0);
+            Frame fr = frameOf(secs, c.lay, cam, false);
+            TerrainCull.Frame cf = TerrainCullReplay.cullFrame(fr, TerrainCull.T_HIZ);
+            cf.depthW = W; cf.depthH = H;
+            boolean first, second, firstOk;
+            try (MemoryStack f = s.push()) {
+                long serial = ++c.serial;
+                TerrainCommandWriter[] ws = TerrainCullReplay.writeCull(fr, c.data, cf.techniques, d.maxDraws);
+                VkCommandBuffer cmd = beginOnce(f, d);
+                tc.record(cmd, 0, serial, cf, c.data, ws); // fills the pyramid's history: next record may use HZ_PREV
+                depthToReadFromUndefined(f, cmd, d32);
+                boolean built = tc.buildPyramid(cmd, 0, serial, d32, d32.depthImg, d32.format, READ_LAYOUT, W, H);
+                first = tc.recordRetest(cmd, 0, serial, built);
+                firstOk = tc.retestPyramidOk;
+                cf.prevValid = true;
+                System.arraycopy(cf.mvp, 0, cf.prevMvp, 0, 16);
+                tc.record(cmd, 0, serial, cf, c.data, ws); // second record, no build after it
+                second = tc.recordRetest(cmd, 0, serial, true);
+                submitWait(f, d, cmd);
+                for (Runnable q : c.deferred) q.run();
+                c.deferred.clear();
+                for (TerrainCommandWriter w : ws) w.free();
+            }
+            check("a retest after a second record without a new build keeps every flag (pyramid trusted after its own build: " + firstOk
+                    + ", after the second record: " + tc.retestPyramidOk + ")", first && second && firstOk && !tc.retestPyramidOk);
+            tc.destroyNow();
         }
         // the reversed-Z references draw the same picture as the standard ones (the projection / compare / clear flip is right)
         int pairs = 0, worstDiff = 0;

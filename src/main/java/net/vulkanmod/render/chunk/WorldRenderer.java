@@ -149,6 +149,14 @@ public class WorldRenderer {
         if (dev.elemore.iroh.diag.SlowFrames.ON) dev.elemore.iroh.diag.SlowFrames.enter(dev.elemore.iroh.diag.SlowFrames.Phase.SETUP_TERRAIN); // perf/frame-attrib
         Profiler profiler = Profiler.getMainProfiler();
         profiler.push("Setup_Renderer");
+        // P2-7c: a Hi-Z retest the last frame never reached (no CUTOUT call and no later terrain layer) belongs to that frame
+        if (this.terrainCull != null && this.terrainCull.retestPending()) {
+            this.terrainCull.dropRetest();
+            if (!this.hizDropLogged) {
+                this.hizDropLogged = true;
+                Initializer.LOGGER.warn("Iroh: a GPU-cull Hi-Z retest was never run (no terrain layer after the opaque ones); dropped");
+            }
+        }
 
         benchCallback();
 
@@ -452,7 +460,13 @@ public class WorldRenderer {
     private boolean hizPrevValid;
     private final net.vulkanmod.render.chunk.buffer.TerrainCommandWriter cullTransWriter = new net.vulkanmod.render.chunk.buffer.TerrainCommandWriter();
     private int hizRetestCallsLast, hizTransCallsLast;
-    private boolean hizTransLast, cullTransFailed;
+    private boolean hizTransLast, cullTransFailed, hizDropLogged;
+    /** the framebuffer pass 1 was recorded for (its flagged commands are drawn into that one only) */
+    private Object cullRecFb;
+
+    interface BuiltThen {
+        void run(boolean built);
+    }
 
     /** P2-7c: the translucent layer through the GPU cull (frustum / screen size as on, Hi-Z against this frame's depth) */
     static boolean cullTranslucent() {
@@ -472,7 +486,7 @@ public class WorldRenderer {
      * the pyramid's frame for the next pass 1.
      */
     private void hizBuildInBreak(net.vulkanmod.render.chunk.cull.TerrainCull tc, net.vulkanmod.vulkan.framebuffer.SceneTarget st, long serial,
-                                 double camX, double camY, double camZ, Runnable then) {
+                                 double camX, double camY, double camZ, float[] mvp, BuiltThen then) {
         org.lwjgl.vulkan.VkCommandBuffer cmd = Renderer.getCommandBuffer();
         var depth = st.getDepthAttachment();
         int old = depth.getCurrentLayout();
@@ -480,19 +494,23 @@ public class WorldRenderer {
         int read = general ? old : org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         int compute = org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, fragTests = org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
                 | org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        boolean built = false;
         try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
             net.vulkanmod.vulkan.texture.VulkanImage.transitionLayout(stack, cmd, depth, old, read, net.vulkanmod.vulkan.texture.VulkanImage.stagesOfLayout(old),
                     net.vulkanmod.vulkan.texture.VulkanImage.writeAccessOfLayout(old), compute, org.lwjgl.vulkan.VK10.VK_ACCESS_SHADER_READ_BIT);
             try {
-                tc.buildPyramid(cmd, Renderer.getCurrentFrame(), serial, depth.getId(), depth.format, read, depth.width, depth.height);
-                then.run();
+                built = tc.buildPyramid(cmd, Renderer.getCurrentFrame(), serial, depth, depth.getId(), depth.format, read, depth.width, depth.height);
+                then.run(built);
             } finally {
                 net.vulkanmod.vulkan.texture.VulkanImage.transitionLayout(stack, cmd, depth, read, old, compute, 0, fragTests,
                         org.lwjgl.vulkan.VK10.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | org.lwjgl.vulkan.VK10.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
             }
         }
-        long mvpPtr = VRenderSystem.getMVP().ptr;
-        for (int i = 0; i < 16; i++) this.hizPrevMvp[i] = org.lwjgl.system.MemoryUtil.memGetFloat(mvpPtr + i * 4L);
+        if (!built) { // the pyramid does not hold this depth (descriptor sets of this frame describe another view / size)
+            this.hizPrevValid = false;
+            return;
+        }
+        System.arraycopy(mvp, 0, this.hizPrevMvp, 0, 16); // the MVP the depth was drawn with (review P2-7c #9)
         this.hizPrevX = camX; this.hizPrevY = camY; this.hizPrevZ = camZ;
         this.hizPrevW = depth.width; this.hizPrevH = depth.height;
         this.hizPrevValid = true;
@@ -519,30 +537,64 @@ public class WorldRenderer {
      * P2-7c: after the last opaque layer (end of the CUTOUT call): pyramid of the depth pass 1 drew, the retest of what pass 1
      * culled only by the previous frame's Hi-Z, then pass 2 of every opaque layer (its own render state, as its call set it up).
      */
-    private void afterOpaqueLayers(double camX, double camY, double camZ, boolean build) {
+    private void afterOpaqueLayers(double callX, double callY, double callZ, boolean build) {
         var tc = this.terrainCull;
         var wa = this.worldArena;
         if (tc == null || wa == null || !tc.retestPending())
             return;
-        // the flagged commands are drawn in every case: without a pyramid of this frame the retest keeps all of them
-        var st = build ? hizTarget() : null;
+        // review P2-7c #3: the flagged commands were written for pass 1's camera, origin, MVP and framebuffer: drawn with those
+        // (a different framebuffer bound now = another view: they cannot be drawn into it, dropped with a warning)
+        if (Renderer.getInstance().getBoundFramebuffer() != this.cullRecFb) {
+            tc.dropRetest();
+            if (!this.hizDropLogged) {
+                this.hizDropLogged = true;
+                Initializer.LOGGER.warn("Iroh: GPU-cull Hi-Z retest reached on another framebuffer than pass 1; dropped");
+            }
+            return;
+        }
+        final double camX = this.cullKeyX, camY = this.cullKeyY, camZ = this.cullKeyZ;
+        // the flagged commands are drawn in every case: without a pyramid of this record's depth the retest keeps all of them
+        var st = build && camX == callX && camY == callY && camZ == callZ ? hizTarget() : null;
         long serial = net.vulkanmod.vulkan.texture.VulkanImage.frameSerial();
         boolean[] ok = {false};
-        net.vulkanmod.vulkan.texture.VulkanImage.endPassRunResume(() -> {
-            if (st != null) {
-                try {
-                    hizBuildInBreak(tc, st, serial, camX, camY, camZ, () -> ok[0] = tc.recordRetest(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial));
-                    return;
-                } catch (RuntimeException e) { // the pyramid could not be built: the retest keeps every flagged command
-                    Initializer.LOGGER.warn("Iroh: Hi-Z pyramid failed, the GPU cull's Hi-Z retest keeps everything: {}", e.toString());
-                    this.hizPrevValid = false;
+        long mvpPtr = VRenderSystem.getMVP().ptr;
+        float[] callMvp = new float[16];
+        boolean mvpSwap = false;
+        for (int i = 0; i < 16; i++) {
+            callMvp[i] = org.lwjgl.system.MemoryUtil.memGetFloat(mvpPtr + i * 4L);
+            mvpSwap |= callMvp[i] != this.cullKeyMvp[i];
+        }
+        var stBuild = mvpSwap ? null : st; // a different MVP: this depth is not pass 1's view
+        try {
+            net.vulkanmod.vulkan.texture.VulkanImage.endPassRunResume(() -> {
+                if (stBuild != null) {
+                    try {
+                        hizBuildInBreak(tc, stBuild, serial, camX, camY, camZ, this.cullKeyMvp,
+                                built -> ok[0] = tc.recordRetest(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, built));
+                        return;
+                    } catch (RuntimeException e) { // the pyramid could not be built: the retest keeps every flagged command
+                        Initializer.LOGGER.warn("Iroh: Hi-Z pyramid failed, the GPU cull's Hi-Z retest keeps everything: {}", e.toString());
+                        this.hizPrevValid = false;
+                    }
                 }
+                if (tc.retestPending())
+                    ok[0] = tc.recordRetest(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, false);
+            });
+            if (!ok[0])
+                return;
+            if (mvpSwap) for (int i = 0; i < 16; i++) org.lwjgl.system.MemoryUtil.memPutFloat(mvpPtr + i * 4L, this.cullKeyMvp[i]);
+            try {
+                drawPass2(tc, wa, camX, camY, camZ);
+            } finally {
+                if (mvpSwap) for (int i = 0; i < 16; i++) org.lwjgl.system.MemoryUtil.memPutFloat(mvpPtr + i * 4L, callMvp[i]);
             }
-            if (tc.retestPending())
-                ok[0] = tc.recordRetest(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial);
-        });
-        if (!ok[0])
-            return;
+        } catch (RuntimeException e) { // review P2-7c #6: never into the game; the CPU path draws from the next frame on
+            this.terrainCullFailed = true;
+            Initializer.LOGGER.warn("Iroh: GPU-cull Hi-Z retest / pass 2 failed, CPU path draws from now on: {}", e.toString());
+        }
+    }
+
+    private void drawPass2(net.vulkanmod.render.chunk.cull.TerrainCull tc, net.vulkanmod.render.chunk.buffer.WorldArena wa, double camX, double camY, double camZ) {
         int calls = 0;
         for (TerrainRenderType t : new TerrainRenderType[]{TerrainRenderType.CUTOUT_MIPPED, TerrainRenderType.CUTOUT}) {
             Set<TerrainRenderType> allowed = Initializer.CONFIG.uniqueOpaqueLayer ? TerrainRenderType.COMPACT_RENDER_TYPES : TerrainRenderType.SEMI_COMPACT_RENDER_TYPES;
@@ -626,7 +678,8 @@ public class WorldRenderer {
                                           double camX, double camY, double camZ) {
         var tc = this.terrainCullFailed || this.cullTransFailed ? null : terrainCull();
         var st = hizTarget();
-        if (tc == null || st == null || st.getDepthAttachment() == null)
+        if (tc == null || st == null || st.getDepthAttachment() == null
+                || st.getDepthAttachment().width != st.getWidth() || st.getDepthAttachment().height != st.getHeight())
             return false;
         int ox = Mth.floor(camX) >> 4, oz = Mth.floor(camZ) >> 4;
         int oy = Mth.clamp(Mth.floor(camY) >> 4, this.level.getMinSection(), this.level.getMaxSection() - 1);
@@ -664,8 +717,8 @@ public class WorldRenderer {
         var data = this.cullData;
         net.vulkanmod.vulkan.texture.VulkanImage.endPassRunResume(() -> {
             try {
-                hizBuildInBreak(tc, st, serial, camX, camY, camZ,
-                        () -> ok[0] = tc.recordTranslucent(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, f, data, w));
+                hizBuildInBreak(tc, st, serial, camX, camY, camZ, f.mvp,
+                        built -> ok[0] = tc.recordTranslucent(Renderer.getCommandBuffer(), Renderer.getCurrentFrame(), serial, f, data, w, built));
             } catch (RuntimeException e) { // never worse than the CPU path: the translucent GPU cull stays off, the opaque one is unaffected
                 this.cullTransFailed = true;
                 this.hizPrevValid = false;
@@ -784,6 +837,7 @@ public class WorldRenderer {
             this.cullPrepared = ok[0];
             this.cullPreparedSerial = serial;
             this.cullKeyX = camX; this.cullKeyY = camY; this.cullKeyZ = camZ;
+            this.cullRecFb = Renderer.getInstance().getBoundFramebuffer(); // P2-7c
             this.cullKeyTech = tech;
         }
         if (!this.cullPrepared)

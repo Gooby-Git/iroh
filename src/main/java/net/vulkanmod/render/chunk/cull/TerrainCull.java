@@ -119,7 +119,9 @@ public final class TerrainCull {
         long oCmd1, oCnt2, oFlg2, oCmd2, oFlags;
         long set;
         boolean recorded, retested;
-        long hizGeneration;
+        long hizGeneration, hizBuildsAtRecord;
+        long retestHost = -1;
+        Buf retestHostBuf;
         // statistics, read after the slot's fence: per slot the host offsets of the copied counts
         final long[] readCnt1 = new long[TerrainCull.this.frames], readCnt2 = new long[TerrainCull.this.frames];
         final int[] readSegs = new int[TerrainCull.this.frames];
@@ -369,11 +371,12 @@ public final class TerrainCull {
      * P2-7c: the translucent layer (one writer, {@link TerrainCommandWriter#beginCull(boolean, int, int, int, int)} ordered)
      * through frustum / screen size as asked and Hi-Z against the pyramid built THIS frame ({@link #buildPyramid}, the
      * depth the translucent draw is tested against). Order is kept. False = draw it through the CPU path.
+     * {@code pyramidNow}: the caller built the pyramid of the current depth right before, in the same pass break.
      */
-    public boolean recordTranslucent(VkCommandBuffer cmd, int slot, long serial, Frame f, SectionCullData data, TerrainCommandWriter writer) {
+    public boolean recordTranslucent(VkCommandBuffer cmd, int slot, long serial, Frame f, SectionCullData data, TerrainCommandWriter writer, boolean pyramidNow) {
         beginSlot(slot, serial);
         int tech = f.techniques & (T_FRUSTUM | T_SCREEN | T_HIZ);
-        if ((tech & T_HIZ) != 0 && (this.hiz.builtSerial != serial || this.hiz.sourceWidth() != f.depthW || this.hiz.sourceHeight() != f.depthH))
+        if ((tech & T_HIZ) != 0 && (!pyramidNow || this.hiz.builtSerial != serial || this.hiz.sourceWidth() != f.depthW || this.hiz.sourceHeight() != f.depthH))
             tech &= ~T_HIZ; // no pyramid of this frame's depth: frustum / screen size only
         if (tech == 0) return false;
         int mode = (this.hiz.reversed() ? HZ_REVERSED : 0) | HZ_CURRENT;
@@ -535,28 +538,34 @@ public final class TerrainCull {
             job.readSegs[slot] = segs;
             job.candidatesSlot[slot] = total;
             job.readCnt2[slot] = -1;
-            this.retestHost = flags ? base + PARAMS + oRead2 : -1;
-            this.retestHostBuf = flags ? h : null;
+            job.retestHost = flags ? base + PARAMS + oRead2 : -1;
+            job.retestHostBuf = flags ? h : null;
             job.set = set;
             job.slot = slot;
             job.tech = tech;
             job.mode = mode;
             job.hizGeneration = this.hiz.generation();
+            job.hizBuildsAtRecord = this.hiz.builds;
             job.recorded = true;
         }
         return true;
     }
 
-    private long retestHost = -1;
-    private Buf retestHostBuf;
 
     /**
      * P2-7c: builds the pyramid from the current depth (see {@link HiZPyramid#build}; the caller made the depth readable
      * in {@code depthLayout} with its writes visible to COMPUTE, outside a render pass).
      */
-    public void buildPyramid(VkCommandBuffer cmd, int slot, long serial, long depthImage, int depthFormat, int depthLayout, int w, int h) {
+    public boolean buildPyramid(VkCommandBuffer cmd, int slot, long serial, Object depthOwner, long depthImage, int depthFormat, int depthLayout, int w, int h) {
+        // no resize after a build of this frame: that would rewrite descriptor sets already bound in the recording frame
+        if (this.hiz.builtSerial == serial && (w != this.hiz.sourceWidth() || h != this.hiz.sourceHeight())) return false;
         this.hiz.ensure(w, h);
-        this.hiz.build(cmd, slot, serial, this.hiz.depthView(depthImage, depthFormat), depthLayout, w, h);
+        return this.hiz.build(cmd, slot, serial, this.hiz.depthView(depthOwner, depthImage, depthFormat), depthLayout, w, h);
+    }
+
+    /** P2-7c: forget a pending retest (a new frame began before it ran: its outputs and staging belong to an old frame) */
+    public void dropRetest() {
+        this.opaque.retested = true;
     }
 
     /** whether the last opaque {@link #record} of this frame asked for a retest (Hi-Z pass 1 ran) */
@@ -570,11 +579,14 @@ public final class TerrainCull {
      * with the current MVP. Without a pyramid of this frame (not built, or recreated since the record) every flagged
      * command is kept. Outside a render pass; then {@link #drawRetest} per opaque layer draw. False = nothing to retest.
      * {@code slot} is unused (the record's slot holds the descriptor set and staging); {@code serial} = this frame's.
+     * {@code testPyramid}: the caller built the pyramid of THIS record's depth right before (same break); the pyramid is
+     * trusted only then and only if a build was counted after the record (review P2-7c #1), else every flag is kept.
      */
-    public boolean recordRetest(VkCommandBuffer cmd, int slot, long serial) {
+    public boolean recordRetest(VkCommandBuffer cmd, int slot, long serial, boolean testPyramid) {
         Job job = this.opaque;
         if (!retestPending()) return false;
-        boolean pyramidOk = this.hiz.builtSerial == serial && this.hiz.generation() == job.hizGeneration;
+        boolean pyramidOk = testPyramid && this.hiz.builtSerial == serial && this.hiz.builds > job.hizBuildsAtRecord
+                && this.hiz.generation() == job.hizGeneration;
         try (MemoryStack s = MemoryStack.stackPush()) {
             barrier(s, cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
@@ -584,14 +596,14 @@ public final class TerrainCull {
             vkCmdDispatch(cmd, job.segments, 1, 1);
             barrier(s, cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                     VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT);
-            Buf hb = this.retestHostBuf;
-            if (this.retestHost >= 0 && hb != null) { // counts2 + flagged per segment, read after the slot's fence
-                VkBufferCopy.Buffer c = VkBufferCopy.calloc(1, s).srcOffset(job.oCnt2).dstOffset(this.retestHost).size((long) job.segments * 4);
+            Buf hb = job.retestHostBuf;
+            if (job.retestHost >= 0 && hb != null) { // counts2 + flagged per segment, read after the slot's fence
+                VkBufferCopy.Buffer c = VkBufferCopy.calloc(1, s).srcOffset(job.oCnt2).dstOffset(job.retestHost).size((long) job.segments * 4);
                 vkCmdCopyBuffer(cmd, job.out.buffer, hb.buffer, c);
-                c.srcOffset(job.oFlg2).dstOffset(this.retestHost + (long) job.segments * 4);
+                c.srcOffset(job.oFlg2).dstOffset(job.retestHost + (long) job.segments * 4);
                 vkCmdCopyBuffer(cmd, job.out.buffer, hb.buffer, c);
                 barrier(s, cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
-                if (hb == this.host[job.slot]) job.readCnt2[job.slot] = this.retestHost; // else the slot's staging grew since: no statistics this frame
+                if (hb == this.host[job.slot]) job.readCnt2[job.slot] = job.retestHost; // else the slot's staging grew since: no statistics this frame
             }
         }
         job.retested = true;
