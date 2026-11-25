@@ -22,7 +22,7 @@ tasks.register('lodNative', Exec) {
 }
 tasks.register('lodNativeTest', JavaExec) {
 	group = 'verification'
-	description = 'libiroh_lod through the real loader: ABI 4, no seed in the public build, store round trip, cascade, priority'
+	description = 'libiroh_lod through the real loader: ABI 5, no seed in the public build, store round trip, cascade, priority'
 	dependsOn 'testClasses'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'dev.elemore.iroh.lod.nat.LodNativeTest'
@@ -31,5 +31,49 @@ tasks.register('lodNativeTest', JavaExec) {
 		def lib = file('iroh-native/natives/linux-x64/libiroh_lod.so')
 		if (!lib.exists()) throw new GradleException('libiroh_lod.so missing: run ./gradlew lodNative')
 		systemProperty 'iroh.lod.native', lib.absolutePath
+	}
+}
+
+// VL-2: ported Vista store/data tests (JUnit 5). ./gradlew lodStoreTest runs them against libiroh_lod when
+// iroh-native/natives/linux-x64/libiroh_lod.so exists (./gradlew lodNative), else the parity tests skip and say why.
+// -PlodNativeRequired=true turns a skipped parity test into a failure.
+dependencies {
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+}
+tasks.register('lodStoreTest', Test) {
+	group = 'verification'
+	description = 'Distant Terrain data model, store facade, PackFile and Java==Rust parity (JUnit)'
+	dependsOn 'testClasses'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform()
+	filter { includeTestsMatching 'dev.elemore.iroh.lod.data.*'; includeTestsMatching 'dev.elemore.iroh.lod.store.*' }
+	failOnNoDiscoveredTests = true
+	testLogging { events 'passed', 'skipped', 'failed'; showStandardStreams = false }
+	doFirst {
+		def lib = file('iroh-native/natives/linux-x64/libiroh_lod.so')
+		if (lib.exists()) systemProperty 'iroh.lod.native', lib.absolutePath
+		else if (project.hasProperty('lodNativeRequired')) throw new GradleException('libiroh_lod.so missing: run ./gradlew lodNative')
+		if (project.hasProperty('lodNativeRequired')) systemProperty 'iroh.lod.nativeRequired', 'true'
+	}
+}
+
+// VL-2: Java == native over real stores. ./gradlew lodWorldCheck -PlodWorld=<dir>[,<dir>] where each dir is a READ-ONLY
+// REFLINK COPY (cp -r --reflink=always) of a world's vista/ or a vista-cache/. tools/lod-world-check.sh makes the copy and
+// proves the copy was not modified. Last line "# lodworld PASS n sections".
+tasks.register('lodWorldCheck', JavaExec) {
+	group = 'verification'
+	description = 'Every section of real LOD stores decodes; Java and native stores agree on hashes, cells and packed bytes'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.lod.store.WorldCopyCheck'
+	jvmArgs '-Xmx3g'
+	doFirst {
+		if (!project.hasProperty('lodWorld')) throw new GradleException('pass -PlodWorld=<dir>[,<dir>] (a reflink copy)')
+		def lib = file('iroh-native/natives/linux-x64/libiroh_lod.so')
+		if (!lib.exists()) throw new GradleException('libiroh_lod.so missing: run ./gradlew lodNative')
+		systemProperty 'iroh.lod.native', lib.absolutePath
+		args project.property('lodWorld').toString().split(',')
 	}
 }

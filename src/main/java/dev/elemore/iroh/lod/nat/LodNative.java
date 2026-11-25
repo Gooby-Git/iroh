@@ -4,6 +4,7 @@
 package dev.elemore.iroh.lod.nat;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 /**
  * JNI surface of libiroh_lod (iroh-native/lod/src/jni.rs): the LOD store, codec and thread priority. Do not call before
@@ -12,7 +13,7 @@ import java.io.IOException;
  */
 public final class LodNative {
     /** Bumped together with {@code iroh_lod::ABI} whenever a JNI signature changes. */
-    public static final int ABI = 4;
+    public static final int ABI = 5;
 
     private LodNative() {}
 
@@ -49,7 +50,24 @@ public final class LodNative {
     /** Rebuilds these parents (one level) from their children; returns the keys whose content changed. */
     public static native long[] storeCascade(long h, long[] keys) throws IOException;
 
-    // ---------------------------------------------------------------- codec (also the parity-test entry points)
+    /**
+ * The packed section straight into a direct buffer (no heap copy): bytes {@code [offset, offset+capacity)} of {@code dst}.
+ * @return its length; -1 when not stored (or uniform with {@code uniformToo} false); {@code -(needed) - 2} when
+ *         {@code capacity} is too small (nothing written)
+ */
+public static native int storeGetPackedInto(long h, long key, boolean uniformToo, ByteBuffer dst, int offset, int capacity) throws IOException;
+/**
+ * One chunk into the native write-back cache: bytes {@code [0, length)} of the direct buffer {@code src}, laid out as in
+ * iroh-native/lod/src/ingest.rs ({@link dev.elemore.iroh.lod.store.ChunkBuffer} writes it). Nothing reaches disk before
+ * {@link #storeFlushHeld}.
+ */
+public static native void storeIngestChunk(long h, int cx, int cz, boolean hasSky, int sections, ByteBuffer src, int length) throws IOException;
+/** Writes held sections (all, or those past their hold time); returns the level-0 keys whose stored content changed. */
+public static native long[] storeFlushHeld(long h, boolean all) throws IOException;
+public static native int storeHeldCount(long h);
+public static native boolean storeHoldsChunk(long h, int cx, int cz);
+
+// ---------------------------------------------------------------- codec (also the parity-test entry points)
     public static native long hashCells(int[] cells);
     public static native long hashUniform(int cell);
     public static native byte[] encodePacked(int[] cells);

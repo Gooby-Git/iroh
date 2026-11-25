@@ -37,7 +37,7 @@ public class LodNativeTest {
         boolean loaded = LodNativeLoader.load();
         check(loaded, "loader loads (reason=[" + LodNativeLoader.unavailableReason() + "])");
         if (!loaded) { System.out.println("# lodnative FAIL " + pass + "/" + total); System.exit(1); }
-        check(LodNative.abi() == 4 && LodNative.ABI == 4, "ABI is 4");
+        check(LodNative.abi() == 5 && LodNative.ABI == 5, "ABI is 5");
         boolean wantSeed = Boolean.getBoolean("iroh.lod.expectSeed");
         check(LodNativeLoader.hasSeed() == wantSeed, "hasSeed == " + wantSeed);
         if (!wantSeed) {

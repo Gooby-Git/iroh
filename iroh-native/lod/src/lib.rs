@@ -8,6 +8,7 @@ pub mod cell;
 pub mod downsample;
 pub mod hash;
 pub mod hidden;
+pub mod ingest;
 pub mod jni;
 pub mod packed;
 pub mod packfile;
@@ -15,7 +16,7 @@ pub mod store;
 mod bench_split;
 
 /// Bumped whenever a JNI signature changes; the Java loader refuses a library with another value.
-pub const ABI: i32 = 4;
+pub const ABI: i32 = 5;
 
 /// Whether this build contains the seed worldgen (`seed` cargo feature; private builds only).
 pub const HAS_SEED: bool = cfg!(feature = "seed");

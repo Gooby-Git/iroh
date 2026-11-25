@@ -24,6 +24,7 @@ pub struct Store {
     clock: AtomicU64,
     classes: RwLock<Box<[u8; 65536]>>,
     pub closed: AtomicBool,
+    pub(crate) held: crate::ingest::Held,
 }
 
 thread_local! {
@@ -53,6 +54,7 @@ impl Store {
             clock: AtomicU64::new(0),
             classes: RwLock::new(Box::new([cell::class::SOLID; 65536])),
             closed: AtomicBool::new(false),
+            held: Default::default(),
         })
     }
 
@@ -149,6 +151,36 @@ impl Store {
             None => Ok(None),
             Some(Err(u)) => Ok(Some(packed::uniform(u))),
             Some(Ok(p)) => Ok(Some(packfile::unwrap(&p)?)),
+        }
+    }
+
+    /// Like [`Store::get_packed`] but into the caller's slice (an upload slice or a staging buffer), so no heap copy is
+    /// made. `Ok(Some(n))`: the packed section is `n` bytes; when `n > out.len()` nothing was written and the caller needs
+    /// `n` bytes. `Ok(None)`: not stored (or uniform with `uniform_too` false).
+    pub fn get_packed_into(&self, k: Key, uniform_too: bool, out: &mut [u8]) -> io::Result<Option<usize>> {
+        if !in_range(k) {
+            return Ok(None);
+        }
+        let payload = self.with(k, false, None, |f, e| {
+            if let Some(u) = f.uniform_value(e) {
+                return Ok(if uniform_too { Some(Err(u)) } else { None });
+            }
+            Ok(f.read_payload(e)?.map(Ok))
+        })?;
+        let mut put = |raw: &[u8]| -> usize {
+            if raw.len() <= out.len() {
+                out[..raw.len()].copy_from_slice(raw);
+            }
+            raw.len()
+        };
+        match payload {
+            None => Ok(None),
+            Some(Err(u)) => Ok(Some(put(&packed::uniform(u)))),
+            Some(Ok(p)) => RAW.with(|r| {
+                let raw = &mut *r.borrow_mut();
+                packfile::unwrap_into(&p, raw)?;
+                Ok(Some(put(raw)))
+            }),
         }
     }
 

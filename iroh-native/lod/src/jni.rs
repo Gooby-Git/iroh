@@ -7,7 +7,7 @@ use crate::cell::{Key, VOLUME};
 use crate::packfile::Stored;
 use crate::store::Store;
 use crate::{downsample, hash, hidden, packed};
-use jni::objects::{JByteArray, JClass, JIntArray, JLongArray, JString};
+use jni::objects::{JByteArray, JByteBuffer, JClass, JIntArray, JLongArray, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use std::cell::RefCell;
@@ -292,6 +292,64 @@ pub extern "system" fn Java_dev_elemore_iroh_lod_nat_LodNative_storeCascade<'l>(
         env.set_long_array_region(&arr, 0, &out)?;
         Ok(arr.into_raw())
     })
+}
+
+/// Direct-buffer slice `[offset, offset + len)` of `buf`.
+fn direct<'a>(env: &mut JNIEnv, buf: &JByteBuffer, offset: jint, len: jint) -> R<&'a mut [u8]> {
+    let base = env.get_direct_buffer_address(buf)?;
+    let cap = env.get_direct_buffer_capacity(buf)?;
+    if offset < 0 || len < 0 || (offset as usize).saturating_add(len as usize) > cap {
+        return Err(Fail::Io(io::Error::new(io::ErrorKind::InvalidInput, format!("buffer range {offset}+{len} outside capacity {cap}"))));
+    }
+    Ok(unsafe { std::slice::from_raw_parts_mut(base.add(offset as usize), len as usize) })
+}
+
+/// The packed section straight into a direct buffer. Returns its length; -1 when not stored (or uniform with
+/// `uniformToo` false); `-(needed) - 2` when `capacity` is too small (nothing written).
+#[no_mangle]
+pub extern "system" fn Java_dev_elemore_iroh_lod_nat_LodNative_storeGetPackedInto<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, key: jlong, uniform_too: jboolean, dst: JByteBuffer<'l>, offset: jint, capacity: jint) -> jint {
+    guard(&mut env, -1, |env| {
+        let out = direct(env, &dst, offset, capacity)?;
+        Ok(match store(h).get_packed_into(Key::unpack(key), uniform_too != 0, out)? {
+            None => -1,
+            Some(n) if n <= capacity as usize => n as jint,
+            Some(n) => -(n as jint) - 2,
+        })
+    })
+}
+
+/// One chunk (layout in `ingest.rs`) into the write-back cache. The buffer's bytes `[0, length)` are read.
+#[no_mangle]
+pub extern "system" fn Java_dev_elemore_iroh_lod_nat_LodNative_storeIngestChunk<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, cx: jint, cz: jint, has_sky: jboolean, sections: jint, src: JByteBuffer<'l>, length: jint) {
+    guard(&mut env, (), |env| {
+        let b = direct(env, &src, 0, length)?;
+        store(h).ingest_chunk(cx, cz, has_sky != 0, sections.max(0) as usize, b)?;
+        Ok(())
+    })
+}
+
+/// Writes held sections (`all`, or only those past their hold time); returns the level-0 keys whose stored content changed.
+#[no_mangle]
+pub extern "system" fn Java_dev_elemore_iroh_lod_nat_LodNative_storeFlushHeld<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, all: jboolean) -> jlongArray {
+    guard(&mut env, std::ptr::null_mut(), |env| {
+        let changed = store(h).flush_held(all != 0)?;
+        let out: Vec<i64> = changed.iter().map(|k| k.pack()).collect();
+        let arr = env.new_long_array(out.len() as i32)?;
+        env.set_long_array_region(&arr, 0, &out)?;
+        Ok(arr.into_raw())
+    })
+}
+
+/// Sections waiting for their write.
+#[no_mangle]
+pub extern "system" fn Java_dev_elemore_iroh_lod_nat_LodNative_storeHeldCount<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong) -> jint {
+    guard(&mut env, 0, |_| Ok(store(h).held_count() as jint))
+}
+
+/// True while the chunk is ingested but not yet marked in the store.
+#[no_mangle]
+pub extern "system" fn Java_dev_elemore_iroh_lod_nat_LodNative_storeHoldsChunk<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, cx: jint, cz: jint) -> jboolean {
+    guard(&mut env, JNI_FALSE, |_| Ok(bool_j(store(h).holds_chunk(cx, cz))))
 }
 
 // ------------------------------------------------------------------------------------------------ codec (parity tests)

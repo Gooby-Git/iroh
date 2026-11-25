@@ -106,7 +106,7 @@ if [ "$SMOKE" = 1 ]; then
   fi
   if [ "$WANT_LOD" = 1 ]; then
     W "$B/winsmoke.exe" "$HERE/natives/windows-x64/iroh_lod.dll" "$B/exports-lod.txt" \
-      Java_dev_elemore_iroh_lod_nat_LodNative_abi=4 Java_dev_elemore_iroh_lod_nat_LodNative_hasSeed=0 || rc=1
+      Java_dev_elemore_iroh_lod_nat_LodNative_abi=5 Java_dev_elemore_iroh_lod_nat_LodNative_hasSeed=0 || rc=1
   fi
   if [ -n "$WJ" ] && [ -x "$WJ/bin/java.exe" ]; then
     # Iroh's REAL loaders on a Windows JVM: (1) -D path, (2) from a jar-layout dir natives/windows-x64/ (extract + load), (3) vendor folder
