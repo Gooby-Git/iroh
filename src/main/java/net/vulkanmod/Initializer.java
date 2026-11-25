@@ -40,6 +40,7 @@ public class Initializer implements ClientModInitializer {
 		for (String line : IrohOptions.load(CONFIG, FabricLoader.getInstance().getConfigDir()))
 			LOGGER.info("config: {}", line);
 		dev.elemore.iroh.memory.MemoryGuard.configure(CONFIG.maxDeviceMemoryMiB); // rc8
+		dev.elemore.iroh.lod.LodFeature.init(); // VL-0: Distant Terrain skeleton (inert, one log line)
 
 		RendererAccess.INSTANCE.registerRenderer(VulkanModRenderer.INSTANCE);
 		// Iroh P1-13a: world frame stages for dev.elemore.iroh.api.IrohFrame

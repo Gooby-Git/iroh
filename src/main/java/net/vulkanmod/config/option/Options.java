@@ -170,6 +170,8 @@ public abstract class Options {
         };
     }
 
+    public static OptionBlock[] getDistantTerrainOpts() { return dev.elemore.iroh.lod.config.LodOptions.page(); }
+
     public static OptionBlock[] getPerformanceOpts() {
         return new OptionBlock[]{
                 block(IrohOptions.ADV_CULLING, IrohOptions.ENTITY_CULLING, IrohOptions.UNIQUE_OPAQUE_LAYER,

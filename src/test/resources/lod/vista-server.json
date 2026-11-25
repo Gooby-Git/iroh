@@ -1,0 +1,15 @@
+{
+  "sharePlayerPositions": true,
+  "citadelLandmarks": true,
+  "landmarks": [
+    {
+      "name": "example (remove me)",
+      "x": 0,
+      "z": 0,
+      "radius": 0
+    }
+  ],
+  "structurePass": true,
+  "structureRange": 4096,
+  "shareSeedTerrain": true
+}

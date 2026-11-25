@@ -104,6 +104,9 @@ public class ConfigMigrationTest {
 
         // --- F: registry sanity: unique ids, lang keys for everything shown, defaults equal Config's ---
         JsonObject lang = JsonParser.parseString(Files.readString(Path.of("src/main/resources/assets/vulkanmod/lang/en_us.json"))).getAsJsonObject();
+        // VL-0: Distant Terrain strings live in their own namespace file
+        JsonObject lodLang = JsonParser.parseString(Files.readString(Path.of("src/main/resources/assets/iroh/lang/en_us.json"))).getAsJsonObject();
+        lodLang.entrySet().forEach(en -> lang.add(en.getKey(), en.getValue()));
         int missing = 0;
         for (IrohOptions.Opt<?> o : IrohOptions.all()) {
             if (o.id.equals("videoMode") || o.id.equals("shaderPack") || o.id.equals("shadersEnabled")) continue;

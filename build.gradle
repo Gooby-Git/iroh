@@ -1132,3 +1132,5 @@ tasks.register('packFullVkRepro', JavaExec) {
 		useLavapipe(it)
 	}
 }
+
+apply from: "gradle/lod.gradle" // VL-0: Distant Terrain tasks

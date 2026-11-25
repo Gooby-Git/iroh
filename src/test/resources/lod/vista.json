@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "distance": 12288,
+  "budgetMiB": 0,
+  "detailDistance": 800,
+  "blendWidth": 10,
+  "transitionMs": 800,
+  "occlusionCulling": true,
+  "landmarks": true,
+  "brightness": 85,
+  "saturation": 80,
+  "nightLights": true,
+  "motion": true,
+  "fogDistance": 100,
+  "weatherOnLods": true,
+  "weatherCurtains": true,
+  "farPlayers": true,
+  "farPlayerMinPixels": 4,
+  "nameTagDistance": 128,
+  "seedLods": true,
+  "xaeroFill": true
+}

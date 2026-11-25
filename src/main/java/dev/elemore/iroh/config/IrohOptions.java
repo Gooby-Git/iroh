@@ -46,7 +46,7 @@ public final class IrohOptions {
     public static final String FILE = "iroh.json";
     public static final String LEGACY_FILE = "vulkanmod_settings.json";
 
-    public enum Category { VIDEO, QUALITY, PERFORMANCE, SHADERS, ADVANCED }
+    public enum Category { VIDEO, QUALITY, PERFORMANCE, SHADERS, ADVANCED, DISTANT_TERRAIN }
     public enum Reload { NONE, RESTART, RELOAD_CHUNKS, RELOAD_RESOURCES }
     /** JSON: config/iroh.json. VANILLA: options.txt. READ_ONLY: shown, never edited from the screen. */
     public enum Storage { JSON, VANILLA, READ_ONLY }
@@ -93,7 +93,7 @@ public final class IrohOptions {
         /** Extra tooltip lines (translation key), appended after the main tooltip. */
         public String noteKey;
 
-        private Opt(String id, Class<T> type, T def, Category cat) {
+        public Opt(String id, Class<T> type, T def, Category cat) {
             this.id = id;
             this.type = type;
             this.defaultValue = def;
@@ -176,6 +176,8 @@ public final class IrohOptions {
     // =====================================================================================================
     // Registration helpers
     // =====================================================================================================
+
+    public static <T> Opt<T> register(Opt<T> o) { return reg(o); }
 
     private static <T> Opt<T> reg(Opt<T> o) {
         if (BY_ID.put(o.id, o) != null) throw new IllegalStateException("duplicate option id " + o.id);
@@ -541,6 +543,7 @@ public final class IrohOptions {
         LEAF_CULLING_DEPTH.applier = v -> { config.leafCullingDepth = v; applyLeafCulling(true); };
         LEAF_CULLING_REJECTION.applier = v -> { config.leafCullingRejection = v; applyLeafCulling(true); };
         CHUNK_BUILD_DEFER_MODE.applier = v -> config.chunkBuildDeferMode = v.name();
+        dev.elemore.iroh.lod.config.LodOptions.register(); // VL-0: Distant Terrain rows (flat lod.* keys)
     }
 
     /** shaderPack is a plain string; kept out of the generic helpers because it has no widget. */
@@ -689,6 +692,7 @@ public final class IrohOptions {
         Path file = dir.resolve(FILE);
         if (Files.isRegularFile(file)) {
             readFile(file, log);
+            if (dev.elemore.iroh.lod.config.LodMigration.apply(dir, log)) save(); // VL-0: one-time Vista import
             applyLeafCulling(false);
             // P4-1b: the upscaler choice is known before the Vulkan device exists (device features are enabled at creation)
             dev.elemore.iroh.temporal.DeviceCaps.configRequested = dev.elemore.iroh.temporal.UpscaleSettings.wantsDeviceFeatures(config);
@@ -700,6 +704,7 @@ public final class IrohOptions {
             migrateLegacy(legacy, log);
         }
         PackMigration.apply(dir, config, log);
+        dev.elemore.iroh.lod.config.LodMigration.apply(dir, log); // VL-0: one-time Vista import
         save();
         applyLeafCulling(false);
         return log;

@@ -113,6 +113,10 @@ public final class IntegrationInertTest {
                 PerfSwitches.THREADS_TUNE, PerfSwitches.THREADS_ADAPTIVE, PerfSwitches.THREADS_PHYSICAL))
             perfOff &= !PerfSwitches.on(k);
         check("every perf switch off", perfOff);
+        // VL-0: Distant Terrain is off by default (no renderer built): no feature flag, no LOD thread
+        dev.elemore.iroh.lod.LodFeature.init();
+        check("Distant Terrain inert: not active, no iroh-lod-* thread", !dev.elemore.iroh.lod.LodFeature.active()
+                && Thread.getAllStackTraces().keySet().stream().noneMatch(t -> t.getName().startsWith("iroh-lod-")));
         check("api 4 not installed offline", dev.elemore.iroh.gpu.GpuCore.orNull() == null);
         // INT-2 (RQ-INT1-a): what Renderer init does in game creates NOTHING until a mod calls api 4
         dev.elemore.iroh.gpu.game.GpuLifecycle.install(3, 1920, 1080);

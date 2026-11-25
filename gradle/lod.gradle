@@ -1,0 +1,11 @@
+// Distant Terrain (Vista in Iroh) build pieces. All LOD test tasks live here so build.gradle only has one apply line.
+// VL-0: ./gradlew lodConfigTest ; last line "# lodconfig PASS n/n"
+tasks.register('lodConfigTest', JavaExec) {
+	group = 'verification'
+	description = 'Distant Terrain config: pack Vista files -> iroh.json lod.* rows, clamps, round trip, inert feature'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.lod.LodConfigTest'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+}
