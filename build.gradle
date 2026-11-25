@@ -1131,6 +1131,24 @@ tasks.register('terrainCullReplay', JavaExec) {
 	doFirst { useLavapipe(it) }
 }
 
+// P2-7c (L5c): two-pass Hi-Z occlusion on lavapipe + validation: recorded camera PATHS (fast turns, a crest, teleports, a
+// pitch whip) with the pyramid carried from frame to frame as in the game; every P2-7b technique set x translucent Hi-Z on the
+// main configuration, COUNT/FIXED, D32F/D24S8, minmax/shader, standard/reversed-Z on the others: image == CPU path, ray-cast
+// oracle (0 visible commands culled), pyramid == CPU reduction, retest == Java model, negative control without the retest.
+// ./gradlew hizCullReplay [-Phz.quick] [-Phz.noHorizon] [-Pvalidate=gpuav] ; last line "# hizcullreplay PASS|FAIL|SKIP ... path=minmax|shader"
+tasks.register('hizCullReplay', JavaExec) {
+	group = 'verification'
+	description = 'P2-7c: two-pass Hi-Z occlusion vs the CPU path and a ray-cast oracle on lavapipe: paths with fast turns, all option combinations'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.vktest.HiZCullReplay'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	if (project.hasProperty('hz.quick')) systemProperty 'hz.quick', 'true'
+	if (project.hasProperty('hz.noHorizon')) systemProperty 'hz.noHorizon', 'true'
+	ext.syncval = true
+	doFirst { useLavapipe(it) }
+}
+
 // P2-12 (RQ-P213-a): texture upload sync with the shader-access heuristic ON (vertex-stage lightmap reads, second copy into one image).
 // Old masks reported (negative control), production helpers clean. ./gradlew imageSyncRepro ; last line "# imagesync PASS|FAIL"
 tasks.register('imageSyncRepro', JavaExec) {

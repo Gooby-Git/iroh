@@ -50,7 +50,7 @@ public final class IntegrationInertTest {
         PINNED.put("Framebuffer.beginRenderPass", "");
         PINNED.put("DefaultMainPass.begin", "");
         PINNED.put("DefaultMainPass.rebindMainTarget", "");
-        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog); P2-7a: this.worldArena x1 (plain field, null unless iroh.terrain.mdi was on at the last allChanged; the audit does not list instance fields)");
+        PINNED.put("WorldRenderer.renderSectionLayer", "packTerrainActive x1 (volatile), SlowFrames.ON x2, Sections.captureFog x1 (solid layer; one volatile read until a mod asks for the fog); P2-7a: this.worldArena x1 (plain field, null unless iroh.terrain.mdi was on at the last allChanged; the audit does not list instance fields); P2-7c: this.terrainCull != null x2 (plain field, null until a GPU-cull technique ran once with the world arena: the CUTOUT call's retest hook and the later layers' safety net), both after the worldArena test");
         PINNED.put("VRenderSystem.applyProjectionMatrix", "TemporalFrame.JITTER_ON x1 (plain static)");
         PINNED.put("Pipeline.needsUpdate", "TemporalFrame.MIP_ON x1 per image descriptor (plain static; IN_WORLD only read when MIP_ON)");
         PINNED.put("GlState.viewport", "TemporalFrame.IN_WORLD x1 (plain static)");
@@ -65,7 +65,7 @@ public final class IntegrationInertTest {
         PINNED.put("TaskDispatcher.updateSections0", "IntakeBudget.enabled x1 = PerfSwitches.intakeBudgetOn (one volatile read per intake), SlowFrames.ON");
         PINNED.put("BulkDirtyM.*", "PerfSwitches.bulkDirtyOn x1 (one volatile read per setSectionDirtyWithNeighbors call)");
         PINNED.put("CompileResult.updateSection / UploadBuffer.*", "P2-7b: SectionCullData.current x1 (one volatile read per compile result applied / per worker upload result; null unless the world arena exists on a GPU-cull tier)");
-        PINNED.put("WorldRenderer.drawWorldLayer", "P2-7b: SectionCullData.OPAQUE_LAYERS (static final) after this.cullData != null (plain field, null without the world arena on a GPU-cull tier); only reached with the world arena");
+        PINNED.put("WorldRenderer.drawWorldLayer", "P2-7b: SectionCullData.OPAQUE_LAYERS (static final) after this.cullData != null (plain field, null without the world arena on a GPU-cull tier); only reached with the world arena; P2-7c: translucent layer: the same this.cullData != null test first, then CONFIG.cullGpuHiZTranslucent");
         PINNED.put("WorldStages.register", "TemporalFrame.IN_WORLD x2, PackRuntime.onWorldStart/onBeforeEntities/onWorldEnd (one volatile read each; no write when off), FrameHooks.dispatch x7 (empty-array tests)");
     }
 
@@ -117,6 +117,7 @@ public final class IntegrationInertTest {
         net.vulkanmod.config.Config dc = new net.vulkanmod.config.Config();
         check("P2-7b: GPU culling options (frustum, horizon, screen size, facing) all off by default",
                 !dc.cullGpuFrustum && !dc.cullGpuHorizon && !dc.cullGpuScreenSize && !dc.cullGpuFacing);
+        check("P2-7c: Hi-Z occlusion and translucent Hi-Z options off by default", !dc.cullGpuHiZ && !dc.cullGpuHiZTranslucent);
         check("P2-7b: no GPU-cull metadata (SectionCullData) without the world arena", net.vulkanmod.render.chunk.cull.SectionCullData.current() == null);
         // INT-2 (RQ-INT1-a): what Renderer init does in game creates NOTHING until a mod calls api 4
         dev.elemore.iroh.gpu.game.GpuLifecycle.install(3, 1920, 1080);

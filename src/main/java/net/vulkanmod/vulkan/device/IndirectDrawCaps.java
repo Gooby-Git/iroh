@@ -30,6 +30,7 @@ public enum CullTier { COUNT, FIXED, CPU }
     /** before any device exists: direct (always valid) */
     private static volatile TerrainTier tier = TerrainTier.DIRECT;
 private static volatile boolean drawIndirectCount;
+private static volatile boolean samplerMinmax, minmaxFormat;
 
     private IndirectDrawCaps() {}
 
@@ -87,6 +88,45 @@ public static CullTier cullTier() {
 return decideCull(tier, drawIndirectCount);
 }
 
+/**
+ * P2-7c: device-creation step for samplerFilterMinmax (Vulkan 1.2 core; the feature of VK_EXT_sampler_filter_minmax):
+ * enabled where offered. With it the Hi-Z pyramid reduces levels 1.. with one MAX (or MIN, reversed-Z) reduction
+ * sampler fetch per texel; without it a compute shader takes the farthest of four texel fetches (same result).
+ * DeviceManager.createLogicalDevice and the harnesses that create their own device.
+ */
+public static boolean applyMinmax(VkPhysicalDeviceVulkan12Features available12, VkPhysicalDeviceVulkan12Features enable12) {
+boolean m = available12.samplerFilterMinmax();
+enable12.samplerFilterMinmax(m);
+samplerMinmax = m;
+return m;
+}
+
+/** P2-7c: R32_SFLOAT (the pyramid format) supports SAMPLED_IMAGE_FILTER_MINMAX with optimal tiling (checked after device creation) */
+public static void noteMinmaxFormat(boolean r32fMinmax) {
+minmaxFormat = r32fMinmax;
+}
+
+/** test harnesses that create their own device: record what they enabled */
+public static void noteMinmax(boolean enabled, boolean r32fMinmax) {
+samplerMinmax = enabled;
+minmaxFormat = r32fMinmax;
+}
+
+public enum HiZPath { MINMAX, SHADER, NONE }
+
+/** P2-7c: the pure decision (hwCapsRepro checks it against the raw features): no GPU cull tier = no Hi-Z */
+public static HiZPath decideHiZ(CullTier cull, boolean minmaxEnabled, boolean r32fMinmax) {
+if (cull == CullTier.CPU) return HiZPath.NONE;
+return minmaxEnabled && r32fMinmax ? HiZPath.MINMAX : HiZPath.SHADER;
+}
+
+/** -Diroh.hiz.reduce=shader forces the shader reduction on a minmax device (A/B, tests) */
+public static HiZPath hiZPath() {
+HiZPath p = decideHiZ(cullTier(), samplerMinmax, minmaxFormat);
+if (p == HiZPath.MINMAX && "shader".equals(System.getProperty("iroh.hiz.reduce"))) return HiZPath.SHADER;
+return p;
+}
+
 public static boolean drawIndirectCountEnabled() {
 return drawIndirectCount;
 }
@@ -115,6 +155,7 @@ public static TerrainTier tier() {
     public static String report() {
         return "terrainDraw=" + (tier == TerrainTier.INDIRECT ? "indirect" : "direct")
                 + " (multiDrawIndirect=" + multiDrawIndirect + " drawIndirectFirstInstance=" + firstInstance + ")"
-+ " terrainCull=" + switch (cullTier()) { case COUNT -> "count(T-A)"; case FIXED -> "fixed(T-B)"; case CPU -> "cpu(T-C)"; };
++ " terrainCull=" + switch (cullTier()) { case COUNT -> "count(T-A)"; case FIXED -> "fixed(T-B)"; case CPU -> "cpu(T-C)"; }
++ " hiz=" + hiZPath().name().toLowerCase();
     }
 }

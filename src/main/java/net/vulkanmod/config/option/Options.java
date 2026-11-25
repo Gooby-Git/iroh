@@ -181,11 +181,12 @@ public abstract class Options {
     /**
      * P2-7b: the Culling page (owner, 2026-11-25: every GPU culling technique a player option). The CPU culling rows
      * stay on the Performance page; these need the world terrain arena on an indirect-draw device and are greyed with
-     * the reason otherwise. Hi-Z occlusion (P2-7c) joins this page when it exists.
+     * the reason otherwise. P2-7c: Hi-Z occlusion (opaque two-pass) and translucent Hi-Z, a block of their own.
      */
     public static OptionBlock[] getCullingOpts() {
         return new OptionBlock[]{
-                block(IrohOptions.CULL_GPU_FRUSTUM, IrohOptions.CULL_GPU_FACING, IrohOptions.CULL_GPU_SCREEN_SIZE, IrohOptions.CULL_GPU_HORIZON)
+                block(IrohOptions.CULL_GPU_FRUSTUM, IrohOptions.CULL_GPU_FACING, IrohOptions.CULL_GPU_SCREEN_SIZE, IrohOptions.CULL_GPU_HORIZON),
+                block(IrohOptions.CULL_GPU_HIZ, IrohOptions.CULL_GPU_HIZ_TRANSLUCENT)
         };
     }
 

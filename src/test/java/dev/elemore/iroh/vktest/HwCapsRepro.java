@@ -142,6 +142,9 @@ public final class HwCapsRepro {
             if (maskFirstInstance) a2.features().drawIndirectFirstInstance(false);
             IndirectDrawCaps.applyDrawCount(a12, e12); // P2-7b: DeviceManager order (drawIndirectCount, then the terrain tier)
             lastEnabledDrawCount = e12.drawIndirectCount();
+            IndirectDrawCaps.applyMinmax(a12, e12); // P2-7c: DeviceManager order (samplerFilterMinmax where offered, then the R32F format bit)
+            IndirectDrawCaps.noteMinmaxFormat(net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(phys));
+            lastEnabledMinmax = e12.samplerFilterMinmax();
             IndirectDrawCaps.apply(a2.features(), a11, e2.features(), e11); // P2-3: DeviceManager order (before DeviceCaps)
             lastEnabledMdi = e2.features().multiDrawIndirect();
             lastEnabledFirstInstance = e2.features().drawIndirectFirstInstance();
@@ -177,10 +180,10 @@ public final class HwCapsRepro {
      * fallback (T-C). Checked on the real device, on the same device with firstInstance masked (no profile lacks it), and on the
      * pure decision table. Returns the tier-line fragment.
      */
-    static boolean lastEnabledDrawCount;
+    static boolean lastEnabledDrawCount, lastEnabledMinmax;
 
     static String terrainTier(MemoryStack s, VkPhysicalDevice phys) {
-        boolean rawMdi, rawSdp, rawFi, rawDc;
+        boolean rawMdi, rawSdp, rawFi, rawDc, rawMinmax;
         try (MemoryStack f = s.push()) {
             VkPhysicalDeviceVulkan12Features a12 = VkPhysicalDeviceVulkan12Features.calloc(f).sType$Default();
             VkPhysicalDeviceVulkan11Features a11 = VkPhysicalDeviceVulkan11Features.calloc(f).sType$Default().pNext(a12.address());
@@ -188,6 +191,7 @@ public final class HwCapsRepro {
             vkGetPhysicalDeviceFeatures2(phys, a2);
             rawMdi = a2.features().multiDrawIndirect(); rawSdp = a11.shaderDrawParameters(); rawFi = a2.features().drawIndirectFirstInstance();
             rawDc = a12.drawIndirectCount();
+            rawMinmax = a12.samplerFilterMinmax();
         }
         // the device as created by the last production create(..) call (the upscale device)
         IndirectDrawCaps.TerrainTier t = IndirectDrawCaps.tier();
@@ -204,6 +208,16 @@ public final class HwCapsRepro {
         check(ct == ctExpect, "cull tier " + ct + " != raw " + ctExpect + " (drawIndirectCount=" + rawDc + ")");
         check(lastEnabledDrawCount == rawDc, "drawIndirectCount enabled=" + lastEnabledDrawCount + " offered=" + rawDc);
         String cull = switch (ct) { case COUNT -> "count(T-A)"; case FIXED -> "fixed(T-B)"; case CPU -> "cpu(T-C)"; };
+        // P2-7c: Hi-Z pyramid reduction path from the same device: MINMAX (samplerFilterMinmax + R32F minmax format bit) / SHADER / NONE
+        boolean fmtMinmax = net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(phys);
+        IndirectDrawCaps.HiZPath hz = IndirectDrawCaps.hiZPath(), hzExpect = IndirectDrawCaps.decideHiZ(ctExpect, rawMinmax, fmtMinmax);
+        check(hz == hzExpect, "hiz path " + hz + " != raw " + hzExpect + " (samplerFilterMinmax=" + rawMinmax + " r32fMinmax=" + fmtMinmax + ")");
+        check(lastEnabledMinmax == rawMinmax, "samplerFilterMinmax enabled=" + lastEnabledMinmax + " offered=" + rawMinmax);
+        check(IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.CPU, true, true) == IndirectDrawCaps.HiZPath.NONE
+                && IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.FIXED, true, false) == IndirectDrawCaps.HiZPath.SHADER
+                && IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.COUNT, false, true) == IndirectDrawCaps.HiZPath.SHADER
+                && IndirectDrawCaps.decideHiZ(IndirectDrawCaps.CullTier.COUNT, true, true) == IndirectDrawCaps.HiZPath.MINMAX, "decideHiZ table");
+        cull += " hiz=" + hz.name().toLowerCase();
         // fallback: the same device without drawIndirectFirstInstance must choose direct draws and create cleanly
         create(s, false, true);
         check(IndirectDrawCaps.tier() == IndirectDrawCaps.TerrainTier.DIRECT, "masked firstInstance: tier " + IndirectDrawCaps.tier() + " (expected DIRECT)");

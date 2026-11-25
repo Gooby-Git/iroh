@@ -89,7 +89,12 @@ public final class TerrainCommandWriter {
 
     /** P2-7b: {@link #begin} for a layer the GPU cull reads: commands come with cull words ({@link #addAreaCull} only) */
     public void beginCull(int originX, int originY, int originZ, int maxDrawCount) {
-        begin(false, originX, originY, originZ, maxDrawCount);
+        beginCull(false, originX, originY, originZ, maxDrawCount);
+    }
+
+    /** P2-7c: {@link #beginCull} for a blended layer (translucent: exact command order kept, every run a draw) */
+    public void beginCull(boolean ordered, int originX, int originY, int originZ, int maxDrawCount) {
+        begin(ordered, originX, originY, originZ, maxDrawCount);
         this.cull = true;
         if (this.words == 0 && this.cap > 0) growWords(this.cap);
     }
@@ -193,7 +198,7 @@ public final class TerrainCommandWriter {
 
     /**
      * P2-7b: {@link #addArea} plus each command's cull word (section-grid slot {@code slot[j]} | facing << 28) for the
-     * GPU cull. Unordered layers only ({@link #beginCull}).
+     * GPU cull ({@link #beginCull}; P2-7c: also ordered layers, the words follow the arrival order).
      */
     public void addAreaCull(long layerParams, int count, int[] sec, int[] mask, int[] fi, int[] slot, byte[] iPage, int iPageBase) {
         if (this.n + count * PARAM_FACINGS > this.cap) grow(this.n + count * PARAM_FACINGS);

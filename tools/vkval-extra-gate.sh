@@ -11,8 +11,9 @@ export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/t
 OUT=$WT/build/vkval-extra; mkdir -p "$OUT"
 ALLOW=$WT/tools/vkval-gpuav-allowlist.txt
 # P2-7b: terrainCullReplay twice: shader-instrumented without the horizon combinations (lavapipe SIGSEGVs in the instrumented
-# horizon build shader, RQ-B-gpuav-lvp pattern), and every combination with instrumentation off (indirect buffer content checks)
-TASKS=("terrainIndirectRepro" "terrainWorldReplay -Ptw.quick" "terrainCullReplay -Ptc.quick -Ptc.noHorizon" "terrainCullReplay -Ptc.quick -PvkvalSet.gpuav_shader_instrumentation=false" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "pipelinePrewarmRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "packFullVkRepro" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
+# horizon build shader, RQ-B-gpuav-lvp pattern), and every combination with instrumentation off (indirect buffer content checks).
+# P2-7c: hizCullReplay the same two ways (its horizon combinations run the same horizon shader)
+TASKS=("terrainIndirectRepro" "terrainWorldReplay -Ptw.quick" "terrainCullReplay -Ptc.quick -Ptc.noHorizon" "terrainCullReplay -Ptc.quick -PvkvalSet.gpuav_shader_instrumentation=false" "hizCullReplay -Phz.quick -Phz.noHorizon" "hizCullReplay -Phz.quick -PvkvalSet.gpuav_shader_instrumentation=false" "apiReplay" "uploadSyncRepro" "hwCapsRepro" "pipelinePrewarmRepro" "packReplay" "packReplay -Ppost" "packReplay -Pfull" "packFlightRepro -Pmode=new" "packFullVkRepro" "mcReplay" "fsrReplay" "chainReplay" "fsrAdapterReplay")
 have() { grep -q "register('$1'" build.gradle; }
 allowed() { # task id -> 0 when allowlisted
   [ -f "$ALLOW" ] && grep -v '^#' "$ALLOW" | awk -F' [|] ' -v t="$1" -v id="$2" '$1==id && ($2=="*" || $2=="task="t) {f=1} END {exit !f}'

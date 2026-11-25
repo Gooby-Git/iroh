@@ -330,12 +330,14 @@ public class DrawBuffers {
      * facing test replaces the CPU mask), else the CPU path's mask.
      */
     public void writeWorldCommandsCull(Vec3 cameraPos, StaticQueue<RenderSection> queue, TerrainRenderType terrainRenderType, TerrainCommandWriter writer, boolean allFacings) {
-        boolean backFaceCulling = Initializer.CONFIG.backFaceCulling;
+        // P2-7c: the translucent layer as writeWorldCommands writes it (sections back to front, every quad in the UNDEFINED bucket)
+        boolean isTranslucent = terrainRenderType == TerrainRenderType.TRANSLUCENT;
+        boolean backFaceCulling = Initializer.CONFIG.backFaceCulling && !isTranslucent;
         int rt = terrainRenderType.ordinal();
         double cx = cameraPos.x, cy = cameraPos.y, cz = cameraPos.z;
         final int[] idx = this.sectionIndices, masks = this.masks, fis = this.worldFi, slots = this.worldSlot;
         int count = 0;
-        for (var iterator = queue.iterator(false); iterator.hasNext(); ) {
+        for (var iterator = queue.iterator(isTranslucent); iterator.hasNext(); ) {
             final RenderSection section = iterator.next();
             int fi = writer.encode(section.xOffset >> 4, section.yOffset >> 4, section.zOffset >> 4);
             if (fi < 0)

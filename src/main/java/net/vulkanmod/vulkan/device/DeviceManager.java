@@ -174,6 +174,8 @@ public abstract class DeviceManager {
             VkPhysicalDeviceVulkan12Features deviceVulkan12Features = VkPhysicalDeviceVulkan12Features.calloc(stack);
             deviceVulkan12Features.sType$Default();
             drawIndirectCountEnabled = IndirectDrawCaps.applyDrawCount(device.availableFeatures12, deviceVulkan12Features); // P2-7b: also the GPU cull tier
+            IndirectDrawCaps.applyMinmax(device.availableFeatures12, deviceVulkan12Features); // P2-7c: Hi-Z reduction sampler where offered
+            IndirectDrawCaps.noteMinmaxFormat(net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(device.physicalDevice));
 
             VkPhysicalDeviceFeatures2 deviceFeatures = VkPhysicalDeviceFeatures2.calloc(stack);
             deviceFeatures.sType$Default();

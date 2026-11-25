@@ -86,18 +86,21 @@ public final class TerrainCullTest {
                 SectionCullData.opaque(0) && SectionCullData.opaque(diag) && !SectionCullData.opaque(1L << ((2 << 3) + 3)) && !SectionCullData.opaque(-1L));
         // dirty tracking
         check("new mirror: full upload pending, no dirty list", d.fullPending() && d.dirtyCount() == 0);
-        long buf = MemoryUtil.nmemAlloc((long) d.size * 16);
+        long buf = MemoryUtil.nmemAlloc((long) d.size * SectionCullData.WORDS * 4);
         d.drainFull(buf);
         check("after the full upload nothing is pending", !d.fullPending() && d.dirtyCount() == 0);
         d.sectionCompiled(5, 3, -2, 0L, false);
         d.layerBounds(5, 1, box);
-        d.layerBounds(5, 4, box); // translucent / tripwire are not culled: ignored
+        d.layerBounds(5, 4, box); // tripwire is not culled: ignored
         d.layerBounds(9, 0, box);
+        d.layerBounds(9, SectionCullData.TRANSLUCENT_LAYER, box + 1); // P2-7c: the translucent box, word 4
         check("two slots dirty (deduplicated)", d.dirtyCount() == 2);
         int n = d.drainDirty(buf);
-        boolean rec = n == 2 && MemoryUtil.memGetInt(buf) == 5 && MemoryUtil.memGetInt(buf + 4) == SectionCullData.flags(true, true, 3, -2)
-                && MemoryUtil.memGetInt(buf + 12) == box && MemoryUtil.memGetInt(buf + 20) == 9 && MemoryUtil.memGetInt(buf + 28) == box;
-        check("update records {slot, flags, solid, cutout_mipped, cutout}", rec);
+        int R = SectionCullData.RECORD_BYTES;
+        boolean rec = n == 2 && R == 36 && MemoryUtil.memGetInt(buf) == 5 && MemoryUtil.memGetInt(buf + 4) == SectionCullData.flags(true, true, 3, -2)
+                && MemoryUtil.memGetInt(buf + 12) == box && MemoryUtil.memGetInt(buf + 20) == 0
+                && MemoryUtil.memGetInt(buf + R) == 9 && MemoryUtil.memGetInt(buf + R + 8) == box && MemoryUtil.memGetInt(buf + R + 4 + 16) == box + 1;
+        check("update records {slot, flags, solid, cutout_mipped, cutout, translucent, 0, 0, 0} (36 B; tripwire ignored)", rec);
         int fl = d.word(5, 0);
         check("flags: compiled + opaque + x/z low 12 bits", (fl & 3) == 3 && (fl >>> 8 & 0xFFF) == 3 && (fl >>> 20) == ((-2) & 0xFFF));
         d.sectionCompiled(5, 3, -2, 1L << ((0 << 3) + 1), false);
@@ -105,7 +108,8 @@ public final class TerrainCullTest {
         d.sectionCompiled(6, 3, -2, 0L, true);
         check("completely empty is never opaque", (d.word(6, 0) & SectionCullData.F_OPAQUE) == 0 && (d.word(6, 0) & SectionCullData.F_COMPILED) != 0);
         d.sectionReset(5);
-        check("reset clears every word", d.word(5, 0) == 0 && d.word(5, 2) == 0);
+        d.sectionReset(9);
+        check("reset clears every word", d.word(5, 0) == 0 && d.word(5, 2) == 0 && d.word(9, SectionCullData.TRANSLUCENT_WORD) == 0);
         d.drainDirty(buf);
         for (int i = 0; i < d.size / 8 + 300; i++) d.layerBounds(i, 0, box + (i & 1));
         check("a large share of dirty slots turns into one full upload", d.fullPending() && d.dirtyCount() == 0);
@@ -127,7 +131,7 @@ public final class TerrainCullTest {
 
     static boolean unchangedNotDirty() {
         SectionCullData d = new SectionCullData(5, 4, 0);
-        long buf = MemoryUtil.nmemAlloc((long) d.size * 16);
+        long buf = MemoryUtil.nmemAlloc((long) d.size * SectionCullData.WORDS * 4);
         d.drainFull(buf);
         d.layerBounds(3, 0, 0);
         boolean ok = d.dirtyCount() == 0;

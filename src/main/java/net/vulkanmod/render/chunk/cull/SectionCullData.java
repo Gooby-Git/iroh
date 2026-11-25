@@ -1,9 +1,9 @@
 package net.vulkanmod.render.chunk.cull;
 
 /**
- * P2-7b (L5b): the CPU mirror of the GPU cull's section metadata, one uvec4 per section-grid slot
- * (RenderSection.gridIndex): x = flags, y/z/w = CullBounds box of the opaque layers SOLID, CUTOUT_MIPPED, CUTOUT
- * (TerrainRenderType ordinals 0-2). Written on the render thread when a section's compile result is applied
+ * P2-7b (L5b): the CPU mirror of the GPU cull's section metadata, two uvec4 per section-grid slot
+ * (RenderSection.gridIndex): [0].x = flags, [0].y/z/w = CullBounds box of the opaque layers SOLID, CUTOUT_MIPPED, CUTOUT
+ * (TerrainRenderType ordinals 0-2), [1].x = the TRANSLUCENT layer's box (P2-7c: translucent Hi-Z cull), [1].yzw = 0. Written on the render thread when a section's compile result is applied
  * (CompileResult.updateSection), when a layer is uploaded into the world arena (DrawBuffers.uploadWorld) and when a
  * section is reset; uploaded to the device copy by TerrainCull (dirty slots, or the whole mirror after a reset of the
  * device copy). Exists while the world arena exists on a GPU-cull tier (WorldRenderer.allChanged), so turning a
@@ -17,6 +17,10 @@ package net.vulkanmod.render.chunk.cull;
 public final class SectionCullData {
     public static final int F_COMPILED = 1, F_OPAQUE = 2;
     public static final int OPAQUE_LAYERS = 3;
+    /** P2-7c: words per slot (two uvec4) and bytes per scatter record {slot, 8 words} */
+    public static final int WORDS = 8, RECORD_BYTES = 4 + WORDS * 4;
+    /** TerrainRenderType.TRANSLUCENT's ordinal and its box word */
+    public static final int TRANSLUCENT_LAYER = 3, TRANSLUCENT_WORD = 4;
     /** VisibilitySet pairs of distinct faces (bit (from << 3) + to, from != to, both < 6) */
     public static final long OFF_DIAGONAL;
 
@@ -41,7 +45,7 @@ public final class SectionCullData {
         this.height = gridHeight;
         this.minSecY = minSecY;
         this.size = gridWidth * gridHeight * gridWidth;
-        this.words = new int[this.size * 4];
+        this.words = new int[this.size * WORDS];
         this.dirtyBits = new long[(this.size + 63) >> 6];
     }
 
@@ -71,23 +75,24 @@ public final class SectionCullData {
         set(slot, 0, flags(true, !completelyEmpty && opaque(visibility), sx, sz));
     }
 
-    /** a layer's geometry box after an upload into the world arena (layer = TerrainRenderType ordinal; others ignored) */
+    /** a layer's geometry box after an upload into the world arena (layer = TerrainRenderType ordinal; tripwire ignored) */
     public void layerBounds(int slot, int layer, int packed) {
         if (layer < OPAQUE_LAYERS) set(slot, 1 + layer, packed);
+        else if (layer == TRANSLUCENT_LAYER) set(slot, TRANSLUCENT_WORD, packed);
     }
 
     /** the section left its slot or was reset: nothing compiled, no geometry */
     public void sectionReset(int slot) {
-        for (int i = 0; i < 4; i++) set(slot, i, 0);
+        for (int i = 0; i < WORDS; i++) set(slot, i, 0);
     }
 
     public int word(int slot, int i) {
-        return this.words[slot * 4 + i];
+        return this.words[slot * WORDS + i];
     }
 
     private void set(int slot, int i, int v) {
         if (slot < 0 || slot >= this.size) return;
-        int k = slot * 4 + i;
+        int k = slot * WORDS + i;
         if (this.words[k] == v) return;
         this.words[k] = v;
         if (this.full) return;
@@ -97,7 +102,7 @@ public final class SectionCullData {
         if (this.dirtyCount == this.dirty.length)
             this.dirty = java.util.Arrays.copyOf(this.dirty, this.dirtyCount * 2);
         this.dirty[this.dirtyCount++] = slot;
-        if (this.dirtyCount > (this.size >> 3) + 64) // a large share (20 B per record vs 16 B per slot): rewrite the device copy
+        if (this.dirtyCount > (this.size >> 3) + 64) // a large share (36 B per record vs 32 B per slot): rewrite the device copy
             markFull();
     }
 
@@ -116,7 +121,7 @@ public final class SectionCullData {
         return this.dirtyCount;
     }
 
-    /** writes the whole mirror (size * 16 bytes) to {@code dst} and clears the pending state */
+    /** writes the whole mirror (size * 32 bytes) to {@code dst} and clears the pending state */
     public void drainFull(long dst) {
         org.lwjgl.system.MemoryUtil.memIntBuffer(dst, this.words.length).put(this.words);
         this.full = false;
@@ -124,21 +129,18 @@ public final class SectionCullData {
     }
 
     /**
-     * writes the dirty slots as update records {slot, x, y, z, w} (5 uints each, 20 bytes) to {@code dst}, returns the
+     * writes the dirty slots as update records {slot, 8 words} (9 uints each, {@link #RECORD_BYTES}) to {@code dst}, returns the
      * count and clears the pending state
      */
     public int drainDirty(long dst) {
         int n = this.dirtyCount;
         long p = dst;
-        for (int j = 0; j < n; j++, p += 20) {
+        for (int j = 0; j < n; j++, p += RECORD_BYTES) {
             int slot = this.dirty[j];
             this.dirtyBits[slot >> 6] &= ~(1L << (slot & 63));
-            int k = slot * 4;
+            int k = slot * WORDS;
             org.lwjgl.system.MemoryUtil.memPutInt(p, slot);
-            org.lwjgl.system.MemoryUtil.memPutInt(p + 4, this.words[k]);
-            org.lwjgl.system.MemoryUtil.memPutInt(p + 8, this.words[k + 1]);
-            org.lwjgl.system.MemoryUtil.memPutInt(p + 12, this.words[k + 2]);
-            org.lwjgl.system.MemoryUtil.memPutInt(p + 16, this.words[k + 3]);
+            for (int i = 0; i < WORDS; i++) org.lwjgl.system.MemoryUtil.memPutInt(p + 4 + i * 4L, this.words[k + i]);
         }
         this.dirtyCount = 0;
         return n;

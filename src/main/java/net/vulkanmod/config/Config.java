@@ -40,6 +40,13 @@ public class Config {
     public boolean cullGpuScreenSize = false;
     /** compute facing test: per-facing buckets against the section's geometry box (replaces the CPU facing mask) */
     public boolean cullGpuFacing = false;
+    /**
+     * P2-7c: two-pass Hi-Z occlusion of the opaque layers (previous frame's depth pyramid, then a retest of what only that
+     * culled against this frame's pyramid: nothing visible goes missing on fast turns)
+     */
+    public boolean cullGpuHiZ = false;
+    /** P2-7c: the translucent layer through the GPU cull with Hi-Z against the depth it is drawn against (order kept) */
+    public boolean cullGpuHiZTranslucent = false;
 
     // ---- options the pack relied on (Sodium / Sodium Extra / Iris / Cull Fewer Leaves), see IrohOptions ----
     /** DEFAULT follows the vanilla Graphics setting, FAST / FANCY override it. */

@@ -280,6 +280,8 @@ public final class IrohOptions {
     public static final Opt<Integer> LEAF_CULLING_REJECTION;
     /** P2-7b: GPU terrain culling techniques (Culling page) */
     public static final Opt<Boolean> CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING;
+    /** P2-7c: Hi-Z occlusion (opaque, two-pass) and translucent Hi-Z (Culling page) */
+    public static final Opt<Boolean> CULL_GPU_HIZ, CULL_GPU_HIZ_TRANSLUCENT;
     public static final Opt<DeferMode> CHUNK_BUILD_DEFER_MODE;
     public static final Opt<String> SHADER_PACK;
     public static final Opt<Boolean> SHADERS_ENABLED;
@@ -454,7 +456,9 @@ public final class IrohOptions {
         CULL_GPU_HORIZON = bool("cullGpuHorizon", Category.PERFORMANCE, false, c -> c.cullGpuHorizon, (c, v) -> c.cullGpuHorizon = v);
         CULL_GPU_SCREEN_SIZE = bool("cullGpuScreenSize", Category.PERFORMANCE, false, c -> c.cullGpuScreenSize, (c, v) -> c.cullGpuScreenSize = v);
         CULL_GPU_FACING = bool("cullGpuFacing", Category.PERFORMANCE, false, c -> c.cullGpuFacing, (c, v) -> c.cullGpuFacing = v);
-        for (Opt<Boolean> o : List.of(CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING)) {
+        CULL_GPU_HIZ = bool("cullGpuHiZ", Category.PERFORMANCE, false, c -> c.cullGpuHiZ, (c, v) -> c.cullGpuHiZ = v); // P2-7c
+        CULL_GPU_HIZ_TRANSLUCENT = bool("cullGpuHiZTranslucent", Category.PERFORMANCE, false, c -> c.cullGpuHiZTranslucent, (c, v) -> c.cullGpuHiZTranslucent = v);
+        for (Opt<Boolean> o : List.of(CULL_GPU_FRUSTUM, CULL_GPU_HORIZON, CULL_GPU_SCREEN_SIZE, CULL_GPU_FACING, CULL_GPU_HIZ, CULL_GPU_HIZ_TRANSLUCENT)) {
             o.unavailable(IrohOptions::gpuCullUnavailable);
             o.note("iroh.options.cullGpu.note");
         }

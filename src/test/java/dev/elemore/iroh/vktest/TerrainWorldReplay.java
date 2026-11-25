@@ -378,6 +378,8 @@ public final class TerrainWorldReplay {
             VkPhysicalDeviceVulkan11Features e11 = VkPhysicalDeviceVulkan11Features.calloc(s).sType$Default().pNext(e12.address());
             VkPhysicalDeviceFeatures2 e2 = VkPhysicalDeviceFeatures2.calloc(s).sType$Default().pNext(e11.address());
             IndirectDrawCaps.applyDrawCount(a12, e12); // P2-7b: production step (DeviceManager): drawIndirectCount where offered
+            IndirectDrawCaps.applyMinmax(a12, e12); // P2-7c: production step: samplerFilterMinmax where offered (Hi-Z reduction path)
+            IndirectDrawCaps.noteMinmaxFormat(net.vulkanmod.render.chunk.cull.HiZPyramid.r32fMinmax(phys));
             IndirectDrawCaps.TerrainTier t = IndirectDrawCaps.apply(a2.features(), a11, e2.features(), e11); // production device step
             d.tier = t.name();
             if (t != IndirectDrawCaps.TerrainTier.INDIRECT) return d;
@@ -506,6 +508,8 @@ public final class TerrainWorldReplay {
      * GL-style projection without a y-flipped viewport makes front faces clockwise on screen).
      */
     static int CULL_MODE = VK_CULL_MODE_NONE, FRONT_FACE = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    /** P2-7c: hizCullReplay's reversed-Z run draws with GREATER_OR_EQUAL (the game's LEQUAL mirrored) */
+    static int DEPTH_COMPARE = VK_COMPARE_OP_LESS_OR_EQUAL;
 
     static long pipeline(MemoryStack outer, Dev d, long vs, long fs, boolean blend) {
         try (MemoryStack s = outer.push()) {
@@ -532,7 +536,7 @@ public final class TerrainWorldReplay {
                             .frontFace(FRONT_FACE).lineWidth(1f))
                     .pMultisampleState(VkPipelineMultisampleStateCreateInfo.calloc(s).sType$Default().rasterizationSamples(VK_SAMPLE_COUNT_1_BIT))
                     .pDepthStencilState(VkPipelineDepthStencilStateCreateInfo.calloc(s).sType$Default().depthTestEnable(true).depthWriteEnable(true)
-                            .depthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL))
+                            .depthCompareOp(DEPTH_COMPARE))
                     .pColorBlendState(VkPipelineColorBlendStateCreateInfo.calloc(s).sType$Default().pAttachments(cba))
                     .layout(d.layout).renderPass(d.rp).subpass(0);
             LongBuffer lb = s.mallocLong(1);
