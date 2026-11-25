@@ -81,6 +81,12 @@ public final class SectionCullData {
         else if (layer == TRANSLUCENT_LAYER) set(slot, TRANSLUCENT_WORD, packed);
     }
 
+    /** the layer's packed geometry box (0 = none recorded); layer = TerrainRenderType ordinal */
+    public int layerBox(int slot, int layer) {
+        if (slot < 0 || slot >= this.size) return 0;
+        return layer < OPAQUE_LAYERS ? word(slot, 1 + layer) : layer == TRANSLUCENT_LAYER ? word(slot, TRANSLUCENT_WORD) : 0;
+    }
+
     /** the section left its slot or was reset: nothing compiled, no geometry */
     public void sectionReset(int slot) {
         for (int i = 0; i < WORDS; i++) set(slot, i, 0);

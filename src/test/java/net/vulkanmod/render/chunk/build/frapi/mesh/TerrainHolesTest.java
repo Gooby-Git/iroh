@@ -84,7 +84,7 @@ public final class TerrainHolesTest {
         check("slope: bucket follows the written (tilted) geometry: " + bucket + " (geometry says " + truth + ")", bucket == truth && truth == QuadFacing.UNDEFINED);
 
         // the camera that loses the face: below the section floor (secY = 0), downhill, far enough to see the slope
-        double cx = 9.0, cy = -0.5, cz = 0.5;
+        double cx = 9.0, cy = -1.5, cz = 0.5; // below the section floor and the 1-block margin of the CPU mask (RQ-P27b-b)
         int mask = QuadFacing.facingMask(cx, cy, cz, 0, 0, 0);
         boolean visible = frontFacing(q, cx, cy, cz);
         boolean drawnFixed = (mask & 1 << bucket.ordinal()) != 0;

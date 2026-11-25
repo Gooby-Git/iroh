@@ -35,7 +35,7 @@ public final class FacingMaskTest {
         System.out.println((ok ? "ok   " : "FAIL ") + cases + " camera/face-plane cases (inside blocks, on planes, +-1 unit, 0.002 inside faces): " + dropped + " front faces dropped");
         if (ok) pass++; else fail++;
         // camera in a neighbouring section: the far side's buckets may be skipped, but never the near side's
-        int m = QuadFacing.facingMask(secX - 0.5, secY + 8, secZ + 8, secX, secY, secZ);
+        int m = QuadFacing.facingMask(secX - 1.5, secY + 8, secZ + 8, secX, secY, secZ);
         boolean nearOk = (m & 1 << QuadFacing.X_NEG.ordinal()) != 0 && (m & 1 << QuadFacing.X_POS.ordinal()) == 0;
         System.out.println((nearOk ? "ok   " : "FAIL ") + "camera west of the section: X_NEG drawn, X_POS skipped");
         if (nearOk) pass++; else fail++;

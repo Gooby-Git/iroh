@@ -125,6 +125,28 @@ public final class TerrainCullTest {
                         && IndirectDrawCaps.decideCull(IndirectDrawCaps.TerrainTier.INDIRECT, false) == IndirectDrawCaps.CullTier.FIXED
                         && IndirectDrawCaps.decideCull(IndirectDrawCaps.TerrainTier.DIRECT, true) == IndirectDrawCaps.CullTier.CPU);
 
+        // RQ-P27b-b: the CPU facing mask must keep a +x face whose plane lies one block outside the section (x = secX - 1)
+        {
+            int secX = 0, secY = 0, secZ = 0;
+            double camX = -0.5; // between the plane at x = -1 and the section origin: that +X face (normal +x) faces the camera
+            int oldStyle = (camX - secX >= 0) ? 1 : 0; // the old predicate for X_POS
+            int fbox = CullBounds.pack(-1, 0, 0, 16, 16, 16);
+            int viaBox = QuadFacing.facingMaskBox(camX, 8, 8, secX, secY, secZ, fbox);
+            int plain = QuadFacing.facingMask(camX, 8, 8, secX, secY, secZ);
+            int xpos = 1 << QuadFacing.X_POS.ordinal();
+            check("facing mask: old predicate drops X_POS for a plane at x=-1 with the camera at x=-0.5 (repro)", oldStyle == 0);
+            check("facing mask: box (-1..16) keeps X_POS", (viaBox & xpos) != 0);
+            check("facing mask: box-less default (-1..17) keeps X_POS", (plain & xpos) != 0);
+            // a tight box still culls: planes all at x >= 4, camera at x = 2 -> no +x face can face it
+            int tight = QuadFacing.facingMaskBox(2, 8, 8, 0, 0, 0, CullBounds.pack(4, 0, 0, 12, 16, 16));
+            check("facing mask: tight box (4..12) with camera x=2 drops X_POS, keeps X_NEG", (tight & xpos) == 0 && (tight & 1 << QuadFacing.X_NEG.ordinal()) != 0);
+            // far -x side: plane at x = 17, camera at 17.5 -> X_NEG (normal -x) faces away; box hi=17 keeps nothing wrong, box hi=16 would also drop
+            int hiOut = QuadFacing.facingMaskBox(16.5, 8, 8, 0, 0, 0, CullBounds.pack(0, 0, 0, 17, 16, 16));
+            check("facing mask: X_NEG kept for a plane at x=17 with camera x=16.5", (hiOut & 1 << QuadFacing.X_NEG.ordinal()) != 0);
+            check("facing mask: no box / overflow word = whole compressed range", QuadFacing.facingMaskBox(-11, 8, 8, 0, 0, 0, 0) == QuadFacing.facingMaskBox(-11, 8, 8, 0, 0, 0, CullBounds.PRESENT | CullBounds.OVERFLOW)
+                    && (QuadFacing.facingMaskBox(-11, 8, 8, 0, 0, 0, 0) & xpos) != 0);
+        }
+
         System.out.println("# terraincull " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         System.exit(fail == 0 ? 0 : 1);
     }

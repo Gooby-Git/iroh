@@ -314,11 +314,22 @@ public class DrawBuffers {
             if (fi < 0)
                 continue;
             idx[count] = section.inAreaIndex;
-            masks[count] = backFaceCulling ? QuadFacing.facingMask(cx, cy, cz, section.xOffset, section.yOffset, section.zOffset) : 1 << 6;
+            masks[count] = backFaceCulling ? worldMask(cx, cy, cz, section, rt) : 1 << 6;
             fis[count++] = fi;
         }
         long base = this.drawParamsPtr + ((long) rt * DrawParametersBuffer.SECTIONS * DrawParametersBuffer.FACINGS) * DrawParametersBuffer.STRIDE;
         writer.addArea(base, count, idx, masks, fis, this.iPage, rt * DrawParametersBuffer.SECTIONS);
+    }
+
+    /**
+     * RQ-P27b-b: the CPU facing mask from the layer's recorded geometry box when the cull data tracks it (the same box the GPU
+     * facing test uses), else from the section box widened by one block.
+     */
+    private static int worldMask(double cx, double cy, double cz, RenderSection section, int rt) {
+        var cull = net.vulkanmod.render.chunk.cull.SectionCullData.current();
+        if (cull == null)
+            return QuadFacing.facingMask(cx, cy, cz, section.xOffset, section.yOffset, section.zOffset);
+        return QuadFacing.facingMaskBox(cx, cy, cz, section.xOffset, section.yOffset, section.zOffset, cull.layerBox(section.gridIndex, rt));
     }
 
     /** P2-7b: grid slot of each section of the area being written */
@@ -343,7 +354,7 @@ public class DrawBuffers {
             if (fi < 0)
                 continue;
             idx[count] = section.inAreaIndex;
-            masks[count] = !backFaceCulling ? 1 << 6 : allFacings ? 0x7F : QuadFacing.facingMask(cx, cy, cz, section.xOffset, section.yOffset, section.zOffset);
+            masks[count] = !backFaceCulling ? 1 << 6 : allFacings ? 0x7F : worldMask(cx, cy, cz, section, rt);
             slots[count] = section.gridIndex;
             fis[count++] = fi;
         }
