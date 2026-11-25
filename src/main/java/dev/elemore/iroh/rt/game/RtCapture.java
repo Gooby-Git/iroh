@@ -163,10 +163,11 @@ public final class RtCapture {
             m.put("rtFrame", frames);
             m.put("cameraWorld", c.cameraPos().x() + "," + c.cameraPos().y() + "," + c.cameraPos().z());
             m.put("originSection", cx + "," + cy + "," + cz);
+            m.put("projection", "game");   // view/proj.ircap as the game has them: rotation-only view, zZeroToOne infinite perspective, clip y UP; frame.ircap matrices are y DOWN
             m.put("viewport", c.viewportWidth() + "x" + c.viewportHeight());
             m.put("truncated", truncated);
             m.put("residentAtCapture", keys.length);
-            m.put("sunNote", "sunDir in frame.ircap = (-sin a, cos a, 0), a = Level.getSunAngle; sign convention UNVERIFIED");
+            m.put("sunNote", "sunDir in frame.ircap = (-sin a, cos a, 0), a = Level.getSunAngle; the sign follows the vanilla sun transform (Y -90, X a: sets in the west); noon captures cannot test it");
             m.put("lights", "absent (card RT-3a)");
             m.put("entities", "absent (card RT-5)");
             if (atlas != null) {
@@ -186,7 +187,10 @@ public final class RtCapture {
 
     private static RtFrameData frameData(FrameContext c, Matrix4f view, Matrix4f proj) {
         RtFrameData fd = new RtFrameData();
-        Matrix4f vp = new Matrix4f(proj).mul(view);   // camera-relative (the game's view matrix has no translation)
+        // camera-relative (the game's view matrix has no translation). The game's projection is clip y UP (VulkanMod flips the image
+        // with the viewport); the RT shaders derive the ray from the pixel row as ndc y DOWN (rt_common.glsl), so the matrices
+        // handed to them carry the flip. The raw view / projection are recorded unflipped (meta projection=game).
+        Matrix4f vp = new Matrix4f().scale(1, -1, 1).mul(proj).mul(view);
         vp.get(fd.viewProj);
         vp.get(fd.prevViewProj);
         new Matrix4f(vp).invert().get(fd.invViewProj);

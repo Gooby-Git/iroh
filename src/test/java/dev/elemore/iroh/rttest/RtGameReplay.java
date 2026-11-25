@@ -73,27 +73,43 @@ public final class RtGameReplay {
                 if (!hit(rq)) { o[i] = vec4(-1.0, -1.0, 0.0, 0.0); return; }
                 float t = rayQueryGetIntersectionTEXT(rq, true);
                 rayQueryEXT sq;
-                rayQueryInitializeEXT(sq, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0x01, org + dir * t, 0.002, sun.xyz, 1.0e4);
+                // origin a hair in front of the surface (toward the camera): a ray starting ON a wall plane grazes its neighbours' edges
+                rayQueryInitializeEXT(sq, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0x01, org + dir * (t - 0.004), 0.0, sun.xyz, 1.0e4);
                 o[i] = vec4(t, hit(sq) ? 0.0 : 1.0, 0.0, 0.0);
             }
             """;
 
     // ------------------------------------------------------------------------------------------------ rays
 
+    /**
+     * Projection convention of the capture's view/proj (meta "projection"): "game" (default, what the game's FrameContext hands
+     * out and RtCapture records: rotation-only view, JOML infinite perspective with zZeroToOne, clip y UP, VulkanMod flips the
+     * image with the viewport), "vk" (clip y down, depth 0..1: the rtReplay / RT shader convention) or "gl" (clip y up, depth -1..1).
+     */
+    static String projection(RtCaptureFormat.Capture c) {
+        return c.meta().getOrDefault("projection", "game");
+    }
+
+    static boolean yUp(String conv) { return !conv.equals("vk"); }
+
     /** Rays through the pixel centres: {origin (relative to the origin section) + tmax, dir + 0} per pixel. */
     static float[] rays(RtCaptureFormat.Capture c, int[] origin) {
-        boolean gl = "gl".equals(c.meta().getOrDefault("projection", "vk"));
+        String conv = projection(c);
+        boolean yup = yUp(conv), gl = conv.equals("gl");
         Matrix4f view = new Matrix4f().set(c.view()), proj = new Matrix4f().set(c.proj());
         Matrix4f inv = new Matrix4f(proj).mul(view).invert();
         ByteBuffer f = c.frame();
         float[] cam = new float[3];
         for (int i = 0; i < 3; i++) cam[i] = f.getFloat((48 + i) * 4);   // invViewProj, viewProj, prevViewProj (48 floats), then camPos
+        // the game's view has no translation (the ray origin is camPos); vk / gl captures built by the synthetic carry it in the matrix
+        boolean camRelative = !conv.equals("vk") && !conv.equals("gl");
+        float zFar = camRelative ? 0.99f : 1f;   // the game's far plane is (almost) infinite: stay clear of w = 0
         float[] r = new float[W * H * 8];
         for (int y = 0; y < H; y++)
             for (int x = 0; x < W; x++) {
                 float nx = (x + 0.5f) / W * 2 - 1, ny = (y + 0.5f) / H * 2 - 1;
-                if (gl) ny = -ny;
-                Vector4f a = inv.transform(new Vector4f(nx, ny, gl ? -1 : 0, 1)), b = inv.transform(new Vector4f(nx, ny, 1, 1));
+                if (yup) ny = -ny;
+                Vector4f a = inv.transform(new Vector4f(nx, ny, gl ? -1 : 0, 1)), b = inv.transform(new Vector4f(nx, ny, zFar, 1));
                 Vector3f d = new Vector3f(b.x / b.w - a.x / a.w, b.y / b.w - a.y / a.w, b.z / b.w - a.z / a.w).normalize();
                 int i = (y * W + x) * 8;
                 r[i] = cam[0] - origin[0] * 16f;
@@ -288,6 +304,7 @@ public final class RtGameReplay {
         }
 
         /** nearest hit distance along (o, d) within (tmin, tmax), or -1 */
+        int lastSec, lastTri;
         double nearest(double[] o, double[] d, double tmin, double tmax, boolean any) {
             double best = tmax;
             boolean found = false;
@@ -305,6 +322,7 @@ public final class RtGameReplay {
                     double h = tri(o, d, t, i);
                     if (h > tmin && h < best) {
                         best = h;
+                        lastSec = s; lastTri = i / 9;
                         found = true;
                         if (any) return best;
                     }
@@ -341,12 +359,13 @@ public final class RtGameReplay {
             if (t > 0) hits++;
             if ((t < 0) != (g < 0) || (t > 0 && Math.abs(t - g) > 2e-3 * Math.max(1, t))) {
                 bad++;
+                if (bad <= 6) System.out.println(String.format(Locale.ROOT, "    differ px %d,%d cpu t %.4f gpu t %.4f", i % W, i / W, t, g));
                 continue;
             }
             if (t > 0) {
-                double[] p = {o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t}, sd = {sun[0], sun[1], sun[2]};
-                boolean lit = w.nearest(p, sd, 0.002, 1e4, true) < 0;
-                if (lit != (out[i * 4 + 1] > 0.5)) bad++;
+                double[] p = {o[0] + d[0] * (t - 0.004), o[1] + d[1] * (t - 0.004), o[2] + d[2] * (t - 0.004)}, sd = {sun[0], sun[1], sun[2]};
+                boolean lit = w.nearest(p, sd, 0.0, 1e4, true) < 0;
+                if (lit != (out[i * 4 + 1] > 0.5)) { bad++; if (bad <= 8) { w.nearest(p, sd, 0.0, 1e4, true); float[] tt = w.tris.get(w.lastSec); int q = w.lastTri * 9; System.out.println(String.format(Locale.ROOT, "    sun differ px %d,%d t %.3f cpu lit %b gpu vis %.1f; hit at p %.2f,%.2f,%.2f occluder tri %.2f,%.2f,%.2f / %.2f,%.2f,%.2f / %.2f,%.2f,%.2f of %d solid tris", i % W, i / W, t, lit, out[i * 4 + 1], p[0], p[1], p[2], tt[q], tt[q+1], tt[q+2], tt[q+3], tt[q+4], tt[q+5], tt[q+6], tt[q+7], tt[q+8], tt.length / 9)); } }
                 worst = Math.max(worst, Math.abs(t - g));
             }
         }
@@ -480,8 +499,131 @@ public final class RtGameReplay {
         String cc = cpuCheck(new CpuWorld(back, org), rays, sun, r.out(), 600);
         String[] p = cc.split(";;");
         check("CPU brute force on the replay: " + p[0], Integer.parseInt(p[1]) <= Integer.parseInt(p[2]) / 100);
+        gameSynthetic();
         check("all sections resident after the replay (" + r.resident() + " of " + nonEmpty(back) + " non-empty)", r.resident() == nonEmpty(back));
         image(CACHE.resolve("_synthetic").resolve("out").resolve("replay.png"), r.out());
+    }
+
+    // ------------------------------------------------------------------------------------------------ game-convention capture
+
+    /**
+     * RT-1-FIX: the RtScene hall written the way the GAME writes a capture: view = rotation only (yaw / pitch), projection = JOML
+     * infinite perspective with zZeroToOne and clip y UP, the camera and every section far from the world origin (a real
+     * village: camera near x -304, z 304), no "projection" key in the meta (the first real captures had none), originSection the
+     * camera's section. The hall is asymmetric (camera looks down at the corner, the wall with the door is on the right).
+     */
+    static RtCaptureFormat.Capture fromSceneGame(RtScene scene, int dx, int dy, int dz) {
+        RtCamera cam = new RtCamera(new Vector3f(-2.0f, 16.5f, 27.0f), new Vector3f(16.0f, 7.0f, 14.0f), 70, W, H);
+        RtReplay.Light light = new RtReplay.Light(new RtFrameData().waterExtinction);
+        Vector3f fwd = cam.forward();
+        Matrix4f view = new Matrix4f().lookAt(0, 0, 0, fwd.x, fwd.y, fwd.z, 0, 1, 0);
+        Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(cam.fovYDeg), W / (float) H, 0.05f, Float.POSITIVE_INFINITY, true);
+        RtFrameData fd = new RtFrameData();
+        Matrix4f vp = new Matrix4f().scale(1, -1, 1).mul(proj).mul(view);   // what RtCapture hands the shaders: clip y DOWN
+        vp.get(fd.viewProj);
+        System.arraycopy(fd.viewProj, 0, fd.prevViewProj, 0, 16);
+        new Matrix4f(vp).invert().get(fd.invViewProj);
+        fd.camPos[0] = cam.pos.x + dx * 16f; fd.camPos[1] = cam.pos.y + dy * 16f; fd.camPos[2] = cam.pos.z + dz * 16f;
+        fd.camFwd[0] = fwd.x; fd.camFwd[1] = fwd.y; fd.camFwd[2] = fwd.z;
+        System.arraycopy(light.sunDir, 0, fd.sunDir, 0, 3);
+        System.arraycopy(light.sunE, 0, fd.sunE, 0, 3);
+        fd.sunAngularRadius = light.sunRadius;
+        fd.width = W;
+        fd.height = H;
+        float[] vf = new float[16], pf = new float[16];
+        view.get(vf);
+        proj.get(pf);
+        List<RtCaptureFormat.Section> secs = new ArrayList<>();
+        for (RtScene.SectionMesh m : scene.sections) {
+            ByteBuffer[] b = new ByteBuffer[3];
+            for (int k = 0; k < 3; k++) if (m.quads[k] > 0) b[k] = m.buckets[k].duplicate().order(ByteOrder.LITTLE_ENDIAN);
+            secs.add(new RtCaptureFormat.Section(m.sx + dx, m.sy + dy, m.sz + dz, m.quads.clone(), b));
+        }
+        List<ByteBuffer> lv = new ArrayList<>();
+        ByteBuffer at = ByteBuffer.allocate(RtScene.ATLAS * RtScene.ATLAS * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (int t : scene.atlas) at.putInt(t);
+        at.flip();
+        lv.add(at);
+        Map<String, String> meta = new LinkedHashMap<>();   // deliberately no "projection"
+        meta.put("originSection", (int) Math.floor(fd.camPos[0]) / 16 + "," + (int) Math.floor(fd.camPos[1]) / 16 + "," + (int) Math.floor(fd.camPos[2]) / 16);
+        return new RtCaptureFormat.Capture(meta, writeToBuffer(fd), vf, pf, 16, secs, new RtCaptureFormat.Atlas(RtScene.ATLAS, RtScene.ATLAS, lv));
+    }
+
+    /**
+     * Convention oracle independent of the ray generator: scene triangle centroids the CPU sees unoccluded are projected FORWARD
+     * with the capture's own matrices (clip -> ndc -> pixel, y-up conventions put the top row at ndc y +1); the pixel's ray must
+     * point at the centroid (within 1.5 pixel) and the GPU primary distance there must be that centroid's distance.
+     */
+    static String projectionOracle(RtCaptureFormat.Capture c, CpuWorld w, float[] rays, float[] out) {
+        boolean yup = yUp(projection(c));
+        Matrix4f vp = new Matrix4f().set(c.proj()).mul(new Matrix4f().set(c.view()));
+        Random rnd = new Random(11);
+        float pixAng = 1.5f * 2f / (c.proj()[5] * H);
+        int seen = 0, aimOk = 0, tOk = 0;
+        for (int tries = 0; tries < 4000 && seen < 300; tries++) {
+            float[] t = w.tris.get(rnd.nextInt(w.tris.size()));
+            int i = rnd.nextInt(t.length / 9) * 9;
+            double[] pc = {(t[i] + t[i + 3] + t[i + 6]) / 3, (t[i + 1] + t[i + 4] + t[i + 7]) / 3, (t[i + 2] + t[i + 5] + t[i + 8]) / 3};
+            double[] o = {rays[0], rays[1], rays[2]};
+            double[] v = {pc[0] - o[0], pc[1] - o[1], pc[2] - o[2]};
+            double dist = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            if (dist < 1) continue;
+            double[] u = {v[0] / dist, v[1] / dist, v[2] / dist};
+            double hit = w.nearest(o, u, 0, 512, false);
+            if (hit < 0 || Math.abs(hit - dist) > 0.02 * dist) continue;   // hidden behind something
+            Vector4f cl = vp.transform(new Vector4f((float) v[0], (float) v[1], (float) v[2], 1));
+            if (cl.w <= 0) continue;
+            float nx = cl.x / cl.w, ny = cl.y / cl.w;
+            if (Math.abs(nx) > 0.98f || Math.abs(ny) > 0.98f) continue;
+            int px = (int) ((nx * 0.5f + 0.5f) * W), py = (int) ((yup ? 0.5f - ny * 0.5f : ny * 0.5f + 0.5f) * H);
+            int k = py * W + px;
+            seen++;
+            double dot = rays[k * 8 + 4] * u[0] + rays[k * 8 + 5] * u[1] + rays[k * 8 + 6] * u[2];
+            if (Math.acos(Math.min(1, dot)) <= pixAng) aimOk++;
+            double g = out[k * 4];
+            if (g > 0 && Math.abs(g - dist) <= 0.06 * dist + 0.3) tOk++;
+        }
+        return seen + " visible centroids projected forward: " + aimOk + " rays aim at them, " + tOk + " GPU distances agree;;" + seen + ";;" + aimOk + ";;" + tOk;
+    }
+
+    static void gameSynthetic() throws Exception {
+        RtScene scene = new RtScene();
+        RtCaptureFormat.Capture mem = fromSceneGame(scene, -19, 4, 19);   // camera near world (-306, 83, 307) like the village capture
+        Path dir = CACHE.resolve("_synthetic").resolve("game");
+        try (RtCaptureFormat.Writer w = new RtCaptureFormat.Writer(dir, 16)) {
+            w.atlas(mem.atlas());
+            w.frame(mem.frame(), mem.view(), mem.proj());
+            for (RtCaptureFormat.Section s : mem.sections()) if (!w.section(s)) throw new IllegalStateException("cap");
+            w.meta("originSection", mem.meta().get("originSection"));
+            w.meta("label", "synthetic RtScene hall, game conventions, far from the origin");
+        }
+        RtCaptureFormat.Capture back = RtCaptureFormat.read(dir);
+        int[] org = origin(back);
+        float[] rays = rays(back, org), sun = sunDir(back);
+        System.out.println("game-convention synthetic: origin section " + Arrays.toString(org) + ", camera " + rays[0] + "," + rays[1] + "," + rays[2] + " (origin-relative), projection " + projection(back));
+        Replayed r = replay(back, rays, sun, 1L << 30);
+        int hits = 0;
+        for (int i = 0; i < W * H; i++) if (r.out()[i * 4] > 0) hits++;
+        check("game-convention capture: primary rays hit geometry (" + hits + " of " + W * H + ")", hits > W * H / 4);
+        CpuWorld cw = new CpuWorld(back, org);
+        String[] o = projectionOracle(back, cw, rays, r.out()).split(";;");
+        int seen = Integer.parseInt(o[1]);
+        check("game-convention capture: " + o[0], seen >= 100 && Integer.parseInt(o[2]) >= seen * 0.97 && Integer.parseInt(o[3]) >= seen * 0.9);
+        String[] p = cpuCheck(cw, rays, sun, r.out(), 600).split(";;");
+        check("game-convention capture: CPU brute force: " + p[0], Integer.parseInt(p[1]) == 0);
+        check("game-convention capture: upright (floor in the lower half, ceiling or sky in the upper half)", uprightHall(r.out()));
+        image(CACHE.resolve("_synthetic").resolve("out").resolve("replay-game.png"), r.out());
+    }
+
+    /** The camera looks down at the hall: more hit pixels with a near distance in the lower half than the upper half. */
+    static boolean uprightHall(float[] out) {
+        double lo = 0, hi = 0;
+        for (int i = 0; i < W * H; i++) {
+            if (out[i * 4] <= 0) continue;
+            if (i / W >= H / 2) lo += 1 / out[i * 4]; else hi += 1 / out[i * 4];
+        }
+        System.out.println(String.format(Locale.ROOT, "  inverse-distance mass: lower half %.1f, upper half %.1f", lo, hi));
+        return lo > hi;
     }
 
     static int nonEmpty(RtCaptureFormat.Capture c) {
@@ -520,7 +662,11 @@ public final class RtGameReplay {
         check("all non-empty captured sections resident (" + r.resident() + " of " + nonEmpty(c) + ")", r.resident() == nonEmpty(c));
         check("primary rays hit geometry (" + hits + " of " + W * H + " pixels)", hits > W * H / 20);
         String[] p = cpuCheck(new CpuWorld(c, org), rays, sun, r.out(), 400).split(";;");
-        check("CPU brute force: " + p[0], Integer.parseInt(p[1]) <= Integer.parseInt(p[2]) / 50);
+        check("CPU brute force: " + p[0], Integer.parseInt(p[1]) == 0);
+        CpuWorld cw = new CpuWorld(c, org);
+        String[] o = projectionOracle(c, cw, rays, r.out()).split(";;");
+        int seen = Integer.parseInt(o[1]);
+        check("projection convention: " + o[0], seen >= 50 && Integer.parseInt(o[2]) >= seen * 0.97 && Integer.parseInt(o[3]) >= seen * 0.85);
         Path out = dir.resolve("out");
         image(out.resolve("replay.png"), r.out());
         String sha = sha(r.out()), mode = System.getProperty("rt.golden", "");
