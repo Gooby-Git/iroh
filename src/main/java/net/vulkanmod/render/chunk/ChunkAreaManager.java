@@ -41,8 +41,7 @@ public class ChunkAreaManager {
 
         int t = (width >> AREA_SH_XZ) + 2;
 
-        int relativeHeight = height - (minHeight >> 4);
-        this.ySize = (relativeHeight & 0x5) == 0 ? (relativeHeight >> AREA_SH_Y) : (relativeHeight >> AREA_SH_Y) + 1;
+        this.ySize = areaRows(height, minHeight);
 
         //check if width is even
         if ((t & 1) == 0)
@@ -69,6 +68,16 @@ public class ChunkAreaManager {
         this.xList = new CircularIntList(this.xzSize);
         this.zList = new CircularIntList(this.xzSize);
         this.xComplIterator = this.xList.createRangeIterator();
+    }
+
+    /**
+     * RQ-HOLES-c: area rows for a dimension with {@code sectionsCount} sections from build height {@code minHeight} (blocks).
+     * getChunkArea indexes row (y - minHeight) >> 7, so the top section needs row (sectionsCount - 1) >> 3. The old
+     * {@code (sectionsCount - minSection) & 0x5} test only worked by the extra rows a negative minY adds.
+     */
+    public static int areaRows(int sectionsCount, int minHeight) {
+        int maxRow = ((sectionsCount - 1) << SEC_SH) >> BLOCK_TO_AREA_SH_Y;
+        return maxRow + 1;
     }
 
     public void repositionAreas(int secX, int secZ) {

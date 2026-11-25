@@ -125,6 +125,21 @@ public final class TerrainHolesTest {
         var res2 = net.vulkanmod.render.chunk.build.task.CompileResult.forOrigin(sec, true, 256, 64, 0);
         check("HOLES-b: result built after the relocation is current", !res2.originStale());
 
+        // ---- 5. RQ-HOLES-c: area rows cover the top section for every dimension height
+        int[][] dims = {{24, -64}, {16, 0}, {24, 0}, {10, 0}, {18, 0}, {26, 0}, {10, 16}, {34, 0}, {8, 0}, {9, 0}, {48, -64}, {10, -32}};
+        boolean allCovered = true, oldFails = false;
+        for (int[] d : dims) {
+            int n = d[0], minY = d[1];
+            int need = ((n - 1) * 16 >> 7) + 1; // getChunkArea: row (y - minY) >> 7 of the top section
+            int rows = net.vulkanmod.render.chunk.ChunkAreaManager.areaRows(n, minY);
+            int relativeHeight = n - (minY >> 4);
+            int old = (relativeHeight & 0x5) == 0 ? relativeHeight >> 3 : (relativeHeight >> 3) + 1;
+            if (rows < need) { allCovered = false; System.out.println("   rows " + rows + " < " + need + " for " + n + " sections, minY " + minY); }
+            if (old < need) { oldFails = true; System.out.println("   (old formula: " + old + " rows < " + need + " for " + n + " sections, minY " + minY + ")"); }
+        }
+        check("HOLES-c: areaRows covers the top section row in every table entry", allCovered);
+        check("HOLES-c: the old formula under-allocated in at least one entry (repro)", oldFails);
+
         System.out.println("# terrainholes " + (fail == 0 ? "PASS" : "FAIL") + " " + pass + "/" + (pass + fail));
         if (fail != 0) System.exit(1);
     }
