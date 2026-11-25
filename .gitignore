@@ -46,3 +46,7 @@ iroh-native/build-nrd/
 iroh-native/nrd/nrd-src/
 iroh-native/nrd/.nrd-cache/
 hs_err_pid*.log
+
+# RT-1: world captures hold Mojang textures: never in git (all capture files end .ircap)
+*.ircap
+iroh-captures/

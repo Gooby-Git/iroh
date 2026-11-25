@@ -171,6 +171,11 @@ public final class BlasBuildQueue implements RtGeometryFeed {
         return resident.size();
     }
 
+    /** RT-1: keys of the resident sections (SectionGeometry.key), a snapshot, for the world capture. */
+    public long[] residentKeys() {
+        return resident.keySet().stream().mapToLong(Long::longValue).toArray();
+    }
+
     public boolean isResident(int sx, int sy, int sz) {
         return resident.containsKey(SectionGeometry.key(sx, sy, sz));
     }

@@ -707,6 +707,23 @@ tasks.register('rtWorldReplay', JavaExec) {
 	doFirst { useLavapipe(it, 'rtWorldReplay') }
 }
 
+// RT-1: offline replay of a world capture (RtCaptureFormat, written in game by -Diroh.rt.capture=<dir>) through the game's RT
+// classes; without -Pcapture the synthetic round trip (RtScene -> writer -> reader -> game classes == rtReplay a/b, bit-identical).
+// ./gradlew rtGameReplay [-Pcapture=~/.cache/iroh-captures/cap-001-x] [-Pgolden=write|check] ; "# rtgamereplay PASS n/n". lavapipe only.
+tasks.register('rtGameReplay', JavaExec) {
+	group = 'verification'
+	description = 'RT-1 world capture replay on lavapipe'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.rttest.RtGameReplay'
+	maxHeapSize = '4g'
+	jvmArgs '-Djava.awt.headless=true'
+	workingDir = projectDir
+	if (project.hasProperty('capture')) systemProperty 'rt.capture', project.property('capture')
+	if (project.hasProperty('golden')) systemProperty 'rt.golden', project.property('golden')
+	doFirst { useLavapipe(it, 'rtGameReplay') }
+}
+
 // P4-2a native FSR library (CI-style; not part of build): ./gradlew fsrNative [-PfsrArgs=--linux-only]
 tasks.register('fsrNative', Exec) {
 	group = 'build'

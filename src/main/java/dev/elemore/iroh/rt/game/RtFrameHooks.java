@@ -44,6 +44,7 @@ public final class RtFrameHooks {
                 last = session.frame(sx, sy, sz);
             });
             statsLine();
+            if (RtCapture.DIR != null) RtCapture.poll(c);   // RT-1 dev switch (null = inert)
         } catch (Throwable t) {
             fallBack("frame", t);
         }

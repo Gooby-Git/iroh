@@ -47,6 +47,11 @@ def main():
                 t = open(os.path.join(d, n), encoding='utf-8', errors='replace').read()
                 for x in EXCLUDED:
                     if re.search(r'\b' + x + r'\b', t): errs.append(f'{os.path.relpath(os.path.join(d, n), root)}: excluded identifier {x}')
+    # RT-1: world captures hold Mojang textures; their files (all end .ircap) and the iroh-captures directory never belong in the tree
+    for d, dn, fn in os.walk(root):
+        dn[:] = [x for x in dn if x not in ('.git', '.gradle', 'reuse-gate-fixtures')]
+        for n in fn + dn:
+            if n.endswith('.ircap') or n == 'iroh-captures': errs.append(f'{os.path.relpath(os.path.join(d, n), root)}: capture file in the tree (keep captures under ~/.cache/iroh-captures)')
     for e in errs: print('FAIL:', e)
     print('# reuse_gate PASS' if not errs else f'# reuse_gate FAIL {len(errs)}')
     sys.exit(1 if errs else 0)
