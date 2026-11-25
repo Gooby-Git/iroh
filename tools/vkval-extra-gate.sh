@@ -9,7 +9,7 @@ set -uo pipefail
 WT=$(readlink -f "${1:-.}"); cd "$WT"
 export JAVA_HOME=${IROH_JAVA_HOME:-/home/gooby/.local/share/mise/installs/java/temurin-25.0.5.1+2.0.LTS}; export PATH=$JAVA_HOME/bin:$PATH
 OUT=$WT/build/vkval-extra; mkdir -p "$OUT"
-TASKS=("packReplay" "packReplay -Ppost" "packFlightRepro" "packFullVkRepro" "apiReplay" "uploadSyncRepro" "mcReplay" "rtReplay -Pquick=1 -Pstep=ab" "fsrReplay" "chainReplay" "fsrAdapterReplay" "fgReplay" "rtHangRepro" "rtWorldReplay -Pframes=60")  # R1-HANG: +2 (AS builds with game upload order, world-scale); PACK-FULL: +packFullVkRepro; UPLOAD-SYNC: +uploadSyncRepro
+TASKS=("packReplay" "packReplay -Ppost" "packFlightRepro" "packFullVkRepro" "apiReplay" "uploadSyncRepro" "mcReplay" "rtReplay -Pquick=1 -Pstep=ab" "fsrReplay" "fsrConstantsTest" "fsrMetrics" "chainReplay" "fsrAdapterReplay" "fgReplay" "rtHangRepro" "rtWorldReplay -Pframes=60")  # R1-HANG: +2 (AS builds with game upload order, world-scale); PACK-FULL: +packFullVkRepro; UPLOAD-SYNC: +uploadSyncRepro
 have() { grep -q "register('$1'" build.gradle; }
 rc=0
 for mode in gpuav bestpractices; do

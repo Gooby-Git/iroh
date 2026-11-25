@@ -3,6 +3,7 @@ package dev.elemore.iroh.upscaletest;
 import dev.elemore.iroh.upscale.*;
 import dev.elemore.iroh.upscale.fsr.FsrException;
 import dev.elemore.iroh.upscale.fsr.FsrNative;
+import dev.elemore.iroh.upscale.fsr.FsrTuning;
 import dev.elemore.iroh.upscale.fsr.FsrUpscaler;
 import dev.elemore.iroh.upscale.fsr.NativeLoader;
 import org.lwjgl.PointerBuffer;
@@ -259,6 +260,9 @@ public final class FsrReplay {
     }
 
     static MvHook mvHook;
+    /** FSR-Q2 measurement hooks: tuning keys applied right after context creation, RCAS strength (0 = off). */
+    static FsrTuning tuning;
+    static float rcas;
 
     static RunResult runFsr(int rw, int rh, int dw, int dh, int frames, FrameSource src, boolean zeroJitter, boolean want16, float near, float far, boolean hdr) {
         Img color = image(VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -269,6 +273,7 @@ public final class FsrReplay {
         int flags = FsrUpscaler.AUTO_EXPOSURE | FsrUpscaler.DEBUG_CHECKING | (hdr ? FsrUpscaler.HDR : 0);
         int shim = want16 ? 0 : FsrUpscaler.NO_FP16;
         try (FsrUpscaler up = FsrUpscaler.create(instance.address(), phys.address(), device.address(), 0L, flags, shim, rw, rh, dw, dh)) {
+            if (tuning != null) up.apply(tuning);
             long[] mem = up.memoryUsageBytes();
             JitterSequence js = new JitterSequence(rw, dw);
             float[] c = new float[rw * rh * 4], d = new float[rw * rh], m = new float[rw * rh * 2];
@@ -300,6 +305,7 @@ public final class FsrReplay {
                 in.renderWidth = rw; in.renderHeight = rh; in.displayWidth = dw; in.displayHeight = dh;
                 in.frameTimeMs = 16.6f; in.cameraNear = near; in.cameraFar = far; in.cameraFovYRadians = (float) Math.toRadians(60);
                 in.reset = t == 0;
+                if (rcas > 0f) { in.enableSharpening = true; in.sharpness = rcas; }
                 up.dispatch(in);
                 download(out, bo);
                 submitWait();

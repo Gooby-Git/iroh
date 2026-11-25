@@ -787,6 +787,27 @@ useLavapipe(it)
 }
 }
 
+// FSR-Q2: offline FSR quality metrics (static-edge convergence, jitter polarity, ghosting, stability, sharpness) on lavapipe.
+// ./gradlew fsrMetrics [-Pforce16] [-Pdump=dir] [-Prcas=0.2] [-Psweep=KEY:v1,v2]   last line "# fsrmetrics PASS|FAIL"
+tasks.register('fsrMetrics', JavaExec) {
+	group = 'verification'
+	description = 'FSR-Q2 measurement harness: edge convergence, jitter sign, ghost, flicker, sharpness on synthetic scenes (lavapipe)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrMetrics'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['dump', 'sweep', 'rcas'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	if (project.hasProperty('force16')) a << '--force16'
+	args a
+	doFirst {
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
 // P4-1b: Iroh's velocity pass + jitter drive FSR as well as P4-2a's hand-made inputs (fsrReplay's synthetic scene),
 // on lavapipe. ./gradlew fsrVelocityReplay ; last line "# fsrvelocity PASS|FAIL"
 tasks.register('fsrVelocityReplay', JavaExec) {
