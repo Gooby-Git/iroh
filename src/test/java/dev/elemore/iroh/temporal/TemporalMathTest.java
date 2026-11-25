@@ -198,7 +198,50 @@ public final class TemporalMathTest {
         check("first frame reports a size change", changed);
         check("quality 1706x960", TemporalFrame.renderW == 1706 && TemporalFrame.renderH == 960);
         check("temporal upscaler -> jitter on, 18 phases", TemporalFrame.JITTER_ON && TemporalFrame.phaseCount == 18);
-        check("auto mip bias -1.585", near(TemporalFrame.mipBias, -1.585, 0.002) && TemporalFrame.MIP_ON);
+        check("auto mip bias (pixel art default) = half the AMD bias, quantized: -0.8125", near(TemporalFrame.mipBias, -0.8125, 1e-6) && TemporalFrame.MIP_ON);
+        // FSR-Q5: modes, size sync, cutout clamp
+        UpscaleSwitches.registerAll();
+        dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MIP_MODE, "formula");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("formula mode: AMD -1.585 quantized to -1.5625", near(TemporalFrame.mipBias, -1.5625, 1e-6));
+        dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MIP_MODE, "off");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("mode off: no bias", TemporalFrame.mipBias == 0f && !TemporalFrame.MIP_ON);
+        dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MIP_MODE, "pixelart");
+        System.setProperty(UpscaleSwitches.MODE, "native"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MODE, "native");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("Native AA pixel art default -0.5", near(TemporalFrame.mipBias, -0.5, 1e-6));
+        System.setProperty(UpscaleSwitches.MODE, "performance"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MODE, "performance");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("mode change re-syncs the bias to the new render size: performance pixel art -1.0", near(TemporalFrame.mipBias, -1.0, 1e-6));
+        System.setProperty(UpscaleSwitches.MODE, "custom"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MODE, "custom");
+        System.setProperty(UpscaleSwitches.SCALE, "1.2"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.SCALE, "1.2");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        float b12 = TemporalFrame.mipBias;
+        System.setProperty(UpscaleSwitches.SCALE, "1.3"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.SCALE, "1.3");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("render scale slide: bias follows the current size every frame (custom 1.2 -> 1.3)", TemporalFrame.mipBias < b12 && near(b12, dev.elemore.iroh.upscale.MipBias.resolve(dev.elemore.iroh.upscale.MipBias.Mode.PIXEL_ART, TemporalMath.renderSize(2560, 1.2f), 2560), 1e-6));
+        System.clearProperty(UpscaleSwitches.SCALE); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.SCALE, "1.5");
+        System.setProperty(UpscaleSwitches.MODE, "quality"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MODE, "quality");
+        dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MIP_BIAS, "-1.3");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("manual bias -1.3 quantized to -1.3125, cutout clamped to 0", near(TemporalFrame.mipBias, -1.3125, 1e-6) && TemporalFrame.cutoutBias == 0f);
+        dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MIP_BIAS, "auto");
+        TemporalFrame.beginFrame(2560, 1440, true, true);
+        check("cutout pipelines: core cutout (not mipped) + terrain with alpha cutoff 0.1 are clamped; terrain 0.5 / solid / entity are not",
+                dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("rendertype_cutout", 0f) && dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("rendertype_entity_cutout_no_cull", 0f)
+                && !dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("rendertype_cutout_mipped", 0f) && dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("terrain", 0.1f)
+                && !dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("terrain", 0.5f) && !dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("terrain", 0f)
+                && !dev.elemore.iroh.upscale.MipBias.isCutoutPipeline("rendertype_solid", 0f) && !dev.elemore.iroh.upscale.MipBias.isCutoutPipeline(null, 0f));
+        check("mip bias quantization is bounded: 0.01 steps map to <= 81 distinct values in -5..0", java.util.stream.IntStream.rangeClosed(0, 500).mapToObj(i -> dev.elemore.iroh.upscale.MipBias.quantize(-i / 100f)).distinct().count() <= 81);
+        check("pixel art per mode: native -0.5, performance -1.0, ultra -1.3125",
+                near(dev.elemore.iroh.upscale.MipBias.forMode(dev.elemore.iroh.upscale.QualityMode.NATIVE_AA) * 0.5, -0.5, 1e-6)
+                && near(dev.elemore.iroh.upscale.MipBias.resolve(dev.elemore.iroh.upscale.MipBias.Mode.PIXEL_ART, 1280, 2560), -1.0, 1e-6)
+                && near(dev.elemore.iroh.upscale.MipBias.resolve(dev.elemore.iroh.upscale.MipBias.Mode.PIXEL_ART, 853, 2560), -1.3125, 1e-6));
+        check("RCAS auto per ratio: 1x/1.5x 0.4, 1.7x 0.3, 2x 0.4, 3x 0.1",
+                dev.elemore.iroh.upscale.Rcas.forRatio(1f) == 0.4f && dev.elemore.iroh.upscale.Rcas.forRatio(1.5f) == 0.4f && dev.elemore.iroh.upscale.Rcas.forRatio(1.7f) == 0.3f
+                && dev.elemore.iroh.upscale.Rcas.forRatio(2f) == 0.4f && dev.elemore.iroh.upscale.Rcas.forRatio(3f) == 0.1f);
+        System.setProperty(UpscaleSwitches.MODE, "quality"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MODE, "quality");
         check("velocity on for a temporal upscaler", TemporalFrame.velocityOn);
         TemporalFrame.onWorldCamera(10, 64, 10, new Matrix4f(), p);
         TemporalFrame.endWorld();
@@ -221,7 +264,7 @@ public final class TemporalMathTest {
         TemporalFrame.IN_WORLD = false;
         int[] r3 = {0, 0, 2560, 1440};
         check("no mapping outside the world phase", !TemporalFrame.fixRect(r3));
-        System.setProperty(UpscaleSwitches.MODE, "off");
+        System.setProperty(UpscaleSwitches.MODE, "off"); dev.elemore.iroh.debug.DebugSwitches.set(UpscaleSwitches.MODE, "off");
         check("mode off: change reported, everything off", TemporalFrame.beginFrame(2560, 1440, true, true) && !TemporalFrame.ACTIVE && !TemporalFrame.JITTER_ON);
         System.clearProperty(UpscaleSwitches.MODE);
 

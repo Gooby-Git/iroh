@@ -263,6 +263,8 @@ public final class IrohOptions {
     public static final Opt<dev.elemore.iroh.rt.RtLook> LOOK;
     public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.Quality> UPSCALE_QUALITY;
     public static final Opt<Integer> UPSCALE_SHARPNESS;
+    public static final Opt<dev.elemore.iroh.temporal.UpscaleSettings.MipMode> UPSCALE_MIP_MODE;
+    public static final Opt<Integer> UPSCALE_MIP_BIAS;
 
     // ---- stored by vanilla, shown on the screen ----
     public static final Opt<Integer> FRAMERATE_LIMIT;
@@ -429,12 +431,32 @@ public final class IrohOptions {
             config.upscaleQuality = v.name();
             dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
         };
-        UPSCALE_SHARPNESS = integer("upscaleSharpness", Category.SHADERS, 0, c -> c.upscaleSharpness, (c, v) -> c.upscaleSharpness = v);
-        UPSCALE_SHARPNESS.name("iroh.options.upscaleSharpness").tooltip("iroh.options.upscaleSharpness.tooltip").range(0, 100, 10)
-                .label(v -> v == 0 ? Component.translatable("options.off") : Component.literal(v + "%"))
+        UPSCALE_SHARPNESS = integer("upscaleSharpness", Category.SHADERS, -10, c -> c.upscaleSharpness, (c, v) -> c.upscaleSharpness = v);
+        UPSCALE_SHARPNESS.name("iroh.options.upscaleSharpness").tooltip("iroh.options.upscaleSharpness.tooltip").range(-10, 100, 10)
+                .label(v -> v < 0 ? Component.translatable("iroh.options.upscaleSharpness.auto") : v == 0 ? Component.translatable("options.off") : Component.literal(v + "%"))
                 .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.sharpnessReason(config));
         UPSCALE_SHARPNESS.applier = v -> {
             config.upscaleSharpness = v;
+            dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
+        };
+        // FSR-Q5: texture LOD bias rule + manual slider
+        UPSCALE_MIP_MODE = enumOpt("upscaleMipMode", Category.SHADERS, dev.elemore.iroh.temporal.UpscaleSettings.MipMode.class,
+                dev.elemore.iroh.temporal.UpscaleSettings.MipMode.PIXEL_ART,
+                c -> parse(dev.elemore.iroh.temporal.UpscaleSettings.MipMode.class, c.upscaleMipMode, dev.elemore.iroh.temporal.UpscaleSettings.MipMode.PIXEL_ART),
+                (c, v) -> c.upscaleMipMode = v.name());
+        UPSCALE_MIP_MODE.name("iroh.options.upscaleMipMode").tooltip("iroh.options.upscaleMipMode.tooltip")
+                .label(v -> Component.translatable("iroh.options.upscaleMipMode." + v.name().toLowerCase()))
+                .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.sharpnessReason(config));
+        UPSCALE_MIP_MODE.applier = v -> {
+            config.upscaleMipMode = v.name();
+            dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
+        };
+        UPSCALE_MIP_BIAS = integer("upscaleMipBias", Category.SHADERS, -10, c -> c.upscaleMipBias, (c, v) -> c.upscaleMipBias = v);
+        UPSCALE_MIP_BIAS.name("iroh.options.upscaleMipBias").tooltip("iroh.options.upscaleMipBias.tooltip").range(-50, 0, 1)
+                .label(v -> Component.literal(String.format(java.util.Locale.ROOT, "%.1f", v / 10f)))
+                .unavailable(() -> dev.elemore.iroh.temporal.UpscaleSettings.mipBiasReason(config));
+        UPSCALE_MIP_BIAS.applier = v -> {
+            config.upscaleMipBias = v;
             dev.elemore.iroh.temporal.UpscaleSettings.apply(config);
         };
 

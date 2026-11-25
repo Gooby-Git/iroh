@@ -148,6 +148,28 @@ public class ConfigMigrationTest {
                 && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.UPSCALER, "").equals("fsr")
                 && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.SHARPNESS, "").equals("0.40"),
                 "settings drive the runtime switches (mode performance, upscaler fsr, sharpness 0.40)");
+        // FSR-Q4 / Q5: Auto sharpness, mip bias rules
+        cg.upscaleSharpness = -10;
+        cg.upscaleMipMode = "PIXEL_ART";
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
+        check(dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.SHARPNESS, "").equals("auto")
+                && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.MIP_MODE, "").equals("pixelart")
+                && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.MIP_BIAS, "").equals("auto"),
+                "Auto sharpness (below 0) -> switch auto; pixel art mip -> mipMode pixelart, bias auto");
+        check(reg.upscaleSharpness == -10 && reg.upscaleMipMode.equals("PIXEL_ART") && reg.upscaleMipBias == -10, "new configs default to Auto sharpness, pixel-art mip bias");
+        cg.upscaleMipMode = "MANUAL";
+        cg.upscaleMipBias = -15;
+        cg.upscaleSharpness = 0;
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
+        check(dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.MIP_BIAS, "").equals("-1.50")
+                && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.SHARPNESS, "").equals("off"),
+                "manual mip bias -15 tenths -> -1.50; sharpness 0 -> off");
+        check(dev.elemore.iroh.temporal.UpscaleSettings.mipBiasReason(cg) == null, "mip slider live in Manual");
+        cg.upscaleMipMode = "FORMULA";
+        dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
+        check(dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.MIP_MODE, "").equals("formula")
+                && dev.elemore.iroh.debug.DebugSwitches.getOr(dev.elemore.iroh.temporal.UpscaleSwitches.MIP_BIAS, "").equals("auto")
+                && dev.elemore.iroh.temporal.UpscaleSettings.mipBiasReason(cg) != null, "formula mip rule; the slider is greyed outside Manual");
         cg.upscaler = "OFF";
         dev.elemore.iroh.temporal.UpscaleSettings.apply(cg);
         check(dev.elemore.iroh.temporal.UpscaleSwitches.mode() == dev.elemore.iroh.temporal.ScaleMode.OFF, "Off in the settings turns the mode off");

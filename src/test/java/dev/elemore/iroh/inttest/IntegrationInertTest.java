@@ -184,8 +184,8 @@ public final class IntegrationInertTest {
         expect.put("IrohBlockEntityIdsM.*", "{Substitution.HOOK=2, Substitution.WORLD=2}"); // INT-3: P3-11 per block entity
         expect.put("IrohWeatherContextM.*", "{Substitution.HOOK=1, Substitution.WORLD=1}"); // INT-3: P3-11 weather HEAD
         expect.put("DefaultMainPass.rebindMainTarget", "{}");
-        expect.put("Pipeline.needsUpdate", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.mipBias=1}");
-        expect.put("Pipeline.updateDescriptorSet", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.mipBias=1}");
+        expect.put("Pipeline.needsUpdate", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.samplerBias=1}");
+        expect.put("Pipeline.updateDescriptorSet", "{TemporalFrame.IN_WORLD=1, TemporalFrame.MIP_ON=1, TemporalFrame.samplerBias=1}");
         expect.put("GlState.viewport", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
         expect.put("GlState.applyScissor", "{TemporalFrame.IN_WORLD=1, TemporalFrame.fixRect=1}");
         expect.put("UniformSlots.jittered", "{TemporalFrame.IN_WORLD=1, TemporalFrame.JITTER_ON=1, TemporalFrame.gpuProjection=1}");

@@ -23,6 +23,8 @@ public final class UpscaleSwitches {
     public static final String JITTER = "iroh.upscale.jitter";
     /** auto | off | float: texture LOD bias in the world phase (auto = FSR's log2(render/display) - 1 when jittering, else 0) */
     public static final String MIP_BIAS = "iroh.upscale.mipBias";
+    /** FSR-Q5: how an "auto" mipBias is derived: pixelart | formula | off */
+    public static final String MIP_MODE = "iroh.upscale.mipMode";
     /** auto | on | off: camera velocity pass (auto = when the upscaler or the debug view needs it) */
     public static final String VELOCITY = "iroh.upscale.velocity";
     /** on | off: map display-size viewports/scissors given by mods during the world phase to the render target */
@@ -70,15 +72,15 @@ public final class UpscaleSwitches {
                     }, v -> "ok"));
             DebugSwitches.register(new Switch(UPSCALER, "auto", "auto | fsr | bilinear (auto = FSR 3.1 when available, else bilinear)",
                     DebugSwitches.oneOf("auto", "fsr", "bilinear"), v -> "ok"));
-            DebugSwitches.register(new Switch(SHARPNESS, "off", "FSR RCAS sharpening: off | 0..1",
+            DebugSwitches.register(new Switch(SHARPNESS, "off", "FSR RCAS sharpening: off | auto (per mode, Rcas.forRatio) | 0..1",
                     v -> {
-                        if (v.equals("off"))
+                        if (v.equals("off") || v.equals("auto"))
                             return null;
                         try {
                             float f = Float.parseFloat(v);
-                            return f >= 0f && f <= 1f ? null : "expected off or 0..1";
+                            return f >= 0f && f <= 1f ? null : "expected off, auto or 0..1";
                         } catch (NumberFormatException e) {
-                            return "expected off or 0..1";
+                            return "expected off, auto or 0..1";
                         }
                     }, v -> "ok"));
             DebugSwitches.register(new Switch(JITTER, "auto", "projection jitter: auto (temporal upscaler only) | on | off",
@@ -94,6 +96,8 @@ public final class UpscaleSwitches {
                             return "expected auto, off or a number";
                         }
                     }, v -> "ok"));
+            DebugSwitches.register(new Switch(MIP_MODE, "pixelart", "auto mip bias rule: pixelart (formula + 0.5, foliage clamped) | formula (AMD log2(render/display) - 1) | off",
+                    DebugSwitches.oneOf("pixelart", "formula", "off"), v -> "ok"));
             DebugSwitches.register(new Switch(VELOCITY, "auto", "camera velocity pass: auto | on | off",
                     DebugSwitches.oneOf("auto", "on", "off"), v -> "ok"));
             DebugSwitches.register(new Switch(VIEWPORT_FIX, "on", "map display-size viewports of mods to the render target in the world phase",

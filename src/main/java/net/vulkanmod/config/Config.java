@@ -54,8 +54,12 @@ public class Config {
     public String look = "NAVIDSON";
     /** P4-1b: NATIVE_AA / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE */
     public String upscaleQuality = "QUALITY";
-    /** P4-1b: FSR sharpening 0 (off) .. 100 */
-    public int upscaleSharpness = 0;
+    /** P4-1b / FSR-Q4: RCAS strength: below 0 = Auto (per mode, Rcas.forRatio), 0 = off, 10..100 = percent. Missing from an old iroh.json = Auto. */
+    public int upscaleSharpness = -10;
+    /** FSR-Q5: PIXEL_ART (default) | FORMULA | MANUAL | OFF: how the world texture LOD bias is derived */
+    public String upscaleMipMode = "PIXEL_ART";
+    /** FSR-Q5: the bias of MANUAL in tenths of a level, -50 .. 0 */
+    public int upscaleMipBias = -10;
 
     public void write() {
         IrohOptions.save();

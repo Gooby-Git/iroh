@@ -798,7 +798,28 @@ tasks.register('fsrMetrics', JavaExec) {
 	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
 	workingDir = projectDir
 	def a = []
-	['dump', 'sweep', 'rcas', 'combo', 'ratio'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	['dump', 'sweep', 'rcas', 'combo', 'ratio', 'rcassweep'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
+	if (project.hasProperty('force16')) a << '--force16'
+	args a
+	doFirst {
+		if (!fsrLib.exists()) throw new GradleException('libiroh_fsr.so missing: run ./gradlew fsrNative')
+		systemProperty 'iroh.fsr.lib', fsrLib.absolutePath
+		useLavapipe(it)
+	}
+}
+
+// FSR-Q5: texture LOD bias vs sharpness / shimmer on a pixel-art texture. ./gradlew fsrMipMetrics [-Pbias=0,-0.5] [-Pratio=1,2] [-Pdensity=1.5,3] [-Prcas=0.3]
+// last line "# fsrmip PASS|FAIL"
+tasks.register('fsrMipMetrics', JavaExec) {
+	group = 'verification'
+	description = 'FSR texture mip-bias sharpness vs shimmer metrics on lavapipe (no game)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.elemore.iroh.upscaletest.FsrMipMetrics'
+	jvmArgs '-Xmx3g', '-Djava.awt.headless=true'
+	workingDir = projectDir
+	def a = []
+	['bias', 'ratio', 'density', 'rcas'].each { k -> if (project.hasProperty(k)) a << "--${k}=${project.property(k)}" }
 	if (project.hasProperty('force16')) a << '--force16'
 	args a
 	doFirst {

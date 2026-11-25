@@ -32,6 +32,8 @@ public final class TemporalFrame {
     public static int phaseCount = 1;
     public static float jitterPxX, jitterPxY, jitterNdcX, jitterNdcY;
     public static float mipBias;
+    /** FSR-Q5: the bias of alpha-tested (cutout) pipelines: clamped toward 0 so foliage and fences keep their edges */
+    public static float cutoutBias;
     public static boolean velocityOn;
     public static boolean viewportFix;
     /** 0 none, 1 velocity, 2 reactive, 3 depth, 4 jitter (velocity.comp modes) */
@@ -123,18 +125,22 @@ public final class TemporalFrame {
         jitterNdcY = TemporalMath.jitterNdcY(jitterPxY, renderH);
         JITTER_ON = jitter;
 
+        // FSR-Q5: the bias follows the CURRENT render size every frame (mode switch, render scale, later dynamic resolution),
+        // quantized so a sliding size creates a bounded set of samplers; cutout pipelines clamp it (samplerBias).
         String mb = DebugSwitches.getOr(UpscaleSwitches.MIP_BIAS, "auto");
         if (mb.equals("off")) {
             mipBias = 0f;
         } else if (mb.equals("auto")) {
-            mipBias = jitter ? TemporalMath.mipBias(renderW, displayW) : 0f;
+            mipBias = jitter ? dev.elemore.iroh.upscale.MipBias.resolve(
+                    dev.elemore.iroh.upscale.MipBias.Mode.parse(DebugSwitches.getOr(UpscaleSwitches.MIP_MODE, "pixelart")), renderW, displayW) : 0f;
         } else {
             try {
-                mipBias = Float.parseFloat(mb);
+                mipBias = dev.elemore.iroh.upscale.MipBias.quantize(Float.parseFloat(mb));
             } catch (NumberFormatException e) {
                 mipBias = 0f;
             }
         }
+        cutoutBias = dev.elemore.iroh.upscale.MipBias.cutout(mipBias);
         MIP_ON = mipBias != 0f;
 
         debugMode = switch (DebugSwitches.getOr(UpscaleSwitches.DEBUG_VIEW, "off")) {
@@ -305,5 +311,10 @@ public final class TemporalFrame {
         lastCameraType = lastDimension = null;
         lastScreen = haveContext = false;
         reproject.identity();
+    }
+
+    /** FSR-Q5: the world-phase LOD bias for a pipeline's samplers (cutout pipelines get the clamped bias). */
+    public static float samplerBias(net.vulkanmod.vulkan.shader.Pipeline p) {
+        return dev.elemore.iroh.upscale.MipBias.isCutoutPipeline(p.name, net.vulkanmod.vulkan.VRenderSystem.alphaCutout) ? cutoutBias : mipBias;
     }
 }

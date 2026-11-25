@@ -25,6 +25,21 @@ public final class UpscaleSettings {
         Quality(ScaleMode m) { this.mode = m; }
     }
 
+    /** FSR-Q5 Mip LOD bias rule row */
+    public enum MipMode {
+        PIXEL_ART("pixelart"), FORMULA("formula"), MANUAL("pixelart"), OFF("off");
+        public final String key;
+        MipMode(String key) { this.key = key; }
+    }
+
+    static MipMode parseMip(String s) {
+        try {
+            return MipMode.valueOf(s);
+        } catch (RuntimeException e) {
+            return MipMode.PIXEL_ART;
+        }
+    }
+
     /** the settings would start the upscaler: enable the device features at device creation */
     public static boolean wantsDeviceFeatures(Config c) {
         return parse(c.upscaler) == Upscaler.FSR3;
@@ -47,8 +62,14 @@ public final class UpscaleSettings {
             q = Quality.QUALITY;
         }
         DebugSwitches.set(UpscaleSwitches.UPSCALER, "fsr");
-        int s = Math.max(0, Math.min(100, c.upscaleSharpness));
-        DebugSwitches.set(UpscaleSwitches.SHARPNESS, s == 0 ? "off" : String.format(Locale.ROOT, "%.2f", s / 100f));
+        // FSR-Q4: below 0 = Auto (the runtime reads Rcas.forRatio for the current mode), 0 = off
+        int s = Math.min(100, c.upscaleSharpness);
+        DebugSwitches.set(UpscaleSwitches.SHARPNESS, s < 0 ? "auto" : s == 0 ? "off" : String.format(Locale.ROOT, "%.2f", s / 100f));
+        // FSR-Q5: mip bias rule; MANUAL pins the float, the others let the runtime follow the current render size
+        MipMode mm = parseMip(c.upscaleMipMode);
+        DebugSwitches.set(UpscaleSwitches.MIP_MODE, mm.key);
+        DebugSwitches.set(UpscaleSwitches.MIP_BIAS, mm == MipMode.MANUAL
+                ? String.format(Locale.ROOT, "%.2f", Math.max(-50, Math.min(0, c.upscaleMipBias)) / 10f) : "auto");
         DebugSwitches.set(UpscaleSwitches.MODE, q.mode.key);
     }
 
@@ -93,6 +114,12 @@ public final class UpscaleSettings {
 
     public static Component sharpnessReason(Config c) {
         return parse(c.upscaler) != Upscaler.FSR3 ? Component.translatable("iroh.reason.fsrOnly") : null;
+    }
+
+    /** FSR-Q5: the slider only drives the bias in Manual mode. */
+    public static Component mipBiasReason(Config c) {
+        Component r = sharpnessReason(c);
+        return r != null ? r : parseMip(c.upscaleMipMode) != MipMode.MANUAL ? Component.translatable("iroh.reason.mipManualOnly") : null;
     }
 
     static boolean isWindows() {
