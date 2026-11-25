@@ -24,9 +24,29 @@ public class CompileResult {
     QuadSorter.SortState transparencyState;
     CompiledSection compiledSection;
 
-    CompileResult(RenderSection renderSection, boolean fullUpdate) {
+    /** RQ-HOLES-b: where the section was when the task that built this result was created. */
+    private final int originX, originY, originZ;
+
+    CompileResult(RenderSection renderSection, boolean fullUpdate, int originX, int originY, int originZ) {
         this.renderSection = renderSection;
         this.fullUpdate = fullUpdate;
+        this.originX = originX;
+        this.originY = originY;
+        this.originZ = originZ;
+    }
+
+    /** Public entry for the offline tests (same as the task path). */
+    public static CompileResult forOrigin(RenderSection renderSection, boolean fullUpdate, int originX, int originY, int originZ) {
+        return new CompileResult(renderSection, fullUpdate, originX, originY, originZ);
+    }
+
+    /**
+     * RQ-HOLES-b: true when the section was relocated (RenderSection.setOrigin) after the task was created: the mesh belongs
+     * to the old position and must not be uploaded into the section's new slot.
+     */
+    public boolean originStale() {
+        return this.renderSection.xOffset() != this.originX || this.renderSection.yOffset() != this.originY
+                || this.renderSection.zOffset() != this.originZ;
     }
 
     /** P2-4: bytes this result will upload (intake budget prediction). */
