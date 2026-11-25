@@ -1,77 +1,64 @@
-# <a href="https://github.com/xCollateral/VulkanMod"> <img src="./src/main/resources/assets/vulkanmod/Vlogo.png" width="30" height="30"/> </a> VulkanMod
+# Iroh
 
-This is a fabric mod that introduces a brand new **Vulkan** based voxel rendering engine to **Minecraft java** in order to both replace the default OpenGL renderer and bring performance improvements.
+A Vulkan renderer for Minecraft 1.21.1 on Fabric, forked from **[VulkanMod](https://github.com/xCollateral/VulkanMod)**.
 
-### Why?
-- Highly experimental project that overhauls and modernizes the internal renderer for Minecraft. <br>
-- Updates the renderer from OpenGL 3.2 to Vulkan 1.2.  <br>
-- Provides a potential reference for a future-proof Vulkan codebase for Minecraft Java. <br>
-- Utilizes the VulkanAPI to allow for capabilities not always possible with OpenGL. <br>
-- Including reduced CPU Overhead and use of newer, modern hardware capabilities. <br>
+> **Credit where it is due:** Iroh is built on VulkanMod by **xCollateral and contributors**. The
+> renderer core, the chunk pipeline and most of the Vulkan plumbing are theirs. Iroh forked from
+> VulkanMod tag `0.5.5` (Minecraft 1.21.1) and keeps the upstream `net.vulkanmod.*` packages so that
+> upstream changes can still be merged. New Iroh code lives under `dev.elemore.iroh`. Please support the
+> original project: <https://github.com/xCollateral/VulkanMod>.
 
-### Demonstration Video:
+Iroh is being developed for the **Elemore** modpack, where it is meant to replace both Sodium and Iris.
+It is a work in progress and has no public release yet.
 
-[![Demostration Video](http://img.youtube.com/vi/sbr7UxcAmOE/0.jpg)](https://youtu.be/sbr7UxcAmOE)
+## What it is for
 
-## FAQ
-- Remember to check the [Wiki](https://github.com/xCollateral/VulkanMod/wiki) we wrote before asking for support!
+- Replace Sodium and Iris in the Elemore pack with one Vulkan renderer.
+- Run the pack's own shader, [Navidson](https://github.com/Gooby-Git/navidson), through an Iris-format
+  shader-pack loader on Vulkan (`dev.elemore.iroh.shaderpack`).
+- Add upscaling (FSR 3.1 first; in progress) and ray tracing (planned, not working yet).
 
-## Installation
+## What exists in the code today
 
-### Download Links:
+This list only names things that are present in the source tree; it is not a claim that all of it is finished.
 
-- [![CurseForge](https://cf.way2muchnoise.eu/full_635429_downloads.svg?badge_style=flat)](https://www.curseforge.com/minecraft/mc-mods/vulkanmod)
+- VulkanMod's renderer, kept and tuned (device, memory, pipelines, chunk meshing, drawing).
+- A GL compatibility layer (`glshim`) that translates the GL / GlStateManager calls other mods make into Vulkan state.
+- Compatibility shims for third-party mods (for example WaterMedia and Satin), written as separate mixin packages.
+- An Iris-format shader-pack loader: parsing, GLSL to SPIR-V, pass graph and runtime.
+- GPU memory guarding and diagnostics (`memory`, `gpu`, `diag`), and offline Vulkan test harnesses.
+- Upscaler scaffolding (`upscale`, `upscale/fsr`), temporal passes (`temporal`) and a denoiser interface with an NRD binding (`rt/denoise`).
+- A small public API (`api`) for the pack's own mods.
 
-- [![Modrinth Downloads](https://img.shields.io/modrinth/dt/JYQhtZtO?logo=modrinth&label=Modrinth%20Downloads)](https://modrinth.com/mod/vulkanmod/versions)
+Ray tracing and FSR 3.1 are in progress. DLSS is planned for NVIDIA cards. See `docs/` for the plan.
 
-- [![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/xCollateral/VulkanMod/total?style=flat-square&logo=github&label=Github%20Downloads)](https://github.com/xCollateral/VulkanMod/releases)
+## Requirements
 
-### Install guide:
->1) Install the [fabric modloader](https://fabricmc.net).
->1) Download and put the `Vulkanmod.jar` file into `.minecraft/mods`
->1) Enjoy !
+- Minecraft **1.21.1**, Fabric Loader 0.16.10 or newer, Fabric API.
+- **Java 25** (the build targets Java 25 bytecode).
+- A GPU and driver with Vulkan 1.2.
 
-## Useful links
-<table>
-    <tr>
-      <th> Discord server</th>
-      <th> Ko-Fi</th>
-    </tr>
-  <tr>
-    <td style="text-align:center"> 
-        <a href="https://discord.gg/FVXg7AYR2Q"> 
-            <img alt="Discord" align="top" src="https://img.shields.io/discord/963180553547419670?style=flat-square&logo=discord&logoColor=%23FFFFFF&label=Vulkanmod%20official%20discord%20server&labelColor=%235865F2&color=%235865F2">
-        </a>
-     </td>
-    <td>
-        <a href="https://ko-fi.com/V7V7CHHJV">
-            <img alt="Static Badge" align="top" src="https://img.shields.io/badge/KoFi-%23ff5e5b?logo=ko-fi&logoColor=%23FFFFFF&link=https%3A%2F%2Fko-fi.com%2FV7V7CHHJV">
-        </a>
-    </td>
-  </tr>
-</table>
+## Install
 
+There is no release yet. Build the jar (below) and put the jar from `build/libs/` into the `mods` folder of a Fabric 1.21.1 instance.
+Remove Sodium and Iris from that instance first; Iroh replaces them.
 
-## Features
+## Build
 
-### Optimizations:
->- [x] Multiple chunk culling algorithms
->- [x] Reduced CPU overhead
->- [x] Improved GPU performance
->- [x] Indirect Draw mode (reduces CPU overhead)
->- [x] Chunk rendering optimizations
+```sh
+./build.sh
+```
 
-### New changes:
->- [x] Native Wayland support
->- [x] GPU selector
->- [x] Windowed fullscreen mode
->- [x] Revamped graphic settings menu
->- [x] Resizable render frame queue
->- [ ] Shader support
->- [ ] Removed Herobrine
+This runs Gradle with JDK 25. Offline test tasks are in `build.gradle`; they do not need a game window.
 
+## Licence
 
-## Notes
-- This mod is still in development, please report issues in the [issue tab](https://github.com/xCollateral/VulkanMod/issues) with logs attached!
-- This mode isn't just "minecraft on vulkan" (e.g: [zink](https://docs.mesa3d.org/drivers/zink.html) ), it is a full rewrite of the minecraft renderer.
+LGPL-3.0-only, the same licence as VulkanMod. See `LICENSE` and `COPYING`. Upstream attribution, files
+carried from other projects and what is deliberately never committed (vendor SDK binaries, reference clones)
+are listed in `NOTICE` and `THIRD_PARTY.md`.
 
+## Credits
+
+- **VulkanMod**, by xCollateral and contributors: the base of this whole project.
+- FabricMC (Fabric Rendering API implementation, Apache-2.0), carried by VulkanMod.
+- Part of the Elemore pack.
