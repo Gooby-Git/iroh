@@ -202,6 +202,17 @@ tasks.register('streamingTest', JavaExec) {
 	jvmArgs '-ea', '-Xmx1g'
 }
 
+// TERRAIN-HOLES: per-facing bucket of a terrain quad follows its final geometry (shade-hook lift, copyFrom).
+// ./gradlew terrainHolesTest ; last line "# terrainholes PASS n/n".
+tasks.register('terrainHolesTest', JavaExec) {
+	group = 'verification'
+	description = 'TERRAIN-HOLES: quad facing bucket after the Polaris shade-hook lift and copyFrom (real FRAPI quad, no GPU)'
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.vulkanmod.render.chunk.build.frapi.mesh.TerrainHolesTest'
+	jvmArgs '-ea'
+}
+
 // P2-6 (L3): async visibility graph vs the synchronous walk on recorded camera paths. ./gradlew graphAsyncTest ; "# graphasync PASS n/n".
 tasks.register('graphAsyncTest', JavaExec) {
 	group = 'verification'

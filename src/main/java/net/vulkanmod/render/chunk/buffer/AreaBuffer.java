@@ -398,6 +398,38 @@ public class AreaBuffer {
         this.ops.deferSegmentFree(this, elementOffset);
     }
 
+    /**
+     * TERRAIN-HOLES: the draw-parameter slot ({@code paramsPtr} given to {@link #upload}) that owns the used segment
+     * starting at {@code elementOffset}, or 0 when no used segment starts there.
+     */
+    public long ownerAt(int elementOffset) {
+        Segment s = this.usedSegments.get(elementOffset * this.elementSize);
+        return s == null ? 0L : s.paramsPtr;
+    }
+
+    int elementSize() {
+        return this.elementSize;
+    }
+
+    /** TERRAIN-HOLES: bytes of the used segment starting at {@code elementOffset}, or -1. */
+    public int usedSizeAt(int elementOffset) {
+        Segment s = this.usedSegments.get(elementOffset * this.elementSize);
+        return s == null ? -1 : s.size;
+    }
+
+    /**
+     * TERRAIN-HOLES (RQ-P24-a): free, after the frames in flight, the segment at {@code elementOffset} only if the slot
+     * {@code paramsPtr} owns it. Returns whether a free was queued. Any other answer means the slot's parameters do not
+     * describe a segment of this buffer (already freed, never uploaded here, or sequential translucent indices), and
+     * freeing would hit another section's live mesh.
+     */
+    public boolean freeOwnedDeferred(int elementOffset, long paramsPtr) {
+        if (elementOffset < 0 || paramsPtr == 0L || ownerAt(elementOffset) != paramsPtr)
+            return false;
+        this.ops.deferSegmentFree(this, elementOffset);
+        return true;
+    }
+
     public Buffer getBuffer() {
         return this.buffer;
     }

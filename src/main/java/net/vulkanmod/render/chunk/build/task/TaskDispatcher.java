@@ -360,6 +360,7 @@ public class TaskDispatcher {
             dev.elemore.iroh.diag.UploadStats.sectionsUploaded += n;
             dev.elemore.iroh.diag.UploadStats.frameUploadNs += System.nanoTime() - t0;
         }
+        if (dev.elemore.iroh.diag.SegmentCheck.ON) dev.elemore.iroh.diag.SegmentCheck.afterIntake(); // TERRAIN-HOLES
 
         return flag;
     }

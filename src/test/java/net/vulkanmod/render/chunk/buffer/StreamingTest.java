@@ -226,6 +226,91 @@ public final class StreamingTest {
         return new long[]{a.grows, a.grownCopyBytes, errors, corrupt, a.getSize(), live, a.getUsed()};
     }
 
+    /**
+     * TERRAIN-HOLES draw model: {@code SECTIONS} sections x 7 facings of real native draw-parameter slots on one vertex
+     * AreaBuffer (fake device, 16-byte elements). Rebuilds upload facings like DrawBuffers.upload (a facing that becomes
+     * empty keeps its vertexOffset with indexCount 0); a section losing the layer goes through
+     * {@link SectionSegments#freeLayer} ({@code legacy}: the base's byte-offset setSegmentFree); relocation frees the
+     * same way ({@code legacy}: parameters reset, segments leak). Every frame the "GPU" draws each slot with
+     * indexCount > 0 and compares the bytes it reads with the mesh that slot uploaded. Returns {corrupt draws, slots
+     * the integrity check flags, used bytes, live bytes, frames with a corrupt draw}.
+     */
+    static long[] drawModel(boolean legacy, long seed) {
+        final int SECTIONS = 96, F = 7, ES = 16;
+        SplittableRandom r = new SplittableRandom(seed);
+        FakeOps f = new FakeOps(false);
+        AreaBuffer a = new AreaBuffer(AreaBuffer.Usage.VERTEX, 4096, ES, f);
+        long base = MemoryUtil.nmemCalloc(SECTIONS * F, DrawParametersBuffer.STRIDE);
+        for (int i = 0; i < SECTIONS * F; i++) DrawParametersBuffer.resetParameters(base + i * DrawParametersBuffer.STRIDE);
+        int[] tags = new int[SECTIONS * F], sizes = new int[SECTIONS * F];
+        int tag = 0;
+        long corrupt = 0, flagged = 0, badFrames = 0;
+        for (int step = 0; step < 4000; step++) {
+            int sec = r.nextInt(SECTIONS);
+            long p0 = base + (long) sec * F * DrawParametersBuffer.STRIDE;
+            int op = r.nextInt(10);
+            if (op < 7) { // rebuild with the layer present
+                for (int i = 0; i < F; i++) {
+                    long ptr = p0 + i * DrawParametersBuffer.STRIDE;
+                    int vo = DrawParametersBuffer.getVertexOffset(ptr);
+                    if (r.nextInt(3) == 0) { // facing empty this time
+                        DrawParametersBuffer.setIndexCount(ptr, 0);
+                        continue;
+                    }
+                    int verts = 4 * (1 + r.nextInt(120));
+                    ByteBuffer m = mesh(verts * ES, ++tag);
+                    AreaBuffer.Segment sg = a.upload(m, vo, ptr);
+                    MemoryUtil.memFree(m);
+                    DrawParametersBuffer.setVertexOffset(ptr, sg.getOffset() / ES);
+                    DrawParametersBuffer.setIndexCount(ptr, verts * 6 / 4);
+                    tags[sec * F + i] = tag;
+                    sizes[sec * F + i] = verts * ES;
+                }
+            } else { // op 7..8: the layer is gone (resetDrawParameters(renderType)); op 9: relocation (reset())
+                if (legacy) {
+                    if (op < 9)
+                        for (int i = 0; i < F; i++) {
+                            int vo = DrawParametersBuffer.getVertexOffset(p0 + i * DrawParametersBuffer.STRIDE);
+                            if (vo != -1) a.setSegmentFree(vo * ES); // the base's call: a BYTE offset
+                        }
+                } else {
+                    SectionSegments.freeLayer(a, null, p0, F);
+                }
+                for (int i = 0; i < F; i++) DrawParametersBuffer.resetParameters(p0 + i * DrawParametersBuffer.STRIDE);
+            }
+            if (step % 5 == 4) {
+                f.nextFrame();
+                // the frame's draws: what each drawn slot reads from the current buffer
+                long before = corrupt;
+                byte[] mem = f.mem.get(a.getBuffer().getId());
+                for (int k = 0; k < SECTIONS * F; k++) {
+                    long ptr = base + (long) k * DrawParametersBuffer.STRIDE;
+                    int ic = DrawParametersBuffer.getIndexCount(ptr);
+                    if (ic <= 0) continue;
+                    int off = DrawParametersBuffer.getVertexOffset(ptr) * ES, bytes = ic / 6 * 4 * ES;
+                    boolean ok = bytes == sizes[k] && off + bytes <= mem.length;
+                    for (int b = 0; ok && b < bytes; b++) ok = mem[off + b] == (byte) (tags[k] * 31 + b * 7);
+                    if (!ok) corrupt++;
+                }
+                if (corrupt > before) badFrames++;
+                SectionSegments.Report rep = new SectionSegments.Report();
+                for (int sc = 0; sc < SECTIONS; sc++)
+                    SectionSegments.checkLayer(a, null, base + (long) sc * F * DrawParametersBuffer.STRIDE, F, ES, rep, () -> "");
+                flagged += rep.bad();
+            }
+        }
+        // everything drawn is live; after the frames in flight, used bytes must equal them (no leak)
+        for (int k = 0; k < 4; k++) f.nextFrame();
+        long live = 0;
+        for (int k = 0; k < SECTIONS * F; k++) {
+            long ptr = base + (long) k * DrawParametersBuffer.STRIDE;
+            if (DrawParametersBuffer.getVertexOffset(ptr) != -1) live += sizes[k];
+        }
+        long used = a.getUsed();
+        MemoryUtil.nmemFree(base);
+        return new long[]{corrupt, flagged, used, live, badFrames};
+    }
+
     // ------------------------------------------------------------------ main
 
     public static void main(String[] args) {
@@ -306,6 +391,38 @@ public final class StreamingTest {
                 + "); element-offset deferred free frees exactly its own, after the frames in flight (" + (notYet && owner2.isFree() && !bystander2.isFree()) + ")",
                 wrongFreed && notYet && owner2.isFree() && !bystander2.isFree());
         MemoryUtil.memFree(e1); MemoryUtil.memFree(e15); MemoryUtil.memFree(e16);
+
+        // ---- 3b. TERRAIN-HOLES: live sections LOSE FACES under the byte-offset free; the owned element free does not
+        long oc = 0, of = 0, obf = 0, nc = 0, nf = 0, nbf = 0, leakBytes = 0;
+        for (long seed = 1; seed <= 4; seed++) {
+            long[] o = drawModel(true, seed), n = drawModel(false, seed);
+            oc += o[0]; of += o[1]; obf += o[4];
+            nc += n[0]; nf += n[1]; nbf += n[4];
+            leakBytes += n[2] - n[3];
+        }
+        check("draw model, base layer free: " + oc + " corrupt draws in " + obf + " frames (another section's live mesh freed, then overwritten); integrity check flags " + of, oc > 0 && of > 0);
+        check("draw model, owned element free (SectionSegments.freeLayer): " + nc + " corrupt draws, " + nf + " flagged, used - live = " + leakBytes + " B", nc == 0 && nf == 0 && leakBytes == 0);
+        // the free never touches a segment the slot does not own: sequential translucent indices (firstIndex 0)
+        FakeOps ti = new FakeOps(false);
+        AreaBuffer idx = new AreaBuffer(AreaBuffer.Usage.INDEX, 4096, 2, ti);
+        long slots = MemoryUtil.nmemCalloc(2 * 7, DrawParametersBuffer.STRIDE);
+        for (int i = 0; i < 14; i++) DrawParametersBuffer.resetParameters(slots + i * DrawParametersBuffer.STRIDE);
+        long yUndef = slots + 6 * DrawParametersBuffer.STRIDE, xUndef = slots + 13 * DrawParametersBuffer.STRIDE;
+        ByteBuffer ib = mesh(600, 3);
+        AreaBuffer.Segment ys = idx.upload(ib, -1, yUndef); // section Y: sorted indices at index offset 0
+        DrawParametersBuffer.setFirstIndex(yUndef, ys.getOffset() / 2);
+        DrawParametersBuffer.setIndexCount(yUndef, 300);
+        DrawParametersBuffer.setFirstIndex(xUndef, 0);     // section X: sequential (auto) indices, firstIndex 0
+        DrawParametersBuffer.setIndexCount(xUndef, 600);
+        int q1 = SectionSegments.freeLayer(null, idx, slots + 7 * DrawParametersBuffer.STRIDE, 7);
+        for (int k = 0; k < 4; k++) ti.nextFrame();
+        boolean yKept = !ys.isFree();
+        int q2 = SectionSegments.freeLayer(null, idx, slots, 7);
+        for (int k = 0; k < 4; k++) ti.nextFrame();
+        check("translucent index free only when owned: auto-index section frees nothing (" + q1 + ", Y kept " + yKept + "), Y frees its own (" + q2 + ", freed " + ys.isFree() + ")",
+                q1 == 0 && yKept && q2 == 1 && ys.isFree() && idx.segmentErrors().isEmpty());
+        MemoryUtil.memFree(ib);
+        MemoryUtil.nmemFree(slots);
 
         // ---- 4. intake budget replay
         intakeReplay();
