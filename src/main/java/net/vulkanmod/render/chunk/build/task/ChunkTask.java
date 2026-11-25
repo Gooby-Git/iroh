@@ -53,7 +53,7 @@ public abstract class ChunkTask {
     /** R-P213BC: the task threw on a builder thread; ask for the section to be meshed again (the dispatcher bounds how often). */
     void markForRebuild() {
         var s = this.section;
-        if (s != null)
+        if (s != null && !this.cancelled.get())
             s.setDirty(false);
     }
 

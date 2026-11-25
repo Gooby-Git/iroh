@@ -112,7 +112,7 @@ public class TaskDispatcher {
     }
 
     private void runTaskThread(int index, BuilderResources builderResources) {
-        while(!this.stopThreads) {
+        while(!this.stopThreads && this.isCurrent(index)) {
             if (index >= this.activeLimit) { // perf/hitches: an adaptive builder parks while the backlog is small
                 synchronized (this.parkLock) { // its own monitor: schedule()'s notify() must reach an idle ACTIVE builder
                     if (index >= this.activeLimit && !this.stopThreads) {
@@ -159,12 +159,25 @@ public class TaskDispatcher {
                 // R-P213BC: one failing task used to end this builder for the rest of the session (e5dad79's NPE was one).
                 if (t instanceof VirtualMachineError && !(t instanceof StackOverflowError))
                     throw t; // OutOfMemoryError and friends: not ours to swallow
-                this.failures.taskFailed(task, t);
+                // the task died half way: its TerrainBuilders are still in begin() state and would fail every later task
+                try {
+                    if (builderResources != null)
+                        builderResources.clear();
+                    this.failures.taskFailed(task, t);
+                } catch (Throwable ignored) {
+                    // reporting must not end the thread either
+                }
             } finally {
                 this.pendingTasks.decrementAndGet();
                 task.finish();
             }
         }
+    }
+
+    /** R-P213BC: false for a builder of an older generation (stopThreads timed out, createThreads started new ones). */
+    private boolean isCurrent(int index) {
+        Thread[] t = this.threads;
+        return t != null && index < t.length && t[index] == Thread.currentThread();
     }
 
     /** R-P213BC: failed chunk tasks: rate-limited log, bounded retry of the section. */
@@ -187,7 +200,7 @@ public class TaskDispatcher {
         }
 
         synchronized (this) {
-            this.notify();
+            this.notifyAll(); // all: a waiter above activeLimit would swallow a single notify (adaptive builders)
         }
     }
 
